@@ -1,0 +1,37 @@
+server:
+  port: 8096
+  mode: debug
+
+database:
+  driver: postgres
+  postgres_dsn: "host=127.0.0.1 user=postgres password=postgres dbname=shippingcore port=5432 sslmode=disable TimeZone=Asia/Shanghai"
+
+auth:
+  enabled: true
+  jwt_secret: "change-me-in-production-use-long-random-string"
+
+integrations:
+  storesyncagent_api_url: "http://127.0.0.1:8097"
+
+storage:
+  driver: minio                  # local | minio
+  prefix: "attachments"
+  local_path: "./data/uploads"   # driver: local 时生效
+  public_base_url: "http://127.0.0.1:9100/shippingcore"
+  minio:
+    endpoint: "127.0.0.1:9100"
+    access_key: "minioadmin"
+    secret_key: "minioadmin"
+    bucket: "shippingcore"
+    use_ssl: false
+    prefix: "attachments"
+    public_read: true
+
+cors:
+  allow_origins:
+    - "http://localhost:5181"
+    - "http://127.0.0.1:5181"
+    - "http://localhost:5174"
+    - "http://127.0.0.1:5174"
+    - "http://localhost:5173"
+    - "http://127.0.0.1:5173"
