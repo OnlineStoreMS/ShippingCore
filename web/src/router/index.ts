@@ -23,6 +23,11 @@ const router = createRouter({
       redirect: '/pending',
       children: [
         {
+          // 兼容门户/旧书签的 /dashboard
+          path: 'dashboard',
+          redirect: '/pending',
+        },
+        {
           path: 'pending',
           name: 'PendingOrders',
           component: () => import('../views/PendingOrders.vue'),
@@ -47,6 +52,10 @@ const router = createRouter({
           meta: { title: '寄件人' },
         },
       ],
+    },
+    {
+      path: '/:pathMatch(.*)*',
+      redirect: '/pending',
     },
   ],
 })
