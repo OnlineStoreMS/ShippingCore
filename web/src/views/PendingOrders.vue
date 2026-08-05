@@ -10,7 +10,7 @@ import {
   type ShipperProfile,
   type TradeGoods,
 } from '../api/shipping'
-import { dateShortcuts, defaultDateRange } from '../utils/date'
+import { dateShortcuts, dateRangeDefaultTime, defaultDateRange } from '../utils/date'
 
 const loading = reactive({ orders: false, decrypt: false, ship: false, decryptRow: {} as Record<string, boolean> })
 const orders = ref<PendingOrder[]>([])
@@ -282,6 +282,7 @@ onMounted(async () => {
             end-placeholder="结束时间"
             value-format="YYYY-MM-DD HH:mm:ss"
             :shortcuts="dateShortcuts"
+            :default-time="dateRangeDefaultTime"
             style="width: 420px"
             @change="onFilterChange"
           />
