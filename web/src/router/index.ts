@@ -46,6 +46,24 @@ const router = createRouter({
           meta: { title: '物流账号' },
         },
         {
+          path: 'kdzs-accounts',
+          name: 'KdzsAccounts',
+          component: () => import('../views/KdzsAccountList.vue'),
+          meta: { title: '账号管理' },
+        },
+        {
+          path: 'waybill-auths',
+          name: 'WaybillAuths',
+          component: () => import('../views/WaybillAuthList.vue'),
+          meta: { title: '面单授权' },
+        },
+        {
+          path: 'express-templates',
+          name: 'ExpressTemplates',
+          component: () => import('../views/ExpressTemplateList.vue'),
+          meta: { title: '快递模板' },
+        },
+        {
           path: 'shipper-profiles',
           name: 'ShipperProfiles',
           component: () => import('../views/ShipperProfileList.vue'),

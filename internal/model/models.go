@@ -12,6 +12,9 @@ const (
 	ShipmentStatusFailed    = "failed"
 
 	SourceSystemStoreSyncAgent = "storesyncagent"
+	SourceSystemOrderCore      = "ordercore"
+
+	SourceKdzs = "kdzs"
 
 	CarrierEnvSandbox = "sandbox"
 	CarrierEnvProd    = "prod"
@@ -85,6 +88,8 @@ type Shipment struct {
 	CustID      string `gorm:"size:64" json:"custId"`
 	ExpressType string `gorm:"size:16;default:2" json:"expressType"`
 
+	OrderCoreOrderID uint64 `gorm:"index" json:"orderCoreOrderId,omitempty"`
+
 	MailNo     string `gorm:"size:64;index" json:"mailNo"`
 	SFOrderID  string `gorm:"size:128" json:"sfOrderId"`
 	LabelURL   string `gorm:"size:1024" json:"labelUrl"`
@@ -113,3 +118,81 @@ type ShipmentItem struct {
 }
 
 func (ShipmentItem) TableName() string { return "shipment_items" }
+
+type ExpressTemplate struct {
+	ID              uint64    `gorm:"primaryKey" json:"id"`
+	TenantID        uint64    `gorm:"index;not null" json:"tenantId"`
+	Source          string    `gorm:"size:32;not null;default:kdzs" json:"source"`
+	KdzsAccountCode string    `gorm:"size:64;index" json:"kdzsAccountCode"`
+	KdzsAccountName string    `gorm:"size:128" json:"kdzsAccountName"`
+	Platform        string    `gorm:"size:32;index" json:"platform"`
+	TemplateID      string    `gorm:"size:128;index" json:"templateId"`
+	TemplateName    string    `gorm:"size:256" json:"templateName"`
+	CarrierCode     string    `gorm:"size:64" json:"carrierCode"`
+	CarrierName     string    `gorm:"size:128" json:"carrierName"`
+	ShopID          string    `gorm:"size:64" json:"shopId"`
+	ShopName        string    `gorm:"size:128" json:"shopName"`
+	Enabled         bool      `gorm:"default:true" json:"enabled"`
+	RawJSON         string    `gorm:"type:text" json:"rawJson,omitempty"`
+	SyncedAt        time.Time `json:"syncedAt"`
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
+}
+
+func (ExpressTemplate) TableName() string { return "express_templates" }
+
+type WaybillAuth struct {
+	ID              uint64    `gorm:"primaryKey" json:"id"`
+	TenantID        uint64    `gorm:"index;not null" json:"tenantId"`
+	Source          string    `gorm:"size:32;not null;default:kdzs" json:"source"`
+	KdzsAccountCode string    `gorm:"size:64;index" json:"kdzsAccountCode"`
+	KdzsAccountName string    `gorm:"size:128" json:"kdzsAccountName"`
+	Platform        string    `gorm:"size:32;index" json:"platform"`
+	AccountName     string    `gorm:"size:128" json:"accountName"`
+	ShopName        string    `gorm:"size:128" json:"shopName"`
+	AuthStatus      string    `gorm:"size:64" json:"authStatus"`
+	Detail          string    `gorm:"size:512" json:"detail"`
+	RawJSON         string    `gorm:"type:text" json:"rawJson,omitempty"`
+	SyncedAt        time.Time `json:"syncedAt"`
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
+}
+
+func (WaybillAuth) TableName() string { return "waybill_auths" }
+
+const (
+	KdzsAccountSourceSSA   = "ssa"
+	KdzsAccountSourceLocal = "local"
+)
+
+// KdzsAccount 发货中心本地快递助手账号（默认同步自 StoreSyncAgent，也可本地独立维护）。
+type KdzsAccount struct {
+	ID        uint64    `gorm:"primaryKey" json:"id"`
+	TenantID  uint64    `gorm:"not null;uniqueIndex:idx_sc_kdzs_acc_tenant_code,priority:1" json:"tenantId"`
+	Code      string    `gorm:"size:64;not null;uniqueIndex:idx_sc_kdzs_acc_tenant_code,priority:2" json:"code"`
+	Name      string    `gorm:"size:128;not null" json:"name"`
+	Role      string    `gorm:"size:32;not null;default:merchant" json:"role"`
+	Mobile    string    `gorm:"size:32;not null" json:"mobile"`
+	Password  string    `gorm:"size:256;not null" json:"-"`
+	SortOrder int       `gorm:"not null;default:0" json:"sortOrder"`
+	Enabled   bool      `gorm:"not null;default:true" json:"enabled"`
+	Source    string    `gorm:"size:16;not null;default:ssa" json:"source"` // ssa | local
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+func (KdzsAccount) TableName() string { return "kdzs_accounts" }
+
+// KdzsSetting 发货中心快递助手账号偏好（可与 StoreSyncAgent 不一致）。
+type KdzsSetting struct {
+	ID                 uint64    `gorm:"primaryKey" json:"id"`
+	TenantID           uint64    `gorm:"uniqueIndex;not null" json:"tenantId"`
+	DefaultAccountCode string    `gorm:"size:64" json:"defaultAccountCode"`
+	ActiveAccountCode  string    `gorm:"size:64" json:"activeAccountCode"`
+	AutoSyncFromSSA    bool      `gorm:"not null;default:true" json:"autoSyncFromSSA"`
+	LastSyncedAt       *time.Time `json:"lastSyncedAt,omitempty"`
+	CreatedAt          time.Time `json:"createdAt"`
+	UpdatedAt          time.Time `json:"updatedAt"`
+}
+
+func (KdzsSetting) TableName() string { return "kdzs_settings" }

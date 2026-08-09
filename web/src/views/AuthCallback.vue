@@ -7,6 +7,15 @@ import { redirectToPortal, saveAuthTokens, startTokenKeepAlive, trustFreshToken 
 const route = useRoute()
 const router = useRouter()
 
+/** 仅允许站内相对路径，防开放重定向 */
+function safeRedirect(raw?: string | string[]): string {
+  const v = Array.isArray(raw) ? raw[0] : raw
+  if (!v || typeof v !== 'string') return '/pending'
+  const path = v.trim()
+  if (!path.startsWith('/') || path.startsWith('//')) return '/pending'
+  return path
+}
+
 onMounted(async () => {
   const token = route.query.token as string | undefined
   if (!token) {
@@ -18,7 +27,7 @@ onMounted(async () => {
   trustFreshToken()
   startTokenKeepAlive()
   await fetchSession()
-  router.replace('/dashboard')
+  router.replace(safeRedirect(route.query.redirect as string | undefined))
 })
 </script>
 

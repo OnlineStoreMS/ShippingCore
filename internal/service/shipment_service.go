@@ -8,6 +8,7 @@ import (
 
 	"shippingcore/internal/carrier/sf"
 	"shippingcore/internal/dto"
+	"shippingcore/internal/integrations/ordercore"
 	"shippingcore/internal/integrations/storesyncagent"
 	"shippingcore/internal/model"
 	"shippingcore/internal/repo"
@@ -20,21 +21,23 @@ type ShipmentService struct {
 	carrier  *CarrierService
 	shipper  *ShipperService
 	ssAgent  *storesyncagent.Client
+	orderCore *ordercore.Client
 	tenantID uint64
 }
 
-func NewShipmentService(repos *repo.Repos, carrier *CarrierService, shipper *ShipperService, ssAgent *storesyncagent.Client) *ShipmentService {
-	return &ShipmentService{repos: repos, carrier: carrier, shipper: shipper, ssAgent: ssAgent}
+func NewShipmentService(repos *repo.Repos, carrier *CarrierService, shipper *ShipperService, ssAgent *storesyncagent.Client, orderCore *ordercore.Client) *ShipmentService {
+	return &ShipmentService{repos: repos, carrier: carrier, shipper: shipper, ssAgent: ssAgent, orderCore: orderCore}
 }
 
 func (s *ShipmentService) ForTenant(tenantID uint64) *ShipmentService {
 	tid := repo.NormalizeTenantID(tenantID)
 	return &ShipmentService{
-		repos:    s.repos,
-		carrier:  s.carrier.ForTenant(tid),
-		shipper:  s.shipper.ForTenant(tid),
-		ssAgent:  s.ssAgent,
-		tenantID: tid,
+		repos:     s.repos,
+		carrier:   s.carrier.ForTenant(tid),
+		shipper:   s.shipper.ForTenant(tid),
+		ssAgent:   s.ssAgent,
+		orderCore: s.orderCore,
+		tenantID:  tid,
 	}
 }
 
@@ -131,13 +134,24 @@ func (s *ShipmentService) CreateFromOrder(in *dto.CreateShipmentFromOrderDTO) (*
 		})
 	}
 
+	sourceSystem := strings.TrimSpace(in.SourceSystem)
+	if sourceSystem == "" {
+		sourceSystem = model.SourceSystemStoreSyncAgent
+	}
+
+	orderCoreOrderID := in.OrderID
+	if sourceSystem == model.SourceSystemOrderCore && orderCoreOrderID == 0 {
+		return nil, fmt.Errorf("%w: orderId required for ordercore source", ErrBadRequest)
+	}
+
 	shipment := model.Shipment{
 		TenantID:         s.tenantID,
-		SourceSystem:     model.SourceSystemStoreSyncAgent,
+		SourceSystem:     sourceSystem,
 		SourceRef:        strings.TrimSpace(order.SysTid),
 		SourceTid:        strings.TrimSpace(order.SourceTid),
 		Platform:         strings.TrimSpace(order.Platform),
 		ShopID:           strings.TrimSpace(order.ShopID),
+		OrderCoreOrderID: orderCoreOrderID,
 		CarrierAccountID: carrier.ID,
 		ShipperProfileID: shipper.ID,
 		ReceiverName:     strings.TrimSpace(order.ReceiverName),
@@ -180,7 +194,7 @@ func (s *ShipmentService) CreateFromOrder(in *dto.CreateShipmentFromOrderDTO) (*
 	return s.Get(shipment.ID)
 }
 
-func (s *ShipmentService) CreateWaybill(ctx context.Context, id uint64) (*model.Shipment, error) {
+func (s *ShipmentService) CreateWaybill(ctx context.Context, token string, id uint64) (*model.Shipment, error) {
 	shipment, err := s.Get(id)
 	if err != nil {
 		return nil, err
@@ -238,6 +252,11 @@ func (s *ShipmentService) CreateWaybill(ctx context.Context, id uint64) (*model.
 	if err := s.db().Save(shipment).Error; err != nil {
 		return nil, err
 	}
+
+	if shipment.OrderCoreOrderID > 0 && shipment.MailNo != "" {
+		_ = s.shipOrderCore(ctx, token, shipment.OrderCoreOrderID, "顺丰", shipment.MailNo)
+	}
+
 	return s.Get(shipment.ID)
 }
 
@@ -326,4 +345,94 @@ func (s *ShipmentService) DecryptPendingOrders(ctx context.Context, token string
 		TradeStatus: req.TradeStatus,
 		SysTids:     req.SysTids,
 	})
+}
+
+func (s *ShipmentService) ListPendingOMSOrders(ctx context.Context, token string, query ordercore.OrderQuery) (json.RawMessage, error) {
+	if s.orderCore == nil {
+		return nil, fmt.Errorf("ordercore 未配置")
+	}
+	if query.ShipStatus == "" {
+		query.ShipStatus = "wait_ship"
+	}
+	if query.AllocType == "" {
+		query.AllocType = "self_ship"
+	}
+	return s.orderCore.ListOrders(ctx, token, query)
+}
+
+func (s *ShipmentService) ConfirmKdzsShip(ctx context.Context, token string, in *dto.ConfirmKdzsShipDTO) (*model.Shipment, error) {
+	if in == nil || in.OrderID == 0 || strings.TrimSpace(in.ExpressNo) == "" {
+		return nil, ErrBadRequest
+	}
+	expressCompany := strings.TrimSpace(in.ExpressCompany)
+	if expressCompany == "" {
+		expressCompany = "快递"
+	}
+
+	order := in.Order
+	cargoName := "商品"
+	items := make([]model.ShipmentItem, 0, len(order.Goods))
+	for _, g := range order.Goods {
+		name := strings.TrimSpace(g.Title)
+		if name == "" {
+			name = strings.TrimSpace(g.SkuName)
+		}
+		if name == "" {
+			name = "商品"
+		}
+		qty := g.Num
+		if qty <= 0 {
+			qty = 1
+		}
+		if cargoName == "商品" && name != "" {
+			cargoName = name
+		}
+		items = append(items, model.ShipmentItem{
+			GoodsName: name,
+			Quantity:  qty,
+			SkuCode:   g.SkuName,
+			OuterID:   g.OuterID,
+		})
+	}
+
+	shipment := model.Shipment{
+		TenantID:         s.tenantID,
+		SourceSystem:     model.SourceSystemOrderCore,
+		SourceRef:        strings.TrimSpace(order.SysTid),
+		SourceTid:        strings.TrimSpace(order.SourceTid),
+		Platform:         strings.TrimSpace(order.Platform),
+		ShopID:           strings.TrimSpace(order.ShopID),
+		OrderCoreOrderID: in.OrderID,
+		ReceiverName:     strings.TrimSpace(order.ReceiverName),
+		ReceiverMobile:   strings.TrimSpace(order.ReceiverMobile),
+		ReceiverProvince: strings.TrimSpace(order.ReceiverProvince),
+		ReceiverCity:     strings.TrimSpace(order.ReceiverCity),
+		ReceiverCounty:   strings.TrimSpace(order.ReceiverCounty),
+		ReceiverAddress:  strings.TrimSpace(order.ReceiverAddress),
+		MailNo:           strings.TrimSpace(in.ExpressNo),
+		Status:           model.ShipmentStatusPrinted,
+		CargoName:        cargoName,
+		ParcelQty:        1,
+		Items:            items,
+	}
+	if err := s.db().Create(&shipment).Error; err != nil {
+		return nil, err
+	}
+
+	if err := s.shipOrderCore(ctx, token, in.OrderID, expressCompany, in.ExpressNo); err != nil {
+		return nil, err
+	}
+	return s.Get(shipment.ID)
+}
+
+func (s *ShipmentService) shipOrderCore(ctx context.Context, token string, orderID uint64, expressCompany, expressNo string) error {
+	if s.orderCore == nil || orderID == 0 || strings.TrimSpace(expressNo) == "" {
+		return nil
+	}
+	_, err := s.orderCore.Ship(ctx, token, orderID, ordercore.ShipRequest{
+		ExpressCompany: expressCompany,
+		ExpressNo:      strings.TrimSpace(expressNo),
+		Callback:       true,
+	})
+	return err
 }

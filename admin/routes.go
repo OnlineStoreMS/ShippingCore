@@ -25,4 +25,22 @@ func RegisterRoutes(g *gin.RouterGroup, h *Handlers) {
 
 	g.GET("/pending-orders", h.ListPendingOrders)
 	g.POST("/pending-orders/decrypt", h.DecryptPendingOrders)
+	g.GET("/pending-oms-orders", h.ListPendingOMSOrders)
+
+	g.GET("/kdzs/accounts", h.ListKdzsAccounts)
+	g.GET("/kdzs/account-details", h.ListKdzsAccountDetails)
+	g.POST("/kdzs/accounts/sync", h.SyncKdzsAccounts)
+	g.POST("/kdzs/accounts", h.CreateKdzsAccount)
+	g.PUT("/kdzs/accounts/:id", h.UpdateKdzsAccount)
+	g.DELETE("/kdzs/accounts/:id", h.DeleteKdzsAccount)
+	g.POST("/kdzs/accounts/default", h.SetDefaultKdzsAccount)
+	g.POST("/kdzs/accounts/switch", h.SwitchKdzsAccount)
+
+	g.POST("/sync/kdzs-print-assets", h.SyncKdzsPrintAssets)
+	g.GET("/express-templates", h.ListExpressTemplates)
+	g.GET("/waybill-auths", h.ListWaybillAuths)
+	g.GET("/kdzs/batch-print-url", h.GetBatchPrintURL)
+	g.POST("/kdzs/print-waybills", h.QueryPrintWaybills)
+
+	g.POST("/shipments/confirm-kdzs-ship", h.ConfirmKdzsShip)
 }

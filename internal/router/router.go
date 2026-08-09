@@ -4,6 +4,7 @@ import (
 	"shippingcore/admin"
 	adminmw "shippingcore/admin/middleware"
 	"shippingcore/internal/config"
+	"shippingcore/internal/integrations/ordercore"
 	"shippingcore/internal/integrations/storesyncagent"
 	jwtmgr "shippingcore/internal/pkg/jwt"
 	"shippingcore/internal/repo"
@@ -25,8 +26,10 @@ func Setup(db *gorm.DB, cfg *config.Config) *gin.Engine {
 	carrierSvc := service.NewCarrierService(repos)
 	shipperSvc := service.NewShipperService(repos)
 	ssAgent := storesyncagent.NewClient(cfg.Integrations.StoreSyncAgentAPIURL)
-	shipmentSvc := service.NewShipmentService(repos, carrierSvc, shipperSvc, ssAgent)
-	h := admin.NewHandlers(carrierSvc, shipperSvc, shipmentSvc)
+	orderCore := ordercore.NewClient(cfg.Integrations.OrderCoreAPIURL)
+	shipmentSvc := service.NewShipmentService(repos, carrierSvc, shipperSvc, ssAgent, orderCore)
+	kdzsSvc := service.NewKdzsService(repos, ssAgent)
+	h := admin.NewHandlers(carrierSvc, shipperSvc, shipmentSvc, kdzsSvc)
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok", "service": "shippingcore"})

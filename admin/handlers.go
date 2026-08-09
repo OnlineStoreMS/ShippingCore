@@ -18,10 +18,11 @@ type Handlers struct {
 	Carrier  *service.CarrierService
 	Shipper  *service.ShipperService
 	Shipment *service.ShipmentService
+	Kdzs     *service.KdzsService
 }
 
-func NewHandlers(carrier *service.CarrierService, shipper *service.ShipperService, shipment *service.ShipmentService) *Handlers {
-	return &Handlers{Carrier: carrier, Shipper: shipper, Shipment: shipment}
+func NewHandlers(carrier *service.CarrierService, shipper *service.ShipperService, shipment *service.ShipmentService, kdzs *service.KdzsService) *Handlers {
+	return &Handlers{Carrier: carrier, Shipper: shipper, Shipment: shipment, Kdzs: kdzs}
 }
 
 func (h *Handlers) carrier(c *gin.Context) *service.CarrierService {
@@ -240,7 +241,7 @@ func (h *Handlers) CreateShipmentWaybill(c *gin.Context) {
 		response.Fail(c, http.StatusBadRequest, "invalid id")
 		return
 	}
-	item, err := h.shipment(c).CreateWaybill(c.Request.Context(), id)
+	item, err := h.shipment(c).CreateWaybill(c.Request.Context(), authcontext.BearerToken(c), id)
 	if err != nil {
 		httputil.HandleServiceError(c, err)
 		return

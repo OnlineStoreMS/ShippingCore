@@ -34,6 +34,7 @@ type AuthConfig struct {
 
 type IntegrationsConfig struct {
 	StoreSyncAgentAPIURL string `mapstructure:"storesyncagent_api_url"`
+	OrderCoreAPIURL      string `mapstructure:"ordercore_api_url"`
 }
 
 type StorageConfig struct {
@@ -87,6 +88,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Integrations.StoreSyncAgentAPIURL == "" {
 		cfg.Integrations.StoreSyncAgentAPIURL = "http://127.0.0.1:8097"
+	}
+	if cfg.Integrations.OrderCoreAPIURL == "" {
+		cfg.Integrations.OrderCoreAPIURL = "http://127.0.0.1:8098"
 	}
 	if cfg.Storage.LocalPath == "" {
 		cfg.Storage.LocalPath = "./data/uploads"

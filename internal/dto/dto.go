@@ -53,7 +53,16 @@ type CreateShipmentFromOrderDTO struct {
 	CarrierAccountID uint64           `json:"carrierAccountId"`
 	ShipperProfileID uint64           `json:"shipperProfileId"`
 	UseMonthly       *bool            `json:"useMonthly,omitempty"`
+	OrderID          uint64           `json:"orderId,omitempty"`
+	SourceSystem     string           `json:"sourceSystem,omitempty"`
 	Order            OrderSnapshotDTO `json:"order"`
+}
+
+type ConfirmKdzsShipDTO struct {
+	OrderID        uint64           `json:"orderId" binding:"required"`
+	ExpressNo      string           `json:"expressNo" binding:"required"`
+	ExpressCompany string           `json:"expressCompany"`
+	Order          OrderSnapshotDTO `json:"order"`
 }
 
 type DecryptPendingOrdersDTO struct {

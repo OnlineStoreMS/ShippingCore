@@ -1,8 +1,13 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search } from '@element-plus/icons-vue'
 import { maskCheckword, shippingApi, type CarrierAccount } from '../api/shipping'
+
+/** 可选物流公司；后续扩展时在此追加即可 */
+const carrierOptions = [
+  { code: 'SF', name: '顺丰速运' },
+]
 
 const loading = ref(false)
 const list = ref<CarrierAccount[]>([])
@@ -18,9 +23,11 @@ const envOptions = [
   { label: '生产', value: 'prod' },
 ]
 
+const isSF = computed(() => form.value.carrierCode === 'SF')
+
 function emptyForm(): CarrierAccount {
   return {
-    carrierCode: 'SF',
+    carrierCode: '',
     name: '',
     partnerId: '',
     checkword: '',
@@ -31,6 +38,10 @@ function emptyForm(): CarrierAccount {
     enabled: true,
     remark: '',
   }
+}
+
+function carrierName(code?: string) {
+  return carrierOptions.find((c) => c.code === code)?.name || code || '-'
 }
 
 async function load() {
@@ -65,14 +76,36 @@ function openEdit(row: CarrierAccount) {
   visible.value = true
 }
 
+function onCarrierChange() {
+  // 切换物流公司时重置公司相关字段默认值
+  if (form.value.carrierCode === 'SF') {
+    if (!form.value.expressType) form.value.expressType = '2'
+    if (!form.value.env) form.value.env = 'sandbox'
+  }
+}
+
 async function save() {
-  if (!form.value.name.trim() || !form.value.partnerId.trim()) {
-    ElMessage.warning('请填写名称和客户编码')
+  if (!form.value.carrierCode) {
+    ElMessage.warning('请选择物流公司')
     return
   }
-  if (!form.value.id && !form.value.checkword?.trim()) {
-    ElMessage.warning('请填写校验码')
+  if (!form.value.name.trim()) {
+    ElMessage.warning('请填写账号名称')
     return
+  }
+  if (isSF.value) {
+    if (!form.value.partnerId.trim()) {
+      ElMessage.warning('请填写客户编码')
+      return
+    }
+    if (!form.value.id && !form.value.checkword?.trim()) {
+      ElMessage.warning('请填写校验码')
+      return
+    }
+    if (form.value.useMonthly && !form.value.custId?.trim()) {
+      ElMessage.warning('启用月结时请填写月结卡号')
+      return
+    }
   }
   try {
     const payload = { ...form.value }
@@ -129,6 +162,9 @@ onMounted(load)
       </div>
 
       <el-table :data="list" border stripe>
+        <el-table-column label="物流公司" width="120">
+          <template #default="{ row }">{{ carrierName(row.carrierCode) }}</template>
+        </el-table-column>
         <el-table-column prop="name" label="名称" min-width="140" />
         <el-table-column prop="partnerId" label="客户编码" min-width="140" />
         <el-table-column label="校验码" min-width="120">
@@ -170,46 +206,70 @@ onMounted(load)
       </div>
     </el-card>
 
-    <el-dialog v-model="visible" :title="form.id ? '编辑物流账号' : '新增物流账号'" width="520px">
+    <el-dialog v-model="visible" :title="form.id ? '编辑物流账号' : '新增物流账号'" width="560px" destroy-on-close>
       <el-form label-width="100px">
-        <el-form-item label="名称" required>
-          <el-input v-model="form.name" placeholder="账号名称" />
+        <el-form-item label="物流公司" required>
+          <el-select
+            v-model="form.carrierCode"
+            placeholder="请选择物流公司"
+            style="width: 100%"
+            :disabled="!!form.id"
+            @change="onCarrierChange"
+          >
+            <el-option
+              v-for="c in carrierOptions"
+              :key="c.code"
+              :label="c.name"
+              :value="c.code"
+            />
+          </el-select>
         </el-form-item>
-        <el-form-item label="客户编码" required>
-          <el-input v-model="form.partnerId" placeholder="partnerId" />
-        </el-form-item>
-        <el-form-item :label="form.id ? '校验码' : '校验码'" :required="!form.id">
-          <el-input
-            v-model="form.checkword"
-            type="password"
-            show-password
-            :placeholder="form.id ? '留空则不修改' : 'checkword'"
-          />
-        </el-form-item>
-        <el-form-item label="月结">
-          <el-switch v-model="form.useMonthly" />
-        </el-form-item>
-        <el-form-item label="月结卡号">
-          <el-input v-model="form.custId" placeholder="月结时必填" />
-        </el-form-item>
-        <el-form-item label="快件类型">
-          <el-input v-model="form.expressType" placeholder="默认 2" />
-        </el-form-item>
-        <el-form-item label="环境">
-          <el-radio-group v-model="form.env">
-            <el-radio v-for="opt in envOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</el-radio>
-          </el-radio-group>
-        </el-form-item>
-        <el-form-item label="启用">
-          <el-switch v-model="form.enabled" />
-        </el-form-item>
-        <el-form-item label="备注">
-          <el-input v-model="form.remark" type="textarea" :rows="2" />
-        </el-form-item>
+
+        <template v-if="form.carrierCode">
+          <el-divider content-position="left">账号信息</el-divider>
+          <el-form-item label="名称" required>
+            <el-input v-model="form.name" placeholder="账号名称，如：顺丰主账号" />
+          </el-form-item>
+
+          <template v-if="isSF">
+            <el-form-item label="客户编码" required>
+              <el-input v-model="form.partnerId" placeholder="丰桥 partnerId" />
+            </el-form-item>
+            <el-form-item label="校验码" :required="!form.id">
+              <el-input
+                v-model="form.checkword"
+                type="password"
+                show-password
+                :placeholder="form.id ? '留空则不修改' : '丰桥 checkword'"
+              />
+            </el-form-item>
+            <el-form-item label="月结">
+              <el-switch v-model="form.useMonthly" />
+            </el-form-item>
+            <el-form-item v-if="form.useMonthly" label="月结卡号" required>
+              <el-input v-model="form.custId" placeholder="月结卡号" />
+            </el-form-item>
+            <el-form-item label="快件类型">
+              <el-input v-model="form.expressType" placeholder="默认 2（顺丰标快）" />
+            </el-form-item>
+            <el-form-item label="环境">
+              <el-radio-group v-model="form.env">
+                <el-radio v-for="opt in envOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</el-radio>
+              </el-radio-group>
+            </el-form-item>
+          </template>
+
+          <el-form-item label="启用">
+            <el-switch v-model="form.enabled" />
+          </el-form-item>
+          <el-form-item label="备注">
+            <el-input v-model="form.remark" type="textarea" :rows="2" />
+          </el-form-item>
+        </template>
       </el-form>
       <template #footer>
         <el-button @click="visible = false">取消</el-button>
-        <el-button type="primary" @click="save">保存</el-button>
+        <el-button type="primary" :disabled="!form.carrierCode" @click="save">保存</el-button>
       </template>
     </el-dialog>
   </div>

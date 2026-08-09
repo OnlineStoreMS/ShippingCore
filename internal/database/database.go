@@ -43,6 +43,10 @@ func AutoMigrate(db *gorm.DB) error {
 		&model.ShipperProfile{},
 		&model.Shipment{},
 		&model.ShipmentItem{},
+		&model.ExpressTemplate{},
+		&model.WaybillAuth{},
+		&model.KdzsAccount{},
+		&model.KdzsSetting{},
 	); err != nil {
 		return err
 	}

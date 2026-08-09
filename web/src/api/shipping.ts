@@ -53,6 +53,15 @@ export interface CreateShipmentFromOrderInput {
   carrierAccountId: number
   shipperProfileId: number
   useMonthly?: boolean
+  orderId?: number
+  sourceSystem?: 'ordercore' | 'storesyncagent'
+  order: OrderSnapshot
+}
+
+export interface ConfirmKdzsShipInput {
+  orderId: number
+  expressNo: string
+  expressCompany?: string
   order: OrderSnapshot
 }
 
@@ -92,6 +101,7 @@ export interface Shipment {
   custId: string
   expressType: string
   mailNo: string
+  orderCoreOrderId?: number
   sfOrderId: string
   labelUrl: string
   labelData?: string
@@ -157,6 +167,124 @@ export interface DecryptPendingOrdersInput {
   sysTids: string[]
 }
 
+export interface KdzsAccountDetail {
+  code: string
+  name: string
+  role: string
+  roleLabel: string
+  mobile: string
+  enabled: boolean
+  sortOrder?: number
+  passwordSet?: boolean
+  active?: boolean
+  isDefault?: boolean
+  source?: string
+  sourceLabel?: string
+}
+
+export interface KdzsAccountInput {
+  code: string
+  name?: string
+  role?: string
+  mobile: string
+  password: string
+  enabled?: boolean
+  sortOrder?: number
+}
+
+export interface KdzsAccountUpdateInput {
+  name?: string
+  role?: string
+  mobile?: string
+  password?: string
+  enabled?: boolean
+  sortOrder?: number
+}
+
+export interface ExpressTemplate {
+  id: number
+  source: string
+  kdzsAccountCode?: string
+  kdzsAccountName?: string
+  platform: string
+  templateId: string
+  templateName: string
+  carrierCode: string
+  carrierName: string
+  shopId: string
+  shopName: string
+  enabled: boolean
+  syncedAt: string
+}
+
+export interface WaybillAuth {
+  id: number
+  source: string
+  kdzsAccountCode?: string
+  kdzsAccountName?: string
+  platform: string
+  accountName: string
+  shopName: string
+  authStatus: string
+  detail: string
+  rawJson?: string
+  syncedAt: string
+}
+
+export interface OMSOrderItem {
+  productName?: string
+  skuSpecs?: string
+  quantity?: number
+  picUrl?: string
+}
+
+export interface OMSOrderAddress {
+  name?: string
+  phone?: string
+  province?: string
+  city?: string
+  district?: string
+  address?: string
+  fullText?: string
+}
+
+export interface OMSOrder {
+  id: number
+  orderNo: string
+  sourceChannel: string
+  platform: string
+  platformOrderId?: string
+  platformSysTid?: string
+  shopId?: string
+  shopName?: string
+  buyerName?: string
+  buyerPhone?: string
+  shipStatus?: string
+  status?: string
+  payTime?: string
+  orderedAt?: string
+  items?: OMSOrderItem[]
+  address?: OMSOrderAddress
+}
+
+export interface OMSOrderListResponse {
+  list: OMSOrder[]
+  total: number
+  page: number
+  pageSize: number
+}
+
+export interface OMSOrderQuery {
+  page?: number
+  pageSize?: number
+  shipStatus?: string
+  allocType?: string
+  platform?: string
+  keyword?: string
+  platformSysTid?: string
+  sourceChannel?: string
+}
+
 async function page<T>(url: string, params?: Record<string, unknown>): Promise<PageData<T>> {
   const res = await client.get(url, { params })
   return unwrap(res) as PageData<T>
@@ -200,6 +328,57 @@ export const shippingApi = {
     client.get('/pending-orders', { params }).then((r) => unwrap<PendingOrderListResponse>(r)),
   decryptPendingOrders: (body: DecryptPendingOrdersInput) =>
     client.post('/pending-orders/decrypt', body).then((r) => unwrap<PendingOrderListResponse>(r)),
+
+  listPendingOMSOrders: (params: OMSOrderQuery) =>
+    client.get('/pending-oms-orders', { params }).then((r) => unwrap<OMSOrderListResponse>(r)),
+
+  listKdzsAccountDetails: () =>
+    client.get('/kdzs/account-details').then((r) => unwrap<{ items: KdzsAccountDetail[]; total: number }>(r)),
+  syncKdzsAccounts: () =>
+    client.post('/kdzs/accounts/sync').then((r) =>
+      unwrap<{ synced: number; defaultAccountCode?: string; activeAccountCode?: string }>(r),
+    ),
+  createKdzsAccount: (body: KdzsAccountInput) =>
+    client.post('/kdzs/accounts', body).then((r) => unwrap<KdzsAccountDetail>(r)),
+  updateKdzsAccount: (id: string, body: KdzsAccountUpdateInput) =>
+    client.put(`/kdzs/accounts/${id}`, body).then((r) => unwrap<KdzsAccountDetail>(r)),
+  deleteKdzsAccount: (id: string) => client.delete(`/kdzs/accounts/${id}`),
+  setDefaultKdzsAccount: (accountId: string) =>
+    client.post('/kdzs/accounts/default', { accountId }),
+  switchKdzsAccount: (accountId: string) =>
+    client.post('/kdzs/accounts/switch', { accountId }),
+
+  syncKdzsPrintAssets: () =>
+    client.post('/sync/kdzs-print-assets').then((r) => unwrap<{ auths: number; templates: number }>(r)),
+  listExpressTemplates: (params?: Record<string, unknown>) =>
+    page<ExpressTemplate>('/express-templates', params),
+  listWaybillAuths: (params?: Record<string, unknown>) =>
+    page<WaybillAuth>('/waybill-auths', params),
+  getBatchPrintURL: (platform: string) =>
+    client
+      .get('/kdzs/batch-print-url', { params: { platform } })
+      .then((r) => unwrap<{ url: string; platform: string }>(r)),
+  queryPrintWaybills: (body: {
+    platform: string
+    items: { sysTid?: string; tid?: string }[]
+  }) =>
+    client.post('/kdzs/print-waybills', body).then((r) =>
+      unwrap<{
+        items: {
+          sysTid?: string
+          tid?: string
+          found: boolean
+          expressNo?: string
+          expressCompany?: string
+          expressCode?: string
+          message?: string
+        }[]
+        total: number
+      }>(r),
+    ),
+
+  confirmKdzsShip: (body: ConfirmKdzsShipInput) =>
+    client.post('/shipments/confirm-kdzs-ship', body).then((r) => unwrap<Shipment>(r)),
 }
 
 export function maskCheckword(value?: string): string {
