@@ -193,17 +193,20 @@ func (c *Client) CancelOrder(ctx context.Context, orderID, mailNo string, dealTy
 	return nil
 }
 
-func (c *Client) CloudPrint(ctx context.Context, mailNo, partnerID string) (*PrintResult, error) {
+// CloudPrint 调用丰桥云打印转 PDF。
+// templateCode 必须是丰桥控制台分配的完整模板编码（如 fm_76130_standard_XXXX），不是 partnerId。
+func (c *Client) CloudPrint(ctx context.Context, mailNo, templateCode string) (*PrintResult, error) {
 	if mailNo == "" {
 		return nil, fmt.Errorf("mailNo is required")
 	}
-	if partnerID == "" {
-		partnerID = c.partnerID
+	templateCode = strings.TrimSpace(templateCode)
+	if templateCode == "" {
+		return nil, fmt.Errorf("templateCode is required: 请在物流账号配置丰桥云打印模板编码")
 	}
 
 	// sync=true 直接返回 PDF url+token，便于本机打开/打印（含顺丰打印组件或系统打印机）
 	payload := map[string]interface{}{
-		"templateCode": "fm_76130_standard_" + partnerID,
+		"templateCode": templateCode,
 		"documents": []map[string]interface{}{
 			{
 				"masterWaybillNo": mailNo,
@@ -215,36 +218,27 @@ func (c *Client) CloudPrint(ctx context.Context, mailNo, partnerID string) (*Pri
 	}
 
 	var apiResp apiEnvelope
-	err := c.call(ctx, ServiceCloudPrint, payload, &apiResp)
-	if err != nil {
-		log.Printf("sf cloud print failed for %s: %v", mailNo, err)
-		return &PrintResult{
-			LabelURL:  placeholderLabelURL(mailNo),
-			LabelData: fmt.Sprintf(`{"mailNo":"%s","note":"cloud print unavailable, placeholder label"}`, mailNo),
-		}, nil
+	if err := c.call(ctx, ServiceCloudPrint, payload, &apiResp); err != nil {
+		log.Printf("sf cloud print failed for %s template=%s: %v", mailNo, templateCode, err)
+		return nil, err
 	}
 
 	var result printMsgData
 	if err := decodeResultData(apiResp, &result); err != nil {
-		log.Printf("sf cloud print decode failed for %s: %v", mailNo, err)
-		return &PrintResult{
-			LabelURL:  placeholderLabelURL(mailNo),
-			LabelData: fmt.Sprintf(`{"mailNo":"%s","note":"cloud print decode failed"}`, mailNo),
-		}, nil
+		log.Printf("sf cloud print decode failed for %s template=%s: %v", mailNo, templateCode, err)
+		return nil, err
 	}
 	if !result.Success {
-		log.Printf("sf cloud print business error for %s: %s", mailNo, result.ErrorMsg)
-		return &PrintResult{
-			LabelURL:  placeholderLabelURL(mailNo),
-			LabelData: fmt.Sprintf(`{"mailNo":"%s","error":"%s"}`, mailNo, result.ErrorMsg),
-		}, nil
+		msg := firstNonEmpty(result.ErrorMsg, result.ErrorCode, "unknown")
+		log.Printf("sf cloud print business error for %s template=%s: %s", mailNo, templateCode, msg)
+		return nil, fmt.Errorf("sf cloud print: %s (templateCode=%s)", msg, templateCode)
 	}
 
 	labelURL, labelToken := extractPrintFile(result)
-	labelData := firstNonEmpty(result.MsgData.File, result.MsgData.PrintData)
-	if labelURL == "" {
-		labelURL = placeholderLabelURL(mailNo)
+	if strings.TrimSpace(labelURL) == "" {
+		return nil, fmt.Errorf("sf cloud print: 未返回 PDF url（templateCode=%s，请确认模板权限与规格）", templateCode)
 	}
+	labelData := firstNonEmpty(result.MsgData.File, result.MsgData.PrintData)
 	raw, _ := json.Marshal(result.MsgData)
 	return &PrintResult{
 		LabelURL:   labelURL,
@@ -280,10 +274,6 @@ func (c *Client) DownloadLabelPDF(ctx context.Context, fileURL, token string) ([
 		return nil, fmt.Errorf("download label http %d: %s", resp.StatusCode, truncate(string(body), 256))
 	}
 	return body, nil
-}
-
-func placeholderLabelURL(mailNo string) string {
-	return "sf://waybill/" + mailNo
 }
 
 type apiEnvelope struct {

@@ -140,6 +140,8 @@ func (s *CarrierService) Update(id uint64, in *dto.CarrierAccountDTO) (*model.Ca
 	if in.ExpressType != "" {
 		item.ExpressType = in.ExpressType
 	}
+	// 允许清空后重填；空字符串表示未配置
+	item.TemplateCode = strings.TrimSpace(in.TemplateCode)
 	if in.Env != "" {
 		item.Env = in.Env
 	}
@@ -182,16 +184,17 @@ func (s *CarrierService) ensureUniqueName(name string, excludeID uint64) error {
 
 func dtoToCarrierAccount(in *dto.CarrierAccountDTO) model.CarrierAccount {
 	return model.CarrierAccount{
-		CarrierCode: in.CarrierCode,
-		Name:        strings.TrimSpace(in.Name),
-		PartnerID:   strings.TrimSpace(in.PartnerID),
-		Checkword:   strings.TrimSpace(in.Checkword),
-		UseMonthly:  in.UseMonthly,
-		CustID:      strings.TrimSpace(in.CustID),
-		ExpressType: in.ExpressType,
-		Env:         in.Env,
-		Enabled:     in.Enabled,
-		Remark:      in.Remark,
+		CarrierCode:  in.CarrierCode,
+		Name:         strings.TrimSpace(in.Name),
+		PartnerID:    strings.TrimSpace(in.PartnerID),
+		Checkword:    strings.TrimSpace(in.Checkword),
+		UseMonthly:   in.UseMonthly,
+		CustID:       strings.TrimSpace(in.CustID),
+		ExpressType:  in.ExpressType,
+		TemplateCode: strings.TrimSpace(in.TemplateCode),
+		Env:          in.Env,
+		Enabled:      in.Enabled,
+		Remark:       in.Remark,
 	}
 }
 

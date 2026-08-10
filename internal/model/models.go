@@ -27,12 +27,13 @@ type CarrierAccount struct {
 	Name        string    `gorm:"size:128;not null" json:"name"`
 	PartnerID   string    `gorm:"size:64;not null" json:"partnerId"`
 	Checkword   string    `gorm:"size:128;not null" json:"checkword,omitempty"`
-	UseMonthly  bool      `gorm:"default:false" json:"useMonthly"`
-	CustID      string    `gorm:"size:64" json:"custId"`
-	ExpressType string    `gorm:"size:16;default:2" json:"expressType"`
-	Env         string    `gorm:"size:16;default:sandbox" json:"env"`
-	Enabled     bool      `gorm:"default:true" json:"enabled"`
-	Remark      string    `gorm:"size:512" json:"remark"`
+	UseMonthly   bool      `gorm:"default:false" json:"useMonthly"`
+	CustID       string    `gorm:"size:64" json:"custId"`
+	ExpressType  string    `gorm:"size:16;default:2" json:"expressType"`
+	TemplateCode string    `gorm:"size:128" json:"templateCode"` // 丰桥云打印模板编码，如 fm_76130_standard_XXXX
+	Env          string    `gorm:"size:16;default:sandbox" json:"env"`
+	Enabled      bool      `gorm:"default:true" json:"enabled"`
+	Remark       string    `gorm:"size:512" json:"remark"`
 	CreatedAt   time.Time `json:"createdAt"`
 	UpdatedAt   time.Time `json:"updatedAt"`
 }

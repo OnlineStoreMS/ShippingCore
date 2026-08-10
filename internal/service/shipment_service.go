@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 
 	"shippingcore/internal/carrier/sf"
@@ -294,13 +295,17 @@ func (s *ShipmentService) CreateWaybill(ctx context.Context, token string, id ui
 	shipment.Status = model.ShipmentStatusCreated
 	shipment.ErrorMessage = ""
 
-	// 下单成功后尽量取云打印面单（同步 PDF，供本机打印）
-	if printRes, printErr := client.CloudPrint(ctx, shipment.MailNo, carrier.PartnerID); printErr == nil && printRes != nil {
-		shipment.LabelURL = printRes.LabelURL
-		shipment.LabelToken = printRes.LabelToken
-		shipment.LabelData = printRes.LabelData
-		if shipment.LabelURL != "" && !strings.HasPrefix(shipment.LabelURL, "sf://") {
-			shipment.Status = model.ShipmentStatusPrinted
+	// 下单成功后尽量取云打印面单（同步 PDF，供本机打印）；失败不阻断出单
+	if tpl := strings.TrimSpace(carrier.TemplateCode); tpl != "" {
+		if printRes, printErr := client.CloudPrint(ctx, shipment.MailNo, tpl); printErr != nil {
+			log.Printf("sf cloud print after create waybill %s: %v", shipment.MailNo, printErr)
+		} else if printRes != nil {
+			shipment.LabelURL = printRes.LabelURL
+			shipment.LabelToken = printRes.LabelToken
+			shipment.LabelData = printRes.LabelData
+			if shipment.LabelURL != "" {
+				shipment.Status = model.ShipmentStatusPrinted
+			}
 		}
 	}
 
@@ -342,13 +347,18 @@ func (s *ShipmentService) Print(ctx context.Context, id uint64) (*model.Shipment
 	if err != nil {
 		return nil, err
 	}
-	client := sf.NewClient(carrier.PartnerID, carrier.Checkword, carrier.Env)
-	result, _ := client.CloudPrint(ctx, shipment.MailNo, carrier.PartnerID)
-	if result != nil {
-		shipment.LabelURL = result.LabelURL
-		shipment.LabelToken = result.LabelToken
-		shipment.LabelData = result.LabelData
+	tpl := strings.TrimSpace(carrier.TemplateCode)
+	if tpl == "" {
+		return nil, fmt.Errorf("%w: 请在物流账号配置丰桥云打印模板编码（templateCode，如 fm_76130_standard_XXXX）", ErrBadRequest)
 	}
+	client := sf.NewClient(carrier.PartnerID, carrier.Checkword, carrier.Env)
+	result, err := client.CloudPrint(ctx, shipment.MailNo, tpl)
+	if err != nil {
+		return nil, err
+	}
+	shipment.LabelURL = result.LabelURL
+	shipment.LabelToken = result.LabelToken
+	shipment.LabelData = result.LabelData
 	if shipment.Status == model.ShipmentStatusCreated || shipment.Status == model.ShipmentStatusFailed {
 		shipment.Status = model.ShipmentStatusPrinted
 	}
@@ -376,12 +386,16 @@ func (s *ShipmentService) FetchLabelPDF(ctx context.Context, id uint64) ([]byte,
 	labelURL := strings.TrimSpace(shipment.LabelURL)
 	labelToken := strings.TrimSpace(shipment.LabelToken)
 	if labelURL == "" || strings.HasPrefix(labelURL, "sf://") {
-		printRes, err := client.CloudPrint(ctx, shipment.MailNo, carrier.PartnerID)
-		if err != nil {
-			return nil, "", err
+		tpl := strings.TrimSpace(carrier.TemplateCode)
+		if tpl == "" {
+			return nil, "", fmt.Errorf("%w: 请在物流账号配置丰桥云打印模板编码（templateCode，如 fm_76130_standard_XXXX）", ErrBadRequest)
 		}
-		if printRes == nil || strings.TrimSpace(printRes.LabelURL) == "" || strings.HasPrefix(printRes.LabelURL, "sf://") {
-			return nil, "", fmt.Errorf("云打印未返回可用面单，请检查丰桥模板编码/权限")
+		printRes, err := client.CloudPrint(ctx, shipment.MailNo, tpl)
+		if err != nil {
+			return nil, "", fmt.Errorf("云打印失败: %w", err)
+		}
+		if printRes == nil || strings.TrimSpace(printRes.LabelURL) == "" {
+			return nil, "", fmt.Errorf("云打印未返回可用面单，请检查丰桥模板编码/权限（当前 templateCode=%s）", tpl)
 		}
 		labelURL = printRes.LabelURL
 		labelToken = printRes.LabelToken

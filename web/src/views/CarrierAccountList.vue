@@ -45,6 +45,7 @@ function emptyForm(): CarrierAccount {
     useMonthly: false,
     custId: '',
     expressType: '2',
+    templateCode: '',
     env: 'sandbox',
     enabled: true,
     remark: '',
@@ -115,6 +116,10 @@ async function save() {
     }
     if (form.value.useMonthly && !form.value.custId?.trim()) {
       ElMessage.warning('启用月结时请填写月结卡号')
+      return
+    }
+    if (!form.value.templateCode?.trim()) {
+      ElMessage.warning('请填写云打印模板编码（丰桥控制台面单模板，如 fm_76130_standard_XXXX）')
       return
     }
   }
@@ -191,6 +196,7 @@ onMounted(load)
         <el-table-column label="快件类型" width="130">
           <template #default="{ row }">{{ expressTypeLabel(row.expressType) }}</template>
         </el-table-column>
+        <el-table-column prop="templateCode" label="面单模板" min-width="180" show-overflow-tooltip />
         <el-table-column label="环境" width="80">
           <template #default="{ row }">{{ envLabel(row.env) }}</template>
         </el-table-column>
@@ -272,6 +278,13 @@ onMounted(load)
                 />
               </el-select>
             </el-form-item>
+            <el-form-item label="面单模板" required>
+              <el-input
+                v-model="form.templateCode"
+                placeholder="丰桥云打印模板编码，如 fm_76130_standard_XXXX"
+              />
+              <div class="hint">在丰桥开放平台「云打印」模板列表复制完整编码，不是客户编码（partnerId）。</div>
+            </el-form-item>
             <el-form-item label="环境">
               <el-radio-group v-model="form.env">
                 <el-radio v-for="opt in envOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</el-radio>
@@ -299,4 +312,5 @@ onMounted(load)
 .hdr { display: flex; align-items: center; justify-content: space-between; }
 .toolbar { display: flex; gap: 8px; margin-bottom: 16px; }
 .pager { margin-top: 16px; display: flex; justify-content: flex-end; }
+.hint { margin-top: 4px; font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.4; }
 </style>

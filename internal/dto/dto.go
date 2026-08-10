@@ -1,17 +1,18 @@
 package dto
 
 type CarrierAccountDTO struct {
-	ID          uint64 `json:"id,omitempty"`
-	CarrierCode string `json:"carrierCode"`
-	Name        string `json:"name"`
-	PartnerID   string `json:"partnerId"`
-	Checkword   string `json:"checkword,omitempty"`
-	UseMonthly  bool   `json:"useMonthly"`
-	CustID      string `json:"custId"`
-	ExpressType string `json:"expressType"`
-	Env         string `json:"env"`
-	Enabled     bool   `json:"enabled"`
-	Remark      string `json:"remark"`
+	ID           uint64 `json:"id,omitempty"`
+	CarrierCode  string `json:"carrierCode"`
+	Name         string `json:"name"`
+	PartnerID    string `json:"partnerId"`
+	Checkword    string `json:"checkword,omitempty"`
+	UseMonthly   bool   `json:"useMonthly"`
+	CustID       string `json:"custId"`
+	ExpressType  string `json:"expressType"`
+	TemplateCode string `json:"templateCode"`
+	Env          string `json:"env"`
+	Enabled      bool   `json:"enabled"`
+	Remark       string `json:"remark"`
 }
 
 type ShipperProfileDTO struct {

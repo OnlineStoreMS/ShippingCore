@@ -9,6 +9,8 @@ export interface CarrierAccount {
   useMonthly: boolean
   custId: string
   expressType: string
+  /** 丰桥云打印模板编码，如 fm_76130_standard_XXXX（非客户编码） */
+  templateCode: string
   env: string
   enabled: boolean
   remark: string
