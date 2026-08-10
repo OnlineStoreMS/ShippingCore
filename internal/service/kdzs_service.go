@@ -216,14 +216,20 @@ func (s *KdzsService) SyncPrintAssets(ctx context.Context, token string) (map[st
 	}
 	kdzsCode, kdzsName := s.activeKdzsAccountLabel()
 	now := time.Now()
-	stats := map[string]int{"auths": 0, "templates": 0}
+	stats := map[string]int{
+		"auths": 0, "templates": 0,
+		"authsDeleted": 0, "templatesDeleted": 0,
+	}
 
 	authRaw, err := s.ssAgent.ListElecAuth(ctx, token)
 	if err != nil {
 		return nil, fmt.Errorf("拉取面单授权: %w", err)
 	}
 	var authPayload syncListPayload
+	authSeen := map[string]struct{}{}
+	authListOK := false
 	if err := json.Unmarshal(authRaw, &authPayload); err == nil {
+		authListOK = true
 		for _, raw := range authPayload.Items {
 			var item elecAuthItem
 			if err := json.Unmarshal(raw, &item); err != nil {
@@ -245,22 +251,28 @@ func (s *KdzsService) SyncPrintAssets(ctx context.Context, token string) (map[st
 				RawJSON:         rawJSON,
 				SyncedAt:        now,
 			}
+			key := waybillAuthKey(rec.Platform, rec.AccountName, rec.ShopName)
+			authSeen[key] = struct{}{}
 			if err := s.upsertWaybillAuth(&rec); err == nil {
 				stats["auths"]++
 			}
+		}
+		if n, err := s.reconcileWaybillAuths(kdzsCode, authSeen); err == nil {
+			stats["authsDeleted"] = n
 		}
 	}
 
 	tplRaw, err := s.ssAgent.ListExpressTemplates(ctx, token)
 	if err != nil {
-		// 模板接口偶发失败时仍保留已同步的面单授权
-		if stats["auths"] > 0 {
+		// 模板接口偶发失败时仍保留已同步的面单授权，且不删除本地模板
+		if authListOK || stats["auths"] > 0 {
 			return stats, nil
 		}
 		return stats, fmt.Errorf("拉取快递模板: %w", err)
 	}
 	var tplPayload syncListPayload
 	if err := json.Unmarshal(tplRaw, &tplPayload); err == nil {
+		tplSeen := map[string]struct{}{}
 		for _, raw := range tplPayload.Items {
 			var item expressTemplateItem
 			if err := json.Unmarshal(raw, &item); err != nil {
@@ -294,13 +306,72 @@ func (s *KdzsService) SyncPrintAssets(ctx context.Context, token string) (map[st
 			if rec.TemplateID == "" || rec.TemplateID == "||" {
 				continue
 			}
+			tplSeen[rec.TemplateID] = struct{}{}
 			if err := s.upsertExpressTemplate(&rec); err == nil {
 				stats["templates"]++
 			}
 		}
+		if n, err := s.reconcileExpressTemplates(kdzsCode, tplSeen); err == nil {
+			stats["templatesDeleted"] = n
+		}
 	}
 
 	return stats, nil
+}
+
+func waybillAuthKey(platform, accountName, shopName string) string {
+	return strings.TrimSpace(platform) + "\x00" + strings.TrimSpace(accountName) + "\x00" + strings.TrimSpace(shopName)
+}
+
+// reconcileExpressTemplates 删除当前账号下远端已不存在的本地模板，与快递助手保持一致。
+func (s *KdzsService) reconcileExpressTemplates(kdzsCode string, seen map[string]struct{}) (int, error) {
+	q := s.db().Model(&model.ExpressTemplate{}).
+		Where("source = ?", model.SourceKdzs)
+	if kdzsCode != "" {
+		q = q.Where("kdzs_account_code = ?", kdzsCode)
+	} else {
+		q = q.Where("kdzs_account_code = '' OR kdzs_account_code IS NULL")
+	}
+	var locals []model.ExpressTemplate
+	if err := q.Select("id", "template_id").Find(&locals).Error; err != nil {
+		return 0, err
+	}
+	deleted := 0
+	for _, loc := range locals {
+		if _, ok := seen[loc.TemplateID]; ok {
+			continue
+		}
+		if err := s.db().Delete(&model.ExpressTemplate{}, loc.ID).Error; err == nil {
+			deleted++
+		}
+	}
+	return deleted, nil
+}
+
+// reconcileWaybillAuths 删除当前账号下远端已不存在的本地面单授权。
+func (s *KdzsService) reconcileWaybillAuths(kdzsCode string, seen map[string]struct{}) (int, error) {
+	q := s.db().Model(&model.WaybillAuth{}).
+		Where("source = ?", model.SourceKdzs)
+	if kdzsCode != "" {
+		q = q.Where("kdzs_account_code = ?", kdzsCode)
+	} else {
+		q = q.Where("kdzs_account_code = '' OR kdzs_account_code IS NULL")
+	}
+	var locals []model.WaybillAuth
+	if err := q.Select("id", "platform", "account_name", "shop_name").Find(&locals).Error; err != nil {
+		return 0, err
+	}
+	deleted := 0
+	for _, loc := range locals {
+		key := waybillAuthKey(loc.Platform, loc.AccountName, loc.ShopName)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		if err := s.db().Delete(&model.WaybillAuth{}, loc.ID).Error; err == nil {
+			deleted++
+		}
+	}
+	return deleted, nil
 }
 
 func (s *KdzsService) upsertWaybillAuth(rec *model.WaybillAuth) error {

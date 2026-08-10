@@ -23,7 +23,18 @@ const envOptions = [
   { label: '生产', value: 'prod' },
 ]
 
+const expressTypeOptions = [
+  { value: '1', label: '1 · 顺丰特快' },
+  { value: '2', label: '2 · 顺丰标快' },
+  { value: '6', label: '6 · 顺丰即日' },
+]
+
 const isSF = computed(() => form.value.carrierCode === 'SF')
+
+function expressTypeLabel(code?: string) {
+  const hit = expressTypeOptions.find((o) => o.value === code)
+  return hit?.label || code || '-'
+}
 
 function emptyForm(): CarrierAccount {
   return {
@@ -177,7 +188,9 @@ onMounted(load)
           </template>
         </el-table-column>
         <el-table-column prop="custId" label="月结卡号" min-width="120" show-overflow-tooltip />
-        <el-table-column prop="expressType" label="快件类型" width="100" />
+        <el-table-column label="快件类型" width="130">
+          <template #default="{ row }">{{ expressTypeLabel(row.expressType) }}</template>
+        </el-table-column>
         <el-table-column label="环境" width="80">
           <template #default="{ row }">{{ envLabel(row.env) }}</template>
         </el-table-column>
@@ -250,7 +263,14 @@ onMounted(load)
               <el-input v-model="form.custId" placeholder="月结卡号" />
             </el-form-item>
             <el-form-item label="快件类型">
-              <el-input v-model="form.expressType" placeholder="默认 2（顺丰标快）" />
+              <el-select v-model="form.expressType" placeholder="选择快件类型" style="width: 100%">
+                <el-option
+                  v-for="opt in expressTypeOptions"
+                  :key="opt.value"
+                  :label="opt.label"
+                  :value="opt.value"
+                />
+              </el-select>
             </el-form-item>
             <el-form-item label="环境">
               <el-radio-group v-model="form.env">

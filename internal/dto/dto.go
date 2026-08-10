@@ -53,6 +53,10 @@ type CreateShipmentFromOrderDTO struct {
 	CarrierAccountID uint64           `json:"carrierAccountId"`
 	ShipperProfileID uint64           `json:"shipperProfileId"`
 	UseMonthly       *bool            `json:"useMonthly,omitempty"`
+	ExpressType      string           `json:"expressType,omitempty"`
+	PayMethod        int              `json:"payMethod,omitempty"`
+	Remark           string           `json:"remark,omitempty"`
+	TotalWeight      float64          `json:"totalWeight,omitempty"` // kg
 	OrderID          uint64           `json:"orderId,omitempty"`
 	SourceSystem     string           `json:"sourceSystem,omitempty"`
 	Order            OrderSnapshotDTO `json:"order"`

@@ -90,15 +90,18 @@ type Shipment struct {
 
 	OrderCoreOrderID uint64 `gorm:"index" json:"orderCoreOrderId,omitempty"`
 
-	MailNo     string `gorm:"size:64;index" json:"mailNo"`
-	SFOrderID  string `gorm:"size:128" json:"sfOrderId"`
-	LabelURL   string `gorm:"size:1024" json:"labelUrl"`
-	LabelData  string `gorm:"type:text" json:"labelData,omitempty"`
-	Status     string `gorm:"size:32;index;default:draft" json:"status"`
+	MailNo       string `gorm:"size:64;index" json:"mailNo"`
+	SFOrderID    string `gorm:"size:128" json:"sfOrderId"`
+	LabelURL     string `gorm:"size:1024" json:"labelUrl"`
+	LabelToken   string `gorm:"size:512" json:"labelToken,omitempty"` // 云打印 PDF 下载 token
+	LabelData    string `gorm:"type:text" json:"labelData,omitempty"`
+	Status       string `gorm:"size:32;index;default:draft" json:"status"`
 	ErrorMessage string `gorm:"size:1024" json:"errorMessage,omitempty"`
 
-	CargoName string `gorm:"size:256" json:"cargoName"`
-	ParcelQty int    `gorm:"default:1" json:"parcelQty"`
+	CargoName   string  `gorm:"size:256" json:"cargoName"`
+	ParcelQty   int     `gorm:"default:1" json:"parcelQty"`
+	Remark      string  `gorm:"size:512" json:"remark,omitempty"`
+	TotalWeight float64 `gorm:"type:numeric(10,3);default:0" json:"totalWeight,omitempty"` // kg
 
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`

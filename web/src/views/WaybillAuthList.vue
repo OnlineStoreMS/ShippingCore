@@ -111,7 +111,10 @@ async function sync() {
   syncing.value = true
   try {
     const stats = await shippingApi.syncKdzsPrintAssets()
-    ElMessage.success(`同步完成：授权 ${stats.auths} 条，模板 ${stats.templates} 条`)
+    const delTpl = stats.templatesDeleted || 0
+    const delAuth = stats.authsDeleted || 0
+    const extra = delTpl || delAuth ? `，清理模板 ${delTpl} / 授权 ${delAuth}` : ''
+    ElMessage.success(`同步完成：授权 ${stats.auths} 条，模板 ${stats.templates} 条${extra}（已与快递助手对齐）`)
     page.value = 1
     await load()
   } catch (e) {

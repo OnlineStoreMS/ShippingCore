@@ -263,6 +263,24 @@ func (h *Handlers) PrintShipment(c *gin.Context) {
 	response.OK(c, item)
 }
 
+func (h *Handlers) DownloadShipmentLabel(c *gin.Context) {
+	id, err := httputil.ParseID(c)
+	if err != nil {
+		response.Fail(c, http.StatusBadRequest, "invalid id")
+		return
+	}
+	pdf, filename, err := h.shipment(c).FetchLabelPDF(c.Request.Context(), id)
+	if err != nil {
+		httputil.HandleServiceError(c, err)
+		return
+	}
+	if filename == "" {
+		filename = "sf-label.pdf"
+	}
+	c.Header("Content-Disposition", `inline; filename="`+filename+`"`)
+	c.Data(http.StatusOK, "application/pdf", pdf)
+}
+
 func (h *Handlers) CancelShipment(c *gin.Context) {
 	id, err := httputil.ParseID(c)
 	if err != nil {

@@ -21,6 +21,7 @@ func RegisterRoutes(g *gin.RouterGroup, h *Handlers) {
 	g.POST("/shipments/from-order", h.CreateShipmentFromOrder)
 	g.POST("/shipments/:id/create-waybill", h.CreateShipmentWaybill)
 	g.POST("/shipments/:id/print", h.PrintShipment)
+	g.GET("/shipments/:id/label", h.DownloadShipmentLabel)
 	g.POST("/shipments/:id/cancel", h.CancelShipment)
 
 	g.GET("/pending-orders", h.ListPendingOrders)

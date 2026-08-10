@@ -81,9 +81,6 @@ func (s *ShipmentService) CreateFromOrder(in *dto.CreateShipmentFromOrderDTO) (*
 		return nil, ErrBadRequest
 	}
 	order := in.Order
-	if strings.TrimSpace(order.SysTid) == "" {
-		return nil, fmt.Errorf("%w: sysTid required", ErrBadRequest)
-	}
 
 	carrier, err := s.carrier.GetRaw(in.CarrierAccountID)
 	if err != nil {
@@ -91,6 +88,9 @@ func (s *ShipmentService) CreateFromOrder(in *dto.CreateShipmentFromOrderDTO) (*
 	}
 	if !carrier.Enabled {
 		return nil, fmt.Errorf("%w: carrier account disabled", ErrBadRequest)
+	}
+	if strings.TrimSpace(carrier.PartnerID) == "" || strings.TrimSpace(carrier.Checkword) == "" {
+		return nil, fmt.Errorf("%w: carrier partnerId/checkword required", ErrBadRequest)
 	}
 
 	shipper, err := s.shipper.Get(in.ShipperProfileID)
@@ -144,10 +144,33 @@ func (s *ShipmentService) CreateFromOrder(in *dto.CreateShipmentFromOrderDTO) (*
 		return nil, fmt.Errorf("%w: orderId required for ordercore source", ErrBadRequest)
 	}
 
+	sourceRef := firstNonEmptyTrim(
+		order.SysTid,
+		order.SourceTid,
+	)
+	if sourceRef == "" && orderCoreOrderID > 0 {
+		sourceRef = fmt.Sprintf("OC%d", orderCoreOrderID)
+	}
+	if sourceRef == "" {
+		return nil, fmt.Errorf("%w: sysTid/sourceTid/orderId required", ErrBadRequest)
+	}
+
+	expressType := strings.TrimSpace(in.ExpressType)
+	if expressType == "" {
+		expressType = strings.TrimSpace(carrier.ExpressType)
+	}
+	if expressType == "" {
+		expressType = "2"
+	}
+	payMethod := in.PayMethod
+	if payMethod == 0 {
+		payMethod = 1
+	}
+
 	shipment := model.Shipment{
 		TenantID:         s.tenantID,
 		SourceSystem:     sourceSystem,
-		SourceRef:        strings.TrimSpace(order.SysTid),
+		SourceRef:        sourceRef,
 		SourceTid:        strings.TrimSpace(order.SourceTid),
 		Platform:         strings.TrimSpace(order.Platform),
 		ShopID:           strings.TrimSpace(order.ShopID),
@@ -168,12 +191,14 @@ func (s *ShipmentService) CreateFromOrder(in *dto.CreateShipmentFromOrderDTO) (*
 		ShipperAddress:   shipper.Address,
 		ShipperCompany:   shipper.Company,
 		UseMonthly:       useMonthly,
-		PayMethod:        1,
+		PayMethod:        payMethod,
 		CustID:           "",
-		ExpressType:      carrier.ExpressType,
+		ExpressType:      expressType,
 		Status:           model.ShipmentStatusDraft,
 		CargoName:        cargoName,
 		ParcelQty:        1,
+		Remark:           strings.TrimSpace(in.Remark),
+		TotalWeight:      in.TotalWeight,
 		Items:            items,
 	}
 
@@ -207,17 +232,36 @@ func (s *ShipmentService) CreateWaybill(ctx context.Context, token string, id ui
 	if err != nil {
 		return nil, err
 	}
+	if strings.TrimSpace(carrier.PartnerID) == "" || strings.TrimSpace(carrier.Checkword) == "" {
+		return nil, fmt.Errorf("%w: carrier partnerId/checkword required", ErrBadRequest)
+	}
+
+	cargos := make([]sf.CargoDetail, 0, len(shipment.Items))
+	for _, it := range shipment.Items {
+		name := strings.TrimSpace(it.GoodsName)
+		if name == "" {
+			continue
+		}
+		qty := it.Quantity
+		if qty <= 0 {
+			qty = 1
+		}
+		cargos = append(cargos, sf.CargoDetail{Name: name, Count: qty})
+	}
 
 	client := sf.NewClient(carrier.PartnerID, carrier.Checkword, carrier.Env)
 	orderID := shipmentOrderID(shipment.ID)
 	result, err := client.CreateOrder(ctx, sf.CreateOrderRequest{
-		OrderID:     orderID,
-		UseMonthly:  shipment.UseMonthly,
-		CustID:      shipment.CustID,
-		ExpressType: shipment.ExpressType,
-		PayMethod:   shipment.PayMethod,
-		ParcelQty:   shipment.ParcelQty,
-		CargoName:   shipment.CargoName,
+		OrderID:      orderID,
+		UseMonthly:   shipment.UseMonthly,
+		CustID:       shipment.CustID,
+		ExpressType:  shipment.ExpressType,
+		PayMethod:    shipment.PayMethod,
+		ParcelQty:    shipment.ParcelQty,
+		CargoName:    shipment.CargoName,
+		CargoDetails: cargos,
+		Remark:       shipment.Remark,
+		TotalWeight:  shipment.TotalWeight,
 		Shipper: sf.ContactInfo{
 			ContactType: 1,
 			Contact:     shipment.ShipperName,
@@ -249,15 +293,37 @@ func (s *ShipmentService) CreateWaybill(ctx context.Context, token string, id ui
 	shipment.MailNo = result.MailNo
 	shipment.Status = model.ShipmentStatusCreated
 	shipment.ErrorMessage = ""
+
+	// 下单成功后尽量取云打印面单（同步 PDF，供本机打印）
+	if printRes, printErr := client.CloudPrint(ctx, shipment.MailNo, carrier.PartnerID); printErr == nil && printRes != nil {
+		shipment.LabelURL = printRes.LabelURL
+		shipment.LabelToken = printRes.LabelToken
+		shipment.LabelData = printRes.LabelData
+		if shipment.LabelURL != "" && !strings.HasPrefix(shipment.LabelURL, "sf://") {
+			shipment.Status = model.ShipmentStatusPrinted
+		}
+	}
+
 	if err := s.db().Save(shipment).Error; err != nil {
 		return nil, err
 	}
 
 	if shipment.OrderCoreOrderID > 0 && shipment.MailNo != "" {
-		_ = s.shipOrderCore(ctx, token, shipment.OrderCoreOrderID, "顺丰", shipment.MailNo)
+		if err := s.shipOrderCore(ctx, token, shipment.OrderCoreOrderID, "顺丰", shipment.MailNo); err != nil {
+			return nil, fmt.Errorf("运单已出(%s)，回写订单中心失败: %w", shipment.MailNo, err)
+		}
 	}
 
 	return s.Get(shipment.ID)
+}
+
+func firstNonEmptyTrim(values ...string) string {
+	for _, v := range values {
+		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 func (s *ShipmentService) Print(ctx context.Context, id uint64) (*model.Shipment, error) {
@@ -280,6 +346,7 @@ func (s *ShipmentService) Print(ctx context.Context, id uint64) (*model.Shipment
 	result, _ := client.CloudPrint(ctx, shipment.MailNo, carrier.PartnerID)
 	if result != nil {
 		shipment.LabelURL = result.LabelURL
+		shipment.LabelToken = result.LabelToken
 		shipment.LabelData = result.LabelData
 	}
 	if shipment.Status == model.ShipmentStatusCreated || shipment.Status == model.ShipmentStatusFailed {
@@ -289,6 +356,50 @@ func (s *ShipmentService) Print(ctx context.Context, id uint64) (*model.Shipment
 		return nil, err
 	}
 	return s.Get(shipment.ID)
+}
+
+// FetchLabelPDF 代理下载顺丰云打印 PDF（带 token），供浏览器/本机打印组件打开。
+func (s *ShipmentService) FetchLabelPDF(ctx context.Context, id uint64) ([]byte, string, error) {
+	shipment, err := s.Get(id)
+	if err != nil {
+		return nil, "", err
+	}
+	if shipment.MailNo == "" {
+		return nil, "", fmt.Errorf("%w: waybill not created", ErrBadRequest)
+	}
+	carrier, err := s.carrier.GetRaw(shipment.CarrierAccountID)
+	if err != nil {
+		return nil, "", err
+	}
+	client := sf.NewClient(carrier.PartnerID, carrier.Checkword, carrier.Env)
+
+	labelURL := strings.TrimSpace(shipment.LabelURL)
+	labelToken := strings.TrimSpace(shipment.LabelToken)
+	if labelURL == "" || strings.HasPrefix(labelURL, "sf://") {
+		printRes, err := client.CloudPrint(ctx, shipment.MailNo, carrier.PartnerID)
+		if err != nil {
+			return nil, "", err
+		}
+		if printRes == nil || strings.TrimSpace(printRes.LabelURL) == "" || strings.HasPrefix(printRes.LabelURL, "sf://") {
+			return nil, "", fmt.Errorf("云打印未返回可用面单，请检查丰桥模板编码/权限")
+		}
+		labelURL = printRes.LabelURL
+		labelToken = printRes.LabelToken
+		shipment.LabelURL = labelURL
+		shipment.LabelToken = labelToken
+		shipment.LabelData = printRes.LabelData
+		if shipment.Status == model.ShipmentStatusCreated || shipment.Status == model.ShipmentStatusFailed {
+			shipment.Status = model.ShipmentStatusPrinted
+		}
+		_ = s.db().Save(shipment).Error
+	}
+
+	pdf, err := client.DownloadLabelPDF(ctx, labelURL, labelToken)
+	if err != nil {
+		return nil, "", err
+	}
+	filename := "sf-" + shipment.MailNo + ".pdf"
+	return pdf, filename, nil
 }
 
 func (s *ShipmentService) Cancel(ctx context.Context, id uint64) (*model.Shipment, error) {

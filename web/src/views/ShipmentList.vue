@@ -86,8 +86,17 @@ async function withAction(id: number, action: string, fn: () => Promise<Shipment
 }
 
 async function printRow(row: Shipment) {
-  const updated = await withAction(row.id, 'print', () => shippingApi.printShipment(row.id))
-  if (updated.labelUrl) window.open(updated.labelUrl, '_blank')
+  await withAction(row.id, 'print', async () => {
+    await shippingApi.printShipment(row.id)
+    const blobUrl = await shippingApi.fetchShipmentLabelBlob(row.id)
+    const win = window.open(blobUrl, '_blank')
+    if (!win) {
+      URL.revokeObjectURL(blobUrl)
+      throw new Error('浏览器拦截了弹窗，请允许后重试')
+    }
+    window.setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000)
+    return shippingApi.getShipment(row.id)
+  })
 }
 
 async function cancelRow(row: Shipment) {

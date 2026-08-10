@@ -34,7 +34,20 @@ const shipForm = reactive({
   carrierAccountId: undefined as number | undefined,
   shipperProfileId: undefined as number | undefined,
   useMonthly: false,
+  expressType: '2',
+  payMethod: 1,
+  remark: '',
+  totalWeight: undefined as number | undefined,
 })
+const sfExpressTypeOptions = [
+  { value: '1', label: '1 · 顺丰特快' },
+  { value: '2', label: '2 · 顺丰标快' },
+  { value: '6', label: '6 · 顺丰即日' },
+]
+const sfPayMethodOptions = [
+  { value: 1, label: '寄方付' },
+  { value: 2, label: '收方付（到付）' },
+]
 const shipResult = ref<{ mailNo: string; labelUrl?: string; shipmentId?: number } | null>(null)
 const kdzsExpressCompany = ref('')
 const kdzsExpressRows = ref<{ order: OMSOrder; expressNo: string }[]>([])
@@ -266,7 +279,7 @@ function omsOrderToSnapshot(order: OMSOrder): OrderSnapshot {
   return {
     platform: order.platform || '',
     shopId: order.shopId || '',
-    sysTid: order.platformSysTid || '',
+    sysTid: order.platformSysTid || order.platformOrderId || order.orderNo || '',
     sourceTid: order.platformOrderId || order.orderNo,
     receiverName: addr?.name || order.buyerName || '',
     receiverMobile: addr?.phone || order.buyerPhone || '',
@@ -304,6 +317,10 @@ function prepareShipDialog(orders: OMSOrder[], preferredMode?: PrintMode) {
   shipForm.carrierAccountId = defaultCarrier?.id
   shipForm.shipperProfileId = defaultShipper?.id
   shipForm.useMonthly = defaultCarrier?.useMonthly ?? false
+  shipForm.expressType = defaultCarrier?.expressType || '2'
+  shipForm.payMethod = 1
+  shipForm.remark = ''
+  shipForm.totalWeight = undefined
 
   const tpls = allTemplates.value.filter(
     (t) => t.enabled !== false && t.platform === templatePlatformGroup(orders[0]),
@@ -381,7 +398,9 @@ function openBatchShipDialog() {
 
 function onCarrierChange(id: number | undefined) {
   const carrier = carrierAccounts.value.find((c) => c.id === id)
-  if (carrier) shipForm.useMonthly = carrier.useMonthly
+  if (!carrier) return
+  shipForm.useMonthly = carrier.useMonthly
+  shipForm.expressType = carrier.expressType || '2'
 }
 
 function onPrintModeChange() {
@@ -509,11 +528,23 @@ async function submitShip() {
       carrierAccountId: shipForm.carrierAccountId,
       shipperProfileId: shipForm.shipperProfileId,
       useMonthly: shipForm.useMonthly,
+      expressType: shipForm.expressType || undefined,
+      payMethod: shipForm.payMethod || undefined,
+      remark: shipForm.remark.trim() || undefined,
+      totalWeight: shipForm.totalWeight && shipForm.totalWeight > 0 ? shipForm.totalWeight : undefined,
       orderId: order.id,
       sourceSystem: 'ordercore',
       order: omsOrderToSnapshot(order),
     })
-    const waybill = await shippingApi.createShipmentWaybill(shipment.id)
+    let waybill = await shippingApi.createShipmentWaybill(shipment.id)
+    // 若下单未带回可用面单，再补一次云打印
+    if (waybill.id && (!waybill.labelUrl || waybill.labelUrl.startsWith('sf://'))) {
+      try {
+        waybill = await shippingApi.printShipment(waybill.id)
+      } catch {
+        /* 面单失败不阻断运单号展示 */
+      }
+    }
     shipResult.value = {
       mailNo: waybill.mailNo,
       labelUrl: waybill.labelUrl,
@@ -521,6 +552,10 @@ async function submitShip() {
     }
     ElMessage.success(`打单成功，运单号：${waybill.mailNo}`)
     await loadOmsOrders()
+    // 自动打开本地面单，便于系统打印机/顺丰打印组件出纸
+    if (waybill.id) {
+      void printResult()
+    }
   } catch (e) {
     ElMessage.error((e as Error).message || '打单失败')
   } finally {
@@ -566,12 +601,18 @@ async function submitKdzsConfirm() {
 async function printResult() {
   if (!shipResult.value?.shipmentId) return
   try {
-    const updated = await shippingApi.printShipment(shipResult.value.shipmentId)
-    if (updated.labelUrl) {
-      window.open(updated.labelUrl, '_blank')
-    } else {
-      ElMessage.info('暂无面单链接')
+    // 先刷新云打印凭证，再走本机 PDF（浏览器打开后可用系统打印机/顺丰打印组件）
+    await shippingApi.printShipment(shipResult.value.shipmentId)
+    const blobUrl = await shippingApi.fetchShipmentLabelBlob(shipResult.value.shipmentId)
+    const win = window.open(blobUrl, '_blank')
+    if (!win) {
+      ElMessage.warning('浏览器拦截了弹窗，请允许后重试')
+      URL.revokeObjectURL(blobUrl)
+      return
     }
+    // 延迟释放，给新窗口加载时间
+    window.setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000)
+    ElMessage.success('已打开面单，可在打印对话框选择本机打印机或顺丰打印组件')
   } catch (e) {
     ElMessage.error((e as Error).message || '打印失败')
   }
@@ -761,8 +802,41 @@ onMounted(async () => {
                 />
               </el-select>
             </el-form-item>
+            <el-form-item label="快件类型">
+              <el-select v-model="shipForm.expressType" style="width: 100%">
+                <el-option
+                  v-for="opt in sfExpressTypeOptions"
+                  :key="opt.value"
+                  :label="opt.label"
+                  :value="opt.value"
+                />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="付款方式">
+              <el-select v-model="shipForm.payMethod" style="width: 100%">
+                <el-option
+                  v-for="opt in sfPayMethodOptions"
+                  :key="opt.value"
+                  :label="opt.label"
+                  :value="opt.value"
+                />
+              </el-select>
+            </el-form-item>
             <el-form-item label="月结">
               <el-switch v-model="shipForm.useMonthly" />
+            </el-form-item>
+            <el-form-item label="重量(kg)">
+              <el-input-number
+                v-model="shipForm.totalWeight"
+                :min="0"
+                :precision="3"
+                :step="0.1"
+                controls-position="right"
+                style="width: 100%"
+              />
+            </el-form-item>
+            <el-form-item label="寄件备注">
+              <el-input v-model="shipForm.remark" type="textarea" :rows="2" placeholder="可选，同步到顺丰下单备注" />
             </el-form-item>
           </template>
         </el-form>
@@ -772,7 +846,7 @@ onMounted(async () => {
             运单号：<strong>{{ shipResult.mailNo }}</strong>
           </template>
           <template #extra>
-            <el-button type="primary" @click="printResult">打开面单</el-button>
+            <el-button type="primary" @click="printResult">本机打印面单</el-button>
           </template>
         </el-result>
       </template>

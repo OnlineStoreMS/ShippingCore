@@ -60,19 +60,23 @@ type ContactInfo struct {
 }
 
 type CargoDetail struct {
-	Name string `json:"name"`
+	Name  string `json:"name"`
+	Count int    `json:"count,omitempty"`
 }
 
 type CreateOrderRequest struct {
-	OrderID       string
-	UseMonthly    bool
-	CustID        string
-	ExpressType   string
-	PayMethod     int
-	ParcelQty     int
-	CargoName     string
-	Shipper       ContactInfo
-	Receiver      ContactInfo
+	OrderID      string
+	UseMonthly   bool
+	CustID       string
+	ExpressType  string
+	PayMethod    int
+	ParcelQty    int
+	CargoName    string
+	CargoDetails []CargoDetail
+	Remark       string
+	TotalWeight  float64 // kg, optional
+	Shipper      ContactInfo
+	Receiver     ContactInfo
 }
 
 type CreateOrderResult struct {
@@ -82,9 +86,10 @@ type CreateOrderResult struct {
 }
 
 type PrintResult struct {
-	LabelURL  string
-	LabelData string
-	Raw       json.RawMessage
+	LabelURL   string
+	LabelToken string // 下载 PDF 时请求头 X-Auth-token
+	LabelData  string
+	Raw        json.RawMessage
 }
 
 func ComputeMsgDigest(msgData, timestamp, checkword string) string {
@@ -106,14 +111,12 @@ func (c *Client) CreateOrder(ctx context.Context, req CreateOrderRequest) (*Crea
 	if req.ExpressType == "" {
 		req.ExpressType = "2"
 	}
-	if req.CargoName == "" {
-		req.CargoName = "商品"
-	}
+	cargos := normalizeCargoDetails(req.CargoDetails, req.CargoName)
 
 	payload := map[string]interface{}{
 		"language":        "zh-CN",
 		"orderId":         req.OrderID,
-		"cargoDetails":    []CargoDetail{{Name: req.CargoName}},
+		"cargoDetails":    cargos,
 		"contactInfoList": []ContactInfo{req.Shipper, req.Receiver},
 		"expressTypeId":   mustInt(req.ExpressType, 2),
 		"payMethod":       req.PayMethod,
@@ -121,6 +124,12 @@ func (c *Client) CreateOrder(ctx context.Context, req CreateOrderRequest) (*Crea
 	}
 	if req.UseMonthly && req.CustID != "" {
 		payload["monthlyCard"] = req.CustID
+	}
+	if remark := strings.TrimSpace(req.Remark); remark != "" {
+		payload["remark"] = remark
+	}
+	if req.TotalWeight > 0 {
+		payload["totalWeight"] = req.TotalWeight
 	}
 
 	var apiResp apiEnvelope
@@ -189,6 +198,7 @@ func (c *Client) CloudPrint(ctx context.Context, mailNo, partnerID string) (*Pri
 		partnerID = c.partnerID
 	}
 
+	// sync=true 直接返回 PDF url+token，便于本机打开/打印（含顺丰打印组件或系统打印机）
 	payload := map[string]interface{}{
 		"templateCode": "fm_76130_standard_" + partnerID,
 		"documents": []map[string]interface{}{
@@ -196,7 +206,9 @@ func (c *Client) CloudPrint(ctx context.Context, mailNo, partnerID string) (*Pri
 				"masterWaybillNo": mailNo,
 			},
 		},
-		"version": "2.0",
+		"version":  "2.0",
+		"fileType": "pdf",
+		"sync":     true,
 	}
 
 	var apiResp apiEnvelope
@@ -225,17 +237,46 @@ func (c *Client) CloudPrint(ctx context.Context, mailNo, partnerID string) (*Pri
 		}, nil
 	}
 
-	labelURL := firstNonEmpty(result.MsgData.URL, result.MsgData.FileURL)
+	labelURL, labelToken := extractPrintFile(result)
 	labelData := firstNonEmpty(result.MsgData.File, result.MsgData.PrintData)
 	if labelURL == "" {
 		labelURL = placeholderLabelURL(mailNo)
 	}
 	raw, _ := json.Marshal(result.MsgData)
 	return &PrintResult{
-		LabelURL:  labelURL,
-		LabelData: labelData,
-		Raw:       raw,
+		LabelURL:   labelURL,
+		LabelToken: labelToken,
+		LabelData:  labelData,
+		Raw:        raw,
 	}, nil
+}
+
+// DownloadLabelPDF 使用云打印返回的 url+token 拉取 PDF 字节（本机打印用）。
+func (c *Client) DownloadLabelPDF(ctx context.Context, fileURL, token string) ([]byte, error) {
+	fileURL = strings.TrimSpace(fileURL)
+	if fileURL == "" {
+		return nil, fmt.Errorf("label url is required")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fileURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	if t := strings.TrimSpace(token); t != "" {
+		req.Header.Set("X-Auth-token", t)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("download label: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 400 {
+		return nil, fmt.Errorf("download label http %d: %s", resp.StatusCode, truncate(string(body), 256))
+	}
+	return body, nil
 }
 
 func placeholderLabelURL(mailNo string) string {
@@ -271,16 +312,42 @@ type createOrderMsgData struct {
 	} `json:"msgData"`
 }
 
+type printFileItem struct {
+	URL   string `json:"url"`
+	Token string `json:"token"`
+}
+
 type printMsgData struct {
 	Success   bool   `json:"success"`
 	ErrorCode string `json:"errorCode"`
 	ErrorMsg  string `json:"errorMsg"`
 	MsgData   struct {
-		URL       string `json:"url"`
-		FileURL   string `json:"fileUrl"`
-		File      string `json:"file"`
-		PrintData string `json:"printData"`
+		URL       string          `json:"url"`
+		FileURL   string          `json:"fileUrl"`
+		File      string          `json:"file"`
+		PrintData string          `json:"printData"`
+		Files     []printFileItem `json:"files"`
+		Obj       *struct {
+			Files []printFileItem `json:"files"`
+		} `json:"obj"`
 	} `json:"msgData"`
+}
+
+func extractPrintFile(result printMsgData) (url, token string) {
+	url = firstNonEmpty(result.MsgData.URL, result.MsgData.FileURL)
+	if len(result.MsgData.Files) > 0 {
+		f := result.MsgData.Files[0]
+		url = firstNonEmpty(f.URL, url)
+		token = strings.TrimSpace(f.Token)
+	}
+	if result.MsgData.Obj != nil && len(result.MsgData.Obj.Files) > 0 {
+		f := result.MsgData.Obj.Files[0]
+		url = firstNonEmpty(f.URL, url)
+		if token == "" {
+			token = strings.TrimSpace(f.Token)
+		}
+	}
+	return url, token
 }
 
 func firstWaybillNo(items []struct {
@@ -348,6 +415,29 @@ func (c *Client) call(ctx context.Context, serviceCode string, payload interface
 		return fmt.Errorf("sf response decode: %w", err)
 	}
 	return nil
+}
+
+func normalizeCargoDetails(details []CargoDetail, cargoName string) []CargoDetail {
+	out := make([]CargoDetail, 0, len(details))
+	for _, d := range details {
+		name := strings.TrimSpace(d.Name)
+		if name == "" {
+			continue
+		}
+		count := d.Count
+		if count <= 0 {
+			count = 1
+		}
+		out = append(out, CargoDetail{Name: name, Count: count})
+	}
+	if len(out) == 0 {
+		name := strings.TrimSpace(cargoName)
+		if name == "" {
+			name = "商品"
+		}
+		out = append(out, CargoDetail{Name: name, Count: 1})
+	}
+	return out
 }
 
 func mustInt(s string, fallback int) int {

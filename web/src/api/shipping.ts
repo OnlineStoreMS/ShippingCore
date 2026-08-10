@@ -53,6 +53,10 @@ export interface CreateShipmentFromOrderInput {
   carrierAccountId: number
   shipperProfileId: number
   useMonthly?: boolean
+  expressType?: string
+  payMethod?: number
+  remark?: string
+  totalWeight?: number
   orderId?: number
   sourceSystem?: 'ordercore' | 'storesyncagent'
   order: OrderSnapshot
@@ -321,6 +325,26 @@ export const shippingApi = {
     client.post(`/shipments/${id}/create-waybill`).then((r) => unwrap<Shipment>(r)),
   printShipment: (id: number) =>
     client.post(`/shipments/${id}/print`).then((r) => unwrap<Shipment>(r)),
+  /** 拉取本地面单 PDF（带鉴权），返回 blob URL，调用方用完应 URL.revokeObjectURL */
+  fetchShipmentLabelBlob: async (id: number): Promise<string> => {
+    const res = await client.get(`/shipments/${id}/label`, { responseType: 'blob' })
+    const blob = res.data as Blob
+    if (!blob || blob.size === 0) {
+      throw new Error('面单 PDF 为空')
+    }
+    const ctype = (blob.type || '').toLowerCase()
+    if (ctype.includes('json') || ctype.includes('text')) {
+      const text = await blob.text()
+      try {
+        const j = JSON.parse(text) as { message?: string }
+        throw new Error(j.message || '获取面单失败')
+      } catch (e) {
+        if (e instanceof SyntaxError) throw new Error(text.slice(0, 200) || '获取面单失败')
+        throw e
+      }
+    }
+    return URL.createObjectURL(new Blob([blob], { type: 'application/pdf' }))
+  },
   cancelShipment: (id: number) =>
     client.post(`/shipments/${id}/cancel`).then((r) => unwrap<Shipment>(r)),
 
@@ -349,7 +373,9 @@ export const shippingApi = {
     client.post('/kdzs/accounts/switch', { accountId }),
 
   syncKdzsPrintAssets: () =>
-    client.post('/sync/kdzs-print-assets').then((r) => unwrap<{ auths: number; templates: number }>(r)),
+    client.post('/sync/kdzs-print-assets').then((r) =>
+      unwrap<{ auths: number; templates: number; authsDeleted?: number; templatesDeleted?: number }>(r),
+    ),
   listExpressTemplates: (params?: Record<string, unknown>) =>
     page<ExpressTemplate>('/express-templates', params),
   listWaybillAuths: (params?: Record<string, unknown>) =>
