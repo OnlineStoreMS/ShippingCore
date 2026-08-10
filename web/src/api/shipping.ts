@@ -9,11 +9,37 @@ export interface CarrierAccount {
   useMonthly: boolean
   custId: string
   expressType: string
-  /** 丰桥云打印模板编码，如 fm_76130_standard_XXXX（非客户编码） */
+  /** 丰桥云打印标准模板编码，如 fm_76130_standard_XXXX（非客户编码） */
   templateCode: string
+  /** 自定义区模板编码，如 fm_76130_standard_custom_…；也可把自定义整码填到 templateCode */
+  customTemplateCode?: string
+  /** 丰桥数字签名方式：standard | simple | sm3 */
+  signMode: string
+  /** 云打印通道：pdf=转PDF接口；plugin=打印插件接口 PARSEDDATA */
+  printChannel: string
   env: string
   enabled: boolean
   remark: string
+}
+
+export interface SFPrintPluginData {
+  partnerId: string
+  env: string
+  templateCode: string
+  mailNo: string
+  requestId?: string
+  /** 丰桥 OAuth2 accessToken，供 SCPPrint.print 使用（约 2h） */
+  accessToken?: string
+  fileType?: string
+  obj?: unknown
+  files?: unknown
+  parsedDataError?: string
+  sdkPrintData?: {
+    requestID: string
+    accessToken?: string
+    templateCode: string
+    documents: Array<{ masterWaybillNo: string }>
+  }
 }
 
 export interface ShipperProfile {
@@ -58,7 +84,17 @@ export interface CreateShipmentFromOrderInput {
   expressType?: string
   payMethod?: number
   remark?: string
+  courierNote?: string
+  remarkImages?: string[]
+  cargoName?: string
+  parcelQty?: number
+  cargoCount?: number
   totalWeight?: number
+  lengthCm?: number
+  widthCm?: number
+  heightCm?: number
+  totalVolume?: number
+  pickupMode?: 'self' | 'appoint'
   orderId?: number
   sourceSystem?: 'ordercore' | 'storesyncagent'
   order: OrderSnapshot
@@ -327,8 +363,11 @@ export const shippingApi = {
     client.post(`/shipments/${id}/create-waybill`).then((r) => unwrap<Shipment>(r)),
   printShipment: (id: number) =>
     client.post(`/shipments/${id}/print`).then((r) => unwrap<Shipment>(r)),
-  /** 拉取本地面单 PDF（带鉴权），返回 blob URL，调用方用完应 URL.revokeObjectURL */
-  fetchShipmentLabelBlob: async (id: number): Promise<string> => {
+  /** 云打印插件数据 COM_RECE_CLOUD_PRINT_PARSEDDATA */
+  fetchShipmentPrintPluginData: (id: number) =>
+    client.get(`/shipments/${id}/print-plugin-data`).then((r) => unwrap<SFPrintPluginData>(r)),
+  /** 拉取本地面单 PDF Blob（带鉴权） */
+  fetchShipmentLabelFile: async (id: number): Promise<Blob> => {
     const res = await client.get(`/shipments/${id}/label`, { responseType: 'blob' })
     const blob = res.data as Blob
     if (!blob || blob.size === 0) {
@@ -345,7 +384,13 @@ export const shippingApi = {
         throw e
       }
     }
-    return URL.createObjectURL(new Blob([blob], { type: 'application/pdf' }))
+    // 部分浏览器 blob.type 为空，统一标成 pdf
+    return blob.type ? blob : new Blob([blob], { type: 'application/pdf' })
+  },
+  /** 拉取本地面单 PDF（带鉴权），返回 blob URL，调用方用完应 URL.revokeObjectURL */
+  fetchShipmentLabelBlob: async (id: number): Promise<string> => {
+    const blob = await shippingApi.fetchShipmentLabelFile(id)
+    return URL.createObjectURL(blob)
   },
   cancelShipment: (id: number) =>
     client.post(`/shipments/${id}/cancel`).then((r) => unwrap<Shipment>(r)),

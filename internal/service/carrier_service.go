@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"shippingcore/internal/carrier/sf"
 	"shippingcore/internal/dto"
 	"shippingcore/internal/model"
 	"shippingcore/internal/repo"
@@ -103,6 +104,8 @@ func (s *CarrierService) Create(in *dto.CarrierAccountDTO) (*model.CarrierAccoun
 	if item.ExpressType == "" {
 		item.ExpressType = "2"
 	}
+	item.SignMode = sf.NormalizeSignMode(item.SignMode)
+	item.PrintChannel = normalizePrintChannel(item.PrintChannel)
 	if item.Env == "" {
 		item.Env = model.CarrierEnvSandbox
 	}
@@ -142,6 +145,13 @@ func (s *CarrierService) Update(id uint64, in *dto.CarrierAccountDTO) (*model.Ca
 	}
 	// 允许清空后重填；空字符串表示未配置
 	item.TemplateCode = strings.TrimSpace(in.TemplateCode)
+	item.CustomTemplateCode = strings.TrimSpace(in.CustomTemplateCode)
+	if in.SignMode != "" {
+		item.SignMode = sf.NormalizeSignMode(in.SignMode)
+	}
+	if in.PrintChannel != "" {
+		item.PrintChannel = normalizePrintChannel(in.PrintChannel)
+	}
 	if in.Env != "" {
 		item.Env = in.Env
 	}
@@ -190,11 +200,23 @@ func dtoToCarrierAccount(in *dto.CarrierAccountDTO) model.CarrierAccount {
 		Checkword:    strings.TrimSpace(in.Checkword),
 		UseMonthly:   in.UseMonthly,
 		CustID:       strings.TrimSpace(in.CustID),
-		ExpressType:  in.ExpressType,
-		TemplateCode: strings.TrimSpace(in.TemplateCode),
-		Env:          in.Env,
-		Enabled:      in.Enabled,
-		Remark:       in.Remark,
+		ExpressType:        in.ExpressType,
+		TemplateCode:       strings.TrimSpace(in.TemplateCode),
+		CustomTemplateCode: strings.TrimSpace(in.CustomTemplateCode),
+		SignMode:           sf.NormalizeSignMode(in.SignMode),
+		PrintChannel:       normalizePrintChannel(in.PrintChannel),
+		Env:                in.Env,
+		Enabled:            in.Enabled,
+		Remark:             in.Remark,
+	}
+}
+
+func normalizePrintChannel(ch string) string {
+	switch strings.ToLower(strings.TrimSpace(ch)) {
+	case "plugin", "parsed", "parseddata", "scp":
+		return "plugin"
+	default:
+		return "pdf"
 	}
 }
 

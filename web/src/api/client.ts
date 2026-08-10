@@ -31,14 +31,38 @@ client.interceptors.request.use((config) => {
 
 client.interceptors.response.use(
   (res) => {
+    // blob/arraybuffer（如面单 PDF）不是统一 JSON 包，不能按 code 校验
+    const rt = res.config.responseType
+    if (rt === 'blob' || rt === 'arraybuffer') {
+      return res
+    }
+    if (typeof Blob !== 'undefined' && res.data instanceof Blob) {
+      return res
+    }
     const body = res.data as ApiResponse
-    if (body.code !== 200) {
+    if (body && typeof body === 'object' && 'code' in body && body.code !== 200) {
       return Promise.reject(new Error(body.message || '请求失败'))
     }
     return res
   },
   async (err) => {
-    const cfg = err.config as { _retry?: boolean; headers?: Record<string, string> } | undefined
+    const cfg = err.config as {
+      _retry?: boolean
+      headers?: Record<string, string>
+      responseType?: string
+    } | undefined
+    // blob 错误体常是 JSON，尽量还原 message
+    if (cfg?.responseType === 'blob' && err.response?.data instanceof Blob) {
+      try {
+        const text = await (err.response.data as Blob).text()
+        const j = JSON.parse(text) as ApiResponse
+        if (j?.message) {
+          return Promise.reject(new Error(j.message))
+        }
+      } catch {
+        /* ignore */
+      }
+    }
     if (err.response?.status === 401 && cfg && !cfg._retry) {
       const ok = await tryRefreshAccessToken()
       if (ok) {
@@ -47,8 +71,6 @@ client.interceptors.response.use(
         if (token && cfg.headers) cfg.headers.Authorization = `Bearer ${token}`
         return client.request(cfg as any)
       }
-      clearToken()
-      redirectToPortal()
     } else if (err.response?.status === 401) {
       clearToken()
       redirectToPortal()

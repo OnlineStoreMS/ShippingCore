@@ -40,6 +40,18 @@ const router = createRouter({
           meta: { title: '发货单' },
         },
         {
+          path: 'sf-order',
+          name: 'SFOrderPrint',
+          component: () => import('../views/SFOrderPrint.vue'),
+          meta: { title: '顺丰标准寄件' },
+        },
+        {
+          path: 'clodop',
+          name: 'CLodopService',
+          component: () => import('../views/CLodopService.vue'),
+          meta: { title: 'C-Lodop 云打印' },
+        },
+        {
           path: 'carrier-accounts',
           name: 'CarrierAccounts',
           component: () => import('../views/CarrierAccountList.vue'),

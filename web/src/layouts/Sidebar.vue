@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Document, Setting, User, Van, Key, Tickets, Connection, Box } from '@element-plus/icons-vue'
+import { Document, Setting, User, Van, Key, Tickets, Connection, Box, Printer, Promotion } from '@element-plus/icons-vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -9,9 +9,15 @@ const collapsed = defineModel<boolean>('collapsed', { default: false })
 
 const activeMenu = computed(() => route.path)
 const logoText = computed(() => (collapsed.value ? '发' : '发货中心'))
-const kdzsOpen = computed(() =>
-  ['/kdzs-accounts', '/waybill-auths', '/express-templates'].includes(route.path) ? ['kdzs'] : [],
-)
+const defaultOpeneds = computed(() => {
+  const open: string[] = []
+  if (route.path === '/sf-order') open.push('quick-ship')
+  if (route.path === '/clodop') open.push('printer-mgmt')
+  if (['/kdzs-accounts', '/waybill-auths', '/express-templates'].includes(route.path)) {
+    open.push('kdzs')
+  }
+  return open
+})
 
 function navigate(path: string) {
   router.push(path)
@@ -23,7 +29,7 @@ function navigate(path: string) {
     <div class="logo">{{ logoText }}</div>
     <el-menu
       :default-active="activeMenu"
-      :default-openeds="kdzsOpen"
+      :default-openeds="defaultOpeneds"
       :collapse="collapsed"
       background-color="#001529"
       text-color="#ffffffa6"
@@ -35,6 +41,23 @@ function navigate(path: string) {
       <el-menu-item index="/shipments" @click="navigate('/shipments')">
         <el-icon><Van /></el-icon><span>发货单</span>
       </el-menu-item>
+      <el-sub-menu index="quick-ship">
+        <template #title>
+          <el-icon><Promotion /></el-icon><span>快速寄件</span>
+        </template>
+        <el-menu-item index="/sf-order" @click="navigate('/sf-order')">
+          <span>顺丰标准寄件</span>
+        </el-menu-item>
+      </el-sub-menu>
+
+      <el-sub-menu index="printer-mgmt">
+        <template #title>
+          <el-icon><Printer /></el-icon><span>打印机管理</span>
+        </template>
+        <el-menu-item index="/clodop" @click="navigate('/clodop')">
+          <span>C-Lodop 云打印</span>
+        </el-menu-item>
+      </el-sub-menu>
 
       <el-sub-menu index="kdzs">
         <template #title>

@@ -9,7 +9,10 @@ type CarrierAccountDTO struct {
 	UseMonthly   bool   `json:"useMonthly"`
 	CustID       string `json:"custId"`
 	ExpressType  string `json:"expressType"`
-	TemplateCode string `json:"templateCode"`
+	TemplateCode       string `json:"templateCode"`
+	CustomTemplateCode string `json:"customTemplateCode,omitempty"`
+	SignMode           string `json:"signMode"`     // standard|simple|sm3
+	PrintChannel       string `json:"printChannel"` // pdf|plugin
 	Env          string `json:"env"`
 	Enabled      bool   `json:"enabled"`
 	Remark       string `json:"remark"`
@@ -57,7 +60,17 @@ type CreateShipmentFromOrderDTO struct {
 	ExpressType      string           `json:"expressType,omitempty"`
 	PayMethod        int              `json:"payMethod,omitempty"`
 	Remark           string           `json:"remark,omitempty"`
+	CourierNote      string           `json:"courierNote,omitempty"`
+	RemarkImages     []string         `json:"remarkImages,omitempty"`
+	CargoName        string           `json:"cargoName,omitempty"`
+	ParcelQty        int              `json:"parcelQty,omitempty"`
+	CargoCount       int              `json:"cargoCount,omitempty"`
 	TotalWeight      float64          `json:"totalWeight,omitempty"` // kg
+	LengthCM         float64          `json:"lengthCm,omitempty"`
+	WidthCM          float64          `json:"widthCm,omitempty"`
+	HeightCM         float64          `json:"heightCm,omitempty"`
+	TotalVolume      float64          `json:"totalVolume,omitempty"` // m³
+	PickupMode       string           `json:"pickupMode,omitempty"`  // self | appoint
 	OrderID          uint64           `json:"orderId,omitempty"`
 	SourceSystem     string           `json:"sourceSystem,omitempty"`
 	Order            OrderSnapshotDTO `json:"order"`

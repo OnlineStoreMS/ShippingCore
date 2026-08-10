@@ -37,6 +37,15 @@ func (h *Handlers) shipment(c *gin.Context) *service.ShipmentService {
 	return h.Shipment.ForTenant(authcontext.TenantID(c))
 }
 
+func firstQuery(c *gin.Context, keys ...string) string {
+	for _, k := range keys {
+		if v := c.Query(k); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // ── Carrier accounts ──
 
 func (h *Handlers) ListCarrierAccounts(c *gin.Context) {
@@ -199,7 +208,18 @@ func (h *Handlers) SetDefaultShipperProfile(c *gin.Context) {
 
 func (h *Handlers) ListShipments(c *gin.Context) {
 	page, pageSize := httputil.ParsePage(c)
-	list, total, err := h.shipment(c).List(c.Query("status"), c.Query("source_ref"), page, pageSize)
+	list, total, err := h.shipment(c).List(service.ShipmentListQuery{
+		Status:    c.Query("status"),
+		Keyword:   firstQuery(c, "keyword", "q"),
+		MailNo:    c.Query("mail_no"),
+		SourceRef: firstQuery(c, "source_ref", "sourceRef"),
+		SourceTid: firstQuery(c, "source_tid", "sourceTid"),
+		Receiver:  c.Query("receiver"),
+		Platform:  c.Query("platform"),
+		Goods:     firstQuery(c, "goods", "goods_name"),
+		Page:      page,
+		PageSize:  pageSize,
+	})
 	if err != nil {
 		response.Fail(c, http.StatusInternalServerError, err.Error())
 		return
@@ -279,6 +299,20 @@ func (h *Handlers) DownloadShipmentLabel(c *gin.Context) {
 	}
 	c.Header("Content-Disposition", `inline; filename="`+filename+`"`)
 	c.Data(http.StatusOK, "application/pdf", pdf)
+}
+
+func (h *Handlers) GetShipmentPrintPluginData(c *gin.Context) {
+	id, err := httputil.ParseID(c)
+	if err != nil {
+		response.Fail(c, http.StatusBadRequest, "invalid id")
+		return
+	}
+	data, err := h.shipment(c).FetchPrintPluginData(c.Request.Context(), id)
+	if err != nil {
+		httputil.HandleServiceError(c, err)
+		return
+	}
+	response.OK(c, data)
 }
 
 func (h *Handlers) CancelShipment(c *gin.Context) {

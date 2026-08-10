@@ -15,36 +15,72 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/tjfoc/gmsm/sm3"
 )
 
 const (
 	ProdURL    = "https://bspgw.sf-express.com/std/service"
 	SandboxURL = "https://sfapi-sbox.sf-express.com/std/service"
 
-	ServiceCreateOrder = "EXP_RECE_CREATE_ORDER"
-	ServiceUpdateOrder = "EXP_RECE_UPDATE_ORDER"
-	ServiceCloudPrint  = "COM_RECE_CLOUD_PRINT_WAYBILLS"
+	ServiceCreateOrder      = "EXP_RECE_CREATE_ORDER"
+	ServiceUpdateOrder      = "EXP_RECE_UPDATE_ORDER"
+	ServiceCloudPrint       = "COM_RECE_CLOUD_PRINT_WAYBILLS"   // 云打印转 PDF
+	ServiceCloudPrintParsed = "COM_RECE_CLOUD_PRINT_PARSEDDATA" // 云打印面单打印插件接口
+
+	// SignModeStandard 丰桥「标准MD5」：URLEncode → MD5 → Base64
+	SignModeStandard = "standard"
+	// SignModeSimple 丰桥「简易MD5」：MD5 → Base64（不做 URLEncode）
+	SignModeSimple = "simple"
+	// SignModeSM3 丰桥「SM3」：URLEncode → SM3 → Base64
+	SignModeSM3 = "sm3"
+
+	// SandboxMonthlyCard 沙箱联调统一月结卡号（丰桥控制台说明）
+	SandboxMonthlyCard = "7551234567"
 )
 
 type Client struct {
 	partnerID string
 	checkword string
 	baseURL   string
+	signMode  string
+	sandbox   bool
 	http      *http.Client
 }
 
 func NewClient(partnerID, checkword, env string) *Client {
+	return NewClientWithSignMode(partnerID, checkword, env, SignModeSimple)
+}
+
+func NewClientWithSignMode(partnerID, checkword, env, signMode string) *Client {
+	sandbox := true
 	baseURL := SandboxURL
 	if strings.EqualFold(env, "prod") || strings.EqualFold(env, "production") {
 		baseURL = ProdURL
+		sandbox = false
 	}
 	return &Client{
 		partnerID: strings.TrimSpace(partnerID),
 		checkword: strings.TrimSpace(checkword),
 		baseURL:   baseURL,
+		signMode:  NormalizeSignMode(signMode),
+		sandbox:   sandbox,
 		http: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+	}
+}
+
+// NormalizeSignMode 归一化丰桥数字签名方式。
+func NormalizeSignMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case SignModeStandard, "标准md5", "std", "md5":
+		return SignModeStandard
+	case SignModeSM3, "国密", "sm3-hmac":
+		return SignModeSM3
+	case SignModeSimple, "简易md5", "easy", "":
+		return SignModeSimple
+	default:
+		return SignModeSimple
 	}
 }
 
@@ -75,6 +111,11 @@ type CreateOrderRequest struct {
 	CargoDetails []CargoDetail
 	Remark       string
 	TotalWeight  float64 // kg, optional
+	TotalVolume  float64 // m³, optional
+	LengthCM     float64
+	WidthCM      float64
+	HeightCM     float64
+	IsDoCall     bool // 预约上门揽收
 	Shipper      ContactInfo
 	Receiver     ContactInfo
 }
@@ -92,13 +133,54 @@ type PrintResult struct {
 	Raw        json.RawMessage
 }
 
-// ComputeMsgDigest 丰桥签名：msgData+timestamp+checkWord → URLEncode(UTF-8) → MD5 → Base64。
-// 缺少 URLEncode 会返回「数字签名无效」。
-func ComputeMsgDigest(msgData, timestamp, checkword string) string {
+// ParsedPrintResult 云打印插件接口（COM_RECE_CLOUD_PRINT_PARSEDDATA）返回。
+type ParsedPrintResult struct {
+	RequestID    string
+	TemplateCode string
+	FileType     string
+	ClientCode   string
+	FilesJSON    json.RawMessage // obj.files
+	ObjJSON      json.RawMessage // 完整 obj，供 SCPPrint / 本地插件消费
+	Raw          json.RawMessage
+}
+
+// ComputeMsgDigest 按 mode 计算 msgDigest；mode 为空时用简易 MD5。
+func ComputeMsgDigest(msgData, timestamp, checkword, mode string) string {
+	switch NormalizeSignMode(mode) {
+	case SignModeStandard:
+		return ComputeMsgDigestStandard(msgData, timestamp, checkword)
+	case SignModeSM3:
+		return ComputeMsgDigestSM3(msgData, timestamp, checkword)
+	default:
+		return ComputeMsgDigestSimple(msgData, timestamp, checkword)
+	}
+}
+
+// ComputeMsgDigestSimple 简易MD5：msgData+timestamp+checkWord → MD5 → Base64。
+func ComputeMsgDigestSimple(msgData, timestamp, checkword string) string {
+	raw := msgData + timestamp + checkword
+	sum := md5.Sum([]byte(raw))
+	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+// ComputeMsgDigestStandard 标准MD5：msgData+timestamp+checkWord → URLEncode → MD5 → Base64。
+func ComputeMsgDigestStandard(msgData, timestamp, checkword string) string {
 	raw := msgData + timestamp + checkword
 	encoded := url.QueryEscape(raw)
 	sum := md5.Sum([]byte(encoded))
 	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+// ComputeMsgDigestSM3 SM3：msgData+timestamp+checkWord → URLEncode → SM3 → Base64。
+func ComputeMsgDigestSM3(msgData, timestamp, checkword string) string {
+	raw := msgData + timestamp + checkword
+	encoded := url.QueryEscape(raw)
+	sum := sm3.Sm3Sum([]byte(encoded))
+	return base64.StdEncoding.EncodeToString(sum)
+}
+
+func (c *Client) computeDigest(msgData, timestamp string) string {
+	return ComputeMsgDigest(msgData, timestamp, c.checkword, c.signMode)
 }
 
 func (c *Client) CreateOrder(ctx context.Context, req CreateOrderRequest) (*CreateOrderResult, error) {
@@ -125,14 +207,30 @@ func (c *Client) CreateOrder(ctx context.Context, req CreateOrderRequest) (*Crea
 		"payMethod":       req.PayMethod,
 		"parcelQty":       req.ParcelQty,
 	}
-	if req.UseMonthly && req.CustID != "" {
-		payload["monthlyCard"] = req.CustID
+	if req.UseMonthly {
+		custID := strings.TrimSpace(req.CustID)
+		if c.sandbox {
+			// 沙箱必须用统一测试月结卡，生产月结卡会在沙箱失败
+			custID = SandboxMonthlyCard
+		}
+		if custID != "" {
+			payload["monthlyCard"] = custID
+		}
 	}
 	if remark := strings.TrimSpace(req.Remark); remark != "" {
 		payload["remark"] = remark
 	}
 	if req.TotalWeight > 0 {
 		payload["totalWeight"] = req.TotalWeight
+	}
+	if req.TotalVolume > 0 {
+		payload["totalVolume"] = req.TotalVolume
+	} else if req.LengthCM > 0 && req.WidthCM > 0 && req.HeightCM > 0 {
+		// 长宽高(cm) → m³
+		payload["totalVolume"] = req.LengthCM * req.WidthCM * req.HeightCM / 1_000_000
+	}
+	if req.IsDoCall {
+		payload["isDocall"] = 1
 	}
 
 	var apiResp apiEnvelope
@@ -193,9 +291,48 @@ func (c *Client) CancelOrder(ctx context.Context, orderID, mailNo string, dealTy
 	return nil
 }
 
-// CloudPrint 调用丰桥云打印转 PDF。
-// templateCode 必须是丰桥控制台分配的完整模板编码（如 fm_76130_standard_XXXX），不是 partnerId。
-func (c *Client) CloudPrint(ctx context.Context, mailNo, templateCode string) (*PrintResult, error) {
+// PrintDocOptions 云打印 documents 扩展（自定义区备注等）。
+type PrintDocOptions struct {
+	Remark             string // 映射模板自定义区「备注」
+	CustomTemplateCode string // 已发布的自定义模板编码（与标准 templateCode 规格一致）
+}
+
+func buildPrintDocument(mailNo string, opt *PrintDocOptions) map[string]interface{} {
+	doc := map[string]interface{}{
+		"masterWaybillNo": mailNo,
+	}
+	if opt == nil {
+		return doc
+	}
+	if r := strings.TrimSpace(opt.Remark); r != "" {
+		// 自定义区「变量字段」字段名须与下列 key 之一一致（推荐 remark）
+		doc["remark"] = r
+		doc["cargoDesc"] = r
+		doc["goods"] = r
+		doc["product"] = r
+	}
+	return doc
+}
+
+func buildPrintExtJSON(opt *PrintDocOptions) map[string]interface{} {
+	if opt == nil {
+		return nil
+	}
+	r := strings.TrimSpace(opt.Remark)
+	if r == "" {
+		return nil
+	}
+	return map[string]interface{}{
+		"remark":    r,
+		"cargoDesc": r,
+		"goods":     r,
+		"product":   r,
+	}
+}
+
+// CloudPrintParsedData 调用云打印面单打印插件接口 COM_RECE_CLOUD_PRINT_PARSEDDATA。
+// 返回供顺丰云打印组件（SCPPrint）消费的 JSON 排版数据（非 PDF）。
+func (c *Client) CloudPrintParsedData(ctx context.Context, mailNo, templateCode string, opt *PrintDocOptions) (*ParsedPrintResult, error) {
 	if mailNo == "" {
 		return nil, fmt.Errorf("mailNo is required")
 	}
@@ -204,17 +341,123 @@ func (c *Client) CloudPrint(ctx context.Context, mailNo, templateCode string) (*
 		return nil, fmt.Errorf("templateCode is required: 请在物流账号配置丰桥云打印模板编码")
 	}
 
+	doc := buildPrintDocument(mailNo, opt)
+	payload := map[string]interface{}{
+		"templateCode": templateCode,
+		"documents":    []map[string]interface{}{doc},
+		"version":      "2.0",
+	}
+	customTpl := ""
+	if opt != nil {
+		customTpl = strings.TrimSpace(opt.CustomTemplateCode)
+		if customTpl != "" {
+			payload["customTemplateCode"] = customTpl
+		}
+	}
+	if ext := buildPrintExtJSON(opt); ext != nil {
+		payload["extJson"] = ext
+	}
+	if r, _ := doc["remark"].(string); r != "" {
+		log.Printf("sf cloud print parsed %s template=%s custom=%s remarkLen=%d", mailNo, templateCode, customTpl, len(r))
+	} else {
+		log.Printf("sf cloud print parsed %s template=%s custom=%s remark=EMPTY", mailNo, templateCode, customTpl)
+	}
+
+	var apiResp apiEnvelope
+	if err := c.call(ctx, ServiceCloudPrintParsed, payload, &apiResp); err != nil {
+		log.Printf("sf cloud print parsed failed for %s template=%s: %v", mailNo, templateCode, err)
+		return nil, err
+	}
+
+	var result printMsgData
+	if err := decodeResultData(apiResp, &result); err != nil {
+		return nil, err
+	}
+	if !result.Success {
+		msg := firstNonEmpty(result.ErrorMsg, result.ErrorMessage, result.ErrorCode, "unknown")
+		return nil, fmt.Errorf("sf cloud print parsed: %s (templateCode=%s)", msg, templateCode)
+	}
+	body := result.printPayload()
+	if body == nil || len(body.Files) == 0 {
+		// files 可能是 contents 结构，用通用解析兜底
+		var envelope struct {
+			Success   bool            `json:"success"`
+			RequestID string          `json:"requestId"`
+			Obj       json.RawMessage `json:"obj"`
+		}
+		rawAll, _ := json.Marshal(result)
+		_ = json.Unmarshal(rawAll, &envelope)
+		if len(envelope.Obj) == 0 {
+			return nil, fmt.Errorf("sf cloud print parsed: 未返回插件面单数据（templateCode=%s）", templateCode)
+		}
+		var objMeta struct {
+			ClientCode   string          `json:"clientCode"`
+			FileType     string          `json:"fileType"`
+			TemplateCode string          `json:"templateCode"`
+			Files        json.RawMessage `json:"files"`
+		}
+		_ = json.Unmarshal(envelope.Obj, &objMeta)
+		if len(objMeta.Files) == 0 || string(objMeta.Files) == "null" {
+			return nil, fmt.Errorf("sf cloud print parsed: 未返回 files（templateCode=%s）", templateCode)
+		}
+		return &ParsedPrintResult{
+			RequestID:    envelope.RequestID,
+			TemplateCode: firstNonEmpty(objMeta.TemplateCode, templateCode),
+			FileType:     firstNonEmpty(objMeta.FileType, "json"),
+			ClientCode:   objMeta.ClientCode,
+			FilesJSON:    objMeta.Files,
+			ObjJSON:      envelope.Obj,
+			Raw:          rawAll,
+		}, nil
+	}
+
+	raw, _ := json.Marshal(result)
+	objJSON, _ := json.Marshal(body)
+	filesJSON, _ := json.Marshal(body.Files)
+	return &ParsedPrintResult{
+		RequestID:    result.RequestID,
+		TemplateCode: templateCode,
+		FileType:     "json",
+		FilesJSON:    filesJSON,
+		ObjJSON:      objJSON,
+		Raw:          raw,
+	}, nil
+}
+
+// CloudPrint 调用丰桥云打印转 PDF。
+// templateCode 必须是丰桥控制台分配的完整模板编码（如 fm_76130_standard_XXXX），不是 partnerId。
+func (c *Client) CloudPrint(ctx context.Context, mailNo, templateCode string, opt *PrintDocOptions) (*PrintResult, error) {
+	if mailNo == "" {
+		return nil, fmt.Errorf("mailNo is required")
+	}
+	templateCode = strings.TrimSpace(templateCode)
+	if templateCode == "" {
+		return nil, fmt.Errorf("templateCode is required: 请在物流账号配置丰桥云打印模板编码")
+	}
+
+	doc := buildPrintDocument(mailNo, opt)
 	// sync=true 直接返回 PDF url+token，便于本机打开/打印（含顺丰打印组件或系统打印机）
 	payload := map[string]interface{}{
 		"templateCode": templateCode,
-		"documents": []map[string]interface{}{
-			{
-				"masterWaybillNo": mailNo,
-			},
-		},
-		"version":  "2.0",
-		"fileType": "pdf",
-		"sync":     true,
+		"documents":    []map[string]interface{}{doc},
+		"version":      "2.0",
+		"fileType":     "pdf",
+		"sync":         true,
+	}
+	customTpl := ""
+	if opt != nil {
+		customTpl = strings.TrimSpace(opt.CustomTemplateCode)
+		if customTpl != "" {
+			payload["customTemplateCode"] = customTpl
+		}
+	}
+	if ext := buildPrintExtJSON(opt); ext != nil {
+		payload["extJson"] = ext
+	}
+	if r, _ := doc["remark"].(string); r != "" {
+		log.Printf("sf cloud print %s template=%s custom=%s remarkLen=%d", mailNo, templateCode, customTpl, len(r))
+	} else {
+		log.Printf("sf cloud print %s template=%s custom=%s remark=EMPTY", mailNo, templateCode, customTpl)
 	}
 
 	var apiResp apiEnvelope
@@ -229,17 +472,23 @@ func (c *Client) CloudPrint(ctx context.Context, mailNo, templateCode string) (*
 		return nil, err
 	}
 	if !result.Success {
-		msg := firstNonEmpty(result.ErrorMsg, result.ErrorCode, "unknown")
+		msg := firstNonEmpty(result.ErrorMsg, result.ErrorMessage, result.ErrorCode, "unknown")
 		log.Printf("sf cloud print business error for %s template=%s: %s", mailNo, templateCode, msg)
 		return nil, fmt.Errorf("sf cloud print: %s (templateCode=%s)", msg, templateCode)
 	}
 
 	labelURL, labelToken := extractPrintFile(result)
 	if strings.TrimSpace(labelURL) == "" {
+		rawFail, _ := json.Marshal(result)
+		log.Printf("sf cloud print empty url for %s template=%s raw=%s", mailNo, templateCode, truncate(string(rawFail), 512))
 		return nil, fmt.Errorf("sf cloud print: 未返回 PDF url（templateCode=%s，请确认模板权限与规格）", templateCode)
 	}
-	labelData := firstNonEmpty(result.MsgData.File, result.MsgData.PrintData)
-	raw, _ := json.Marshal(result.MsgData)
+	body := result.printPayload()
+	labelData := ""
+	if body != nil {
+		labelData = firstNonEmpty(body.File, body.PrintData)
+	}
+	raw, _ := json.Marshal(result)
 	return &PrintResult{
 		LabelURL:   labelURL,
 		LabelToken: labelToken,
@@ -295,10 +544,10 @@ type createOrderMsgData struct {
 	ErrorCode string `json:"errorCode"`
 	ErrorMsg  string `json:"errorMsg"`
 	MsgData   struct {
-		OrderID   string `json:"orderId"`
-		OrderId   string `json:"orderID"`
-		MailNo    string `json:"mailNo"`
-		WaybillNo string `json:"waybillNo"`
+		OrderID           string `json:"orderId"`
+		OrderId           string `json:"orderID"`
+		MailNo            string `json:"mailNo"`
+		WaybillNo         string `json:"waybillNo"`
 		WaybillNoInfoList []struct {
 			WaybillNo string `json:"waybillNo"`
 		} `json:"waybillNoInfoList"`
@@ -310,37 +559,47 @@ type printFileItem struct {
 	Token string `json:"token"`
 }
 
-type printMsgData struct {
-	Success   bool   `json:"success"`
-	ErrorCode string `json:"errorCode"`
-	ErrorMsg  string `json:"errorMsg"`
-	MsgData   struct {
-		URL       string          `json:"url"`
-		FileURL   string          `json:"fileUrl"`
-		File      string          `json:"file"`
-		PrintData string          `json:"printData"`
-		Files     []printFileItem `json:"files"`
-		Obj       *struct {
-			Files []printFileItem `json:"files"`
-		} `json:"obj"`
-	} `json:"msgData"`
+// printPayload 丰桥云打印业务体：同步成功时 files 多在顶层 obj 下（非 msgData）。
+type printPayload struct {
+	URL       string          `json:"url"`
+	FileURL   string          `json:"fileUrl"`
+	File      string          `json:"file"`
+	PrintData string          `json:"printData"`
+	Files     []printFileItem `json:"files"`
 }
 
-func extractPrintFile(result printMsgData) (url, token string) {
-	url = firstNonEmpty(result.MsgData.URL, result.MsgData.FileURL)
-	if len(result.MsgData.Files) > 0 {
-		f := result.MsgData.Files[0]
-		url = firstNonEmpty(f.URL, url)
+type printMsgData struct {
+	Success      bool          `json:"success"`
+	ErrorCode    string        `json:"errorCode"`
+	ErrorMsg     string        `json:"errorMsg"`
+	ErrorMessage string        `json:"errorMessage"`
+	RequestID    string        `json:"requestId"`
+	Obj          *printPayload `json:"obj"`
+	MsgData      *printPayload `json:"msgData"`
+}
+
+func (r printMsgData) printPayload() *printPayload {
+	if r.Obj != nil && (len(r.Obj.Files) > 0 || strings.TrimSpace(r.Obj.URL) != "" || strings.TrimSpace(r.Obj.FileURL) != "") {
+		return r.Obj
+	}
+	if r.MsgData != nil {
+		return r.MsgData
+	}
+	return r.Obj
+}
+
+func extractPrintFile(result printMsgData) (fileURL, token string) {
+	p := result.printPayload()
+	if p == nil {
+		return "", ""
+	}
+	fileURL = firstNonEmpty(p.URL, p.FileURL)
+	if len(p.Files) > 0 {
+		f := p.Files[0]
+		fileURL = firstNonEmpty(f.URL, fileURL)
 		token = strings.TrimSpace(f.Token)
 	}
-	if result.MsgData.Obj != nil && len(result.MsgData.Obj.Files) > 0 {
-		f := result.MsgData.Obj.Files[0]
-		url = firstNonEmpty(f.URL, url)
-		if token == "" {
-			token = strings.TrimSpace(f.Token)
-		}
-	}
-	return url, token
+	return fileURL, token
 }
 
 func firstWaybillNo(items []struct {
@@ -355,6 +614,9 @@ func firstWaybillNo(items []struct {
 func decodeResultData(apiResp apiEnvelope, out interface{}) error {
 	if apiResp.APIResultCode != "" && apiResp.APIResultCode != "A1000" {
 		msg := firstNonEmpty(apiResp.APIErrorMsg, apiResp.APIResultCode)
+		if strings.Contains(msg, "数字签名") {
+			return fmt.Errorf("sf api: %s（请核对顾客编码/校验码/环境；丰桥若为「简易MD5」勿用标准 URLEncode 签名）", msg)
+		}
 		return fmt.Errorf("sf api: %s", msg)
 	}
 	if len(apiResp.APIResultData) == 0 {
@@ -375,7 +637,7 @@ func (c *Client) call(ctx context.Context, serviceCode string, payload interface
 	msgData := string(msgDataBytes)
 	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
 	requestID := uuid.NewString()
-	msgDigest := ComputeMsgDigest(msgData, timestamp, c.checkword)
+	msgDigest := c.computeDigest(msgData, timestamp)
 
 	form := url.Values{}
 	form.Set("partnerID", c.partnerID)

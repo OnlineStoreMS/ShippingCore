@@ -21,21 +21,25 @@ const (
 )
 
 type CarrierAccount struct {
-	ID          uint64    `gorm:"primaryKey" json:"id"`
-	TenantID    uint64    `gorm:"index;not null" json:"tenantId"`
-	CarrierCode string    `gorm:"size:32;not null;default:SF" json:"carrierCode"`
-	Name        string    `gorm:"size:128;not null" json:"name"`
-	PartnerID   string    `gorm:"size:64;not null" json:"partnerId"`
-	Checkword   string    `gorm:"size:128;not null" json:"checkword,omitempty"`
-	UseMonthly   bool      `gorm:"default:false" json:"useMonthly"`
-	CustID       string    `gorm:"size:64" json:"custId"`
-	ExpressType  string    `gorm:"size:16;default:2" json:"expressType"`
-	TemplateCode string    `gorm:"size:128" json:"templateCode"` // 丰桥云打印模板编码，如 fm_76130_standard_XXXX
+	ID           uint64 `gorm:"primaryKey" json:"id"`
+	TenantID     uint64 `gorm:"index;not null" json:"tenantId"`
+	CarrierCode  string `gorm:"size:32;not null;default:SF" json:"carrierCode"`
+	Name         string `gorm:"size:128;not null" json:"name"`
+	PartnerID    string `gorm:"size:64;not null" json:"partnerId"`
+	Checkword    string `gorm:"size:128;not null" json:"checkword,omitempty"`
+	UseMonthly   bool   `gorm:"default:false" json:"useMonthly"`
+	CustID       string `gorm:"size:64" json:"custId"`
+	ExpressType  string `gorm:"size:16;default:2" json:"expressType"`
+	TemplateCode       string `gorm:"size:128" json:"templateCode"`                 // 标准模板，如 fm_76130_standard_XXXX
+	CustomTemplateCode string `gorm:"size:128" json:"customTemplateCode,omitempty"` // 自定义区模板，如 fm_76130_standard_custom_…
+	SignMode           string `gorm:"size:16;default:simple" json:"signMode"`       // standard|simple|sm3，须与丰桥应用一致
+	// PrintChannel 云打印通道：pdf=COM_RECE_CLOUD_PRINT_WAYBILLS；plugin=COM_RECE_CLOUD_PRINT_PARSEDDATA
+	PrintChannel string    `gorm:"size:16;default:pdf" json:"printChannel"`
 	Env          string    `gorm:"size:16;default:sandbox" json:"env"`
 	Enabled      bool      `gorm:"default:true" json:"enabled"`
 	Remark       string    `gorm:"size:512" json:"remark"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
+	CreatedAt    time.Time `json:"createdAt"`
+	UpdatedAt    time.Time `json:"updatedAt"`
 }
 
 func (CarrierAccount) TableName() string { return "carrier_accounts" }
@@ -59,15 +63,15 @@ type ShipperProfile struct {
 func (ShipperProfile) TableName() string { return "shipper_profiles" }
 
 type Shipment struct {
-	ID               uint64    `gorm:"primaryKey" json:"id"`
-	TenantID         uint64    `gorm:"index;not null" json:"tenantId"`
-	SourceSystem     string    `gorm:"size:64;not null" json:"sourceSystem"`
-	SourceRef        string    `gorm:"size:128;index" json:"sourceRef"`
-	SourceTid        string    `gorm:"size:128" json:"sourceTid"`
-	Platform         string    `gorm:"size:64" json:"platform"`
-	ShopID           string    `gorm:"size:64" json:"shopId"`
-	CarrierAccountID uint64    `gorm:"index" json:"carrierAccountId"`
-	ShipperProfileID uint64    `gorm:"index" json:"shipperProfileId"`
+	ID               uint64 `gorm:"primaryKey" json:"id"`
+	TenantID         uint64 `gorm:"index;not null" json:"tenantId"`
+	SourceSystem     string `gorm:"size:64;not null" json:"sourceSystem"`
+	SourceRef        string `gorm:"size:128;index" json:"sourceRef"`
+	SourceTid        string `gorm:"size:128" json:"sourceTid"`
+	Platform         string `gorm:"size:64" json:"platform"`
+	ShopID           string `gorm:"size:64" json:"shopId"`
+	CarrierAccountID uint64 `gorm:"index" json:"carrierAccountId"`
+	ShipperProfileID uint64 `gorm:"index" json:"shipperProfileId"`
 
 	ReceiverName     string `gorm:"size:128" json:"receiverName"`
 	ReceiverMobile   string `gorm:"size:32" json:"receiverMobile"`
@@ -101,8 +105,16 @@ type Shipment struct {
 
 	CargoName   string  `gorm:"size:256" json:"cargoName"`
 	ParcelQty   int     `gorm:"default:1" json:"parcelQty"`
+	CargoCount  int     `gorm:"default:1" json:"cargoCount"` // 总包裹物品数
 	Remark      string  `gorm:"size:512" json:"remark,omitempty"`
+	CourierNote string  `gorm:"size:128" json:"courierNote,omitempty"` // 给快递员捎话，不印面单
+	RemarkImages string `gorm:"type:text" json:"remarkImages,omitempty"` // JSON 图片 URL 列表
 	TotalWeight float64 `gorm:"type:numeric(10,3);default:0" json:"totalWeight,omitempty"` // kg
+	LengthCM    float64 `gorm:"type:numeric(10,2);default:0" json:"lengthCm,omitempty"`
+	WidthCM     float64 `gorm:"type:numeric(10,2);default:0" json:"widthCm,omitempty"`
+	HeightCM    float64 `gorm:"type:numeric(10,2);default:0" json:"heightCm,omitempty"`
+	TotalVolume float64 `gorm:"type:numeric(12,6);default:0" json:"totalVolume,omitempty"` // m³
+	PickupMode  string  `gorm:"size:16;default:self" json:"pickupMode,omitempty"` // self | appoint
 
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
@@ -189,14 +201,14 @@ func (KdzsAccount) TableName() string { return "kdzs_accounts" }
 
 // KdzsSetting 发货中心快递助手账号偏好（可与 StoreSyncAgent 不一致）。
 type KdzsSetting struct {
-	ID                 uint64    `gorm:"primaryKey" json:"id"`
-	TenantID           uint64    `gorm:"uniqueIndex;not null" json:"tenantId"`
-	DefaultAccountCode string    `gorm:"size:64" json:"defaultAccountCode"`
-	ActiveAccountCode  string    `gorm:"size:64" json:"activeAccountCode"`
-	AutoSyncFromSSA    bool      `gorm:"not null;default:true" json:"autoSyncFromSSA"`
+	ID                 uint64     `gorm:"primaryKey" json:"id"`
+	TenantID           uint64     `gorm:"uniqueIndex;not null" json:"tenantId"`
+	DefaultAccountCode string     `gorm:"size:64" json:"defaultAccountCode"`
+	ActiveAccountCode  string     `gorm:"size:64" json:"activeAccountCode"`
+	AutoSyncFromSSA    bool       `gorm:"not null;default:true" json:"autoSyncFromSSA"`
 	LastSyncedAt       *time.Time `json:"lastSyncedAt,omitempty"`
-	CreatedAt          time.Time `json:"createdAt"`
-	UpdatedAt          time.Time `json:"updatedAt"`
+	CreatedAt          time.Time  `json:"createdAt"`
+	UpdatedAt          time.Time  `json:"updatedAt"`
 }
 
 func (KdzsSetting) TableName() string { return "kdzs_settings" }

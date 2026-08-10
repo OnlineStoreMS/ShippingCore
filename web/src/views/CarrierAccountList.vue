@@ -23,17 +23,27 @@ const envOptions = [
   { label: '生产', value: 'prod' },
 ]
 
-const expressTypeOptions = [
-  { value: '1', label: '1 · 顺丰特快' },
-  { value: '2', label: '2 · 顺丰标快' },
-  { value: '6', label: '6 · 顺丰即日' },
+const signModeOptions = [
+  { value: 'standard', label: '标准MD5', hint: '先 URLEncode，再 MD5 → Base64' },
+  { value: 'simple', label: '简易MD5', hint: '直接 MD5 → Base64（不做 URLEncode）' },
+  { value: 'sm3', label: 'SM3', hint: '先 URLEncode，再 SM3 → Base64' },
+]
+
+const printChannelOptions = [
+  { value: 'pdf', label: 'PDF 面单', hint: 'COM_RECE_CLOUD_PRINT_WAYBILLS，浏览器打开 PDF' },
+  { value: 'plugin', label: '打印插件', hint: 'COM_RECE_CLOUD_PRINT_PARSEDDATA，需本机顺丰云打印组件' },
 ]
 
 const isSF = computed(() => form.value.carrierCode === 'SF')
 
-function expressTypeLabel(code?: string) {
-  const hit = expressTypeOptions.find((o) => o.value === code)
-  return hit?.label || code || '-'
+function signModeLabel(code?: string) {
+  const hit = signModeOptions.find((o) => o.value === code)
+  return hit?.label || code || '简易MD5'
+}
+
+function printChannelLabel(code?: string) {
+  const hit = printChannelOptions.find((o) => o.value === code)
+  return hit?.label || code || 'PDF 面单'
 }
 
 function emptyForm(): CarrierAccount {
@@ -46,6 +56,9 @@ function emptyForm(): CarrierAccount {
     custId: '',
     expressType: '2',
     templateCode: '',
+    customTemplateCode: '',
+    signMode: 'simple',
+    printChannel: 'pdf',
     env: 'sandbox',
     enabled: true,
     remark: '',
@@ -84,14 +97,21 @@ function openCreate() {
 }
 
 function openEdit(row: CarrierAccount) {
-  form.value = { ...row, checkword: '' }
+  form.value = {
+    ...row,
+    checkword: '',
+    signMode: row.signMode || 'simple',
+    printChannel: row.printChannel || 'pdf',
+  }
   visible.value = true
 }
 
 function onCarrierChange() {
-  // 切换物流公司时重置公司相关字段默认值
+  // 切换物流公司时重置公司相关字段默认值（快件类型在「标准寄件」页选择，不在账号固定）
   if (form.value.carrierCode === 'SF') {
-    if (!form.value.expressType) form.value.expressType = '2'
+    form.value.expressType = form.value.expressType || '2'
+    if (!form.value.signMode) form.value.signMode = 'simple'
+    if (!form.value.printChannel) form.value.printChannel = 'pdf'
     if (!form.value.env) form.value.env = 'sandbox'
   }
 }
@@ -193,10 +213,13 @@ onMounted(load)
           </template>
         </el-table-column>
         <el-table-column prop="custId" label="月结卡号" min-width="120" show-overflow-tooltip />
-        <el-table-column label="快件类型" width="130">
-          <template #default="{ row }">{{ expressTypeLabel(row.expressType) }}</template>
-        </el-table-column>
         <el-table-column prop="templateCode" label="面单模板" min-width="180" show-overflow-tooltip />
+        <el-table-column label="签名方式" width="100">
+          <template #default="{ row }">{{ signModeLabel(row.signMode) }}</template>
+        </el-table-column>
+        <el-table-column label="打印通道" width="100">
+          <template #default="{ row }">{{ printChannelLabel(row.printChannel) }}</template>
+        </el-table-column>
         <el-table-column label="环境" width="80">
           <template #default="{ row }">{{ envLabel(row.env) }}</template>
         </el-table-column>
@@ -268,22 +291,38 @@ onMounted(load)
             <el-form-item v-if="form.useMonthly" label="月结卡号" required>
               <el-input v-model="form.custId" placeholder="月结卡号" />
             </el-form-item>
-            <el-form-item label="快件类型">
-              <el-select v-model="form.expressType" placeholder="选择快件类型" style="width: 100%">
-                <el-option
-                  v-for="opt in expressTypeOptions"
-                  :key="opt.value"
-                  :label="opt.label"
-                  :value="opt.value"
-                />
-              </el-select>
-            </el-form-item>
             <el-form-item label="面单模板" required>
               <el-input
                 v-model="form.templateCode"
-                placeholder="丰桥云打印模板编码，如 fm_76130_standard_XXXX"
+                placeholder="必须归属本顾客编码，如 fm_76130_standard_XSZFMAB1WY1P"
               />
-              <div class="hint">在丰桥开放平台「云打印」模板列表复制完整编码，不是客户编码（partnerId）。</div>
+              <div class="hint">
+                填标准模板（含顾客编码那段）。不要把 fm_…_custom_… 填到这里，否则会报 not matched the clientCode。
+              </div>
+            </el-form-item>
+            <el-form-item label="自定义模板">
+              <el-input
+                v-model="form.customTemplateCode"
+                placeholder="如 fm_76130_standard_custom_10058011961_1"
+              />
+              <div class="hint">
+                编辑器发布的自定义区模板；变量字段名填 remark。与上方标准模板规格须一致（如均为 76×130）。
+              </div>
+            </el-form-item>
+            <el-form-item label="数字签名" required>
+              <el-radio-group v-model="form.signMode">
+                <el-radio v-for="opt in signModeOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</el-radio>
+              </el-radio-group>
+              <div class="hint">
+                {{ signModeOptions.find((o) => o.value === form.signMode)?.hint }}
+                ；须与丰桥创建应用时选择的方式一致（创建后不可改，不一致会报数字签名无效）。
+              </div>
+            </el-form-item>
+            <el-form-item label="打印通道" required>
+              <el-radio-group v-model="form.printChannel">
+                <el-radio v-for="opt in printChannelOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</el-radio>
+              </el-radio-group>
+              <div class="hint">{{ printChannelOptions.find((o) => o.value === form.printChannel)?.hint }}</div>
             </el-form-item>
             <el-form-item label="环境">
               <el-radio-group v-model="form.env">
