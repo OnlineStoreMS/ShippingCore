@@ -23,6 +23,18 @@ func TestComputeMsgDigest(t *testing.T) {
 	}
 }
 
+func TestComputeMsgDigestOfficialSample(t *testing.T) {
+	// 丰桥文档样例：URLEncode(msgData+timestamp+checkWord) → MD5 → Base64
+	msgData := `{"language":"zh-CN","orderId":"QIAO-20200618-004"}`
+	timestamp := "12312334453453"
+	checkword := "fjcg5PGKaNpPSHFAZ4QsCOkV71R3zVci"
+	want := "IIKJtuLVzoFTu4kHI8M8vA=="
+	got := ComputeMsgDigest(msgData, timestamp, checkword)
+	if got != want {
+		t.Fatalf("digest mismatch:\n got  %s\n want %s", got, want)
+	}
+}
+
 func TestNormalizeCargoDetails(t *testing.T) {
 	got := normalizeCargoDetails([]CargoDetail{
 		{Name: "A", Count: 2},

@@ -39,8 +39,8 @@ func NewClient(partnerID, checkword, env string) *Client {
 		baseURL = ProdURL
 	}
 	return &Client{
-		partnerID: partnerID,
-		checkword: checkword,
+		partnerID: strings.TrimSpace(partnerID),
+		checkword: strings.TrimSpace(checkword),
 		baseURL:   baseURL,
 		http: &http.Client{
 			Timeout: 30 * time.Second,
@@ -92,9 +92,12 @@ type PrintResult struct {
 	Raw        json.RawMessage
 }
 
+// ComputeMsgDigest 丰桥签名：msgData+timestamp+checkWord → URLEncode(UTF-8) → MD5 → Base64。
+// 缺少 URLEncode 会返回「数字签名无效」。
 func ComputeMsgDigest(msgData, timestamp, checkword string) string {
 	raw := msgData + timestamp + checkword
-	sum := md5.Sum([]byte(raw))
+	encoded := url.QueryEscape(raw)
+	sum := md5.Sum([]byte(encoded))
 	return base64.StdEncoding.EncodeToString(sum[:])
 }
 
