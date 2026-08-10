@@ -30,8 +30,16 @@ const signModeOptions = [
 ]
 
 const printChannelOptions = [
-  { value: 'pdf', label: 'PDF 面单', hint: 'COM_RECE_CLOUD_PRINT_WAYBILLS，浏览器打开 PDF' },
-  { value: 'plugin', label: '打印插件', hint: 'COM_RECE_CLOUD_PRINT_PARSEDDATA，需本机顺丰云打印组件' },
+  {
+    value: 'pdf',
+    label: 'PDF 面单',
+    hint: '官方体验：云打印转 PDF 后在浏览器打开，用系统打印即可，不依赖 C-Lodop（COM_RECE_CLOUD_PRINT_WAYBILLS）',
+  },
+  {
+    value: 'plugin',
+    label: '打印插件',
+    hint: '云打印插件排版后经本机 C-Lodop 出纸，需先在「C-Lodop 云打印」选好打印机（COM_RECE_CLOUD_PRINT_PARSEDDATA）',
+  },
 ]
 
 const isSF = computed(() => form.value.carrierCode === 'SF')

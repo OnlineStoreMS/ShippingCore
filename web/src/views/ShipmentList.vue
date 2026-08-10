@@ -3,11 +3,11 @@ import { onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Printer, Refresh, Search } from '@element-plus/icons-vue'
-import { shippingApi, shipmentStatusMap, type Shipment } from '../api/shipping'
+import { shippingApi, shipmentStatusMap, type CarrierAccount, type Shipment } from '../api/shipping'
+import { printShipmentByChannel } from '../utils/sfPrintLabel'
 import {
   getSavedPrinterIndex,
   listLocalPrinters,
-  printWithSFPlugin,
   savePrinterSelection,
   type LocalPrinter,
 } from '../utils/sfPrintPlugin'
@@ -38,6 +38,11 @@ const actionLoading = ref<Record<number, string>>({})
 const printers = ref<LocalPrinter[]>([])
 const printerIndex = ref<number | null>(getSavedPrinterIndex())
 const printersLoading = ref(false)
+const carrierById = ref<Record<number, CarrierAccount>>({})
+
+function printChannelOf(row: Shipment): string {
+  return (carrierById.value[row.carrierAccountId]?.printChannel || 'plugin').toLowerCase()
+}
 
 const statusOptions = [
   { label: '全部状态', value: '' },
@@ -195,13 +200,18 @@ async function ensurePrinterSelected(): Promise<number> {
   throw new Error('请先在上方选择打印机')
 }
 
-/** 统一打印：云打印插件 + 本机 C-Lodop */
+/** 统一打印：PDF=浏览器打开官方面单；插件=本机 C-Lodop */
 async function printRow(row: Shipment) {
   await withAction(row.id, 'print', async () => {
-    const idx = await ensurePrinterSelected()
-    const pluginData = await shippingApi.fetchShipmentPrintPluginData(row.id)
-    await printWithSFPlugin(pluginData, { printerIndex: idx })
-    ElMessage.success('已发送到本机打印机')
+    const channelName = printChannelOf(row)
+    const needPrinter = channelName !== 'pdf'
+    const idx = needPrinter ? await ensurePrinterSelected() : null
+    const channel = await printShipmentByChannel({
+      shipmentId: row.id,
+      printChannel: channelName,
+      printerIndex: idx,
+    })
+    ElMessage.success(channel === 'pdf' ? '已在浏览器打开官方 PDF 面单' : '已按插件通道发送到本机打印机')
     return shippingApi.getShipment(row.id)
   })
 }
@@ -230,8 +240,22 @@ function canRetry(row: Shipment) {
   return row.status === 'draft' || row.status === 'failed'
 }
 
+async function loadCarriers() {
+  try {
+    const res = await shippingApi.listCarrierAccounts({ page: 1, pageSize: 200, enabled: true })
+    const map: Record<number, CarrierAccount> = {}
+    for (const c of res.list || []) {
+      if (c.id != null) map[c.id] = c
+    }
+    carrierById.value = map
+  } catch {
+    carrierById.value = {}
+  }
+}
+
 onMounted(() => {
   load()
+  loadCarriers()
   refreshPrinters()
 })
 </script>

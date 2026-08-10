@@ -2,10 +2,11 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, type UploadRequestOptions } from 'element-plus'
-import { Camera, Printer, RefreshRight } from '@element-plus/icons-vue'
+import { Camera, Delete, Plus, Printer, RefreshRight } from '@element-plus/icons-vue'
 import {
   shippingApi,
   type CarrierAccount,
+  type OrderGoods,
   type OrderSnapshot,
   type ShipperProfile,
 } from '../api/shipping'
@@ -14,14 +15,13 @@ import {
   consumeSFOrderHandoff,
   goodsCargoName,
   goodsParcelQty,
-  goodsShipName,
   parsePastedContact,
   type SFOrderHandoff,
 } from '../utils/sfOrderHandoff'
+import { printShipmentByChannel } from '../utils/sfPrintLabel'
 import {
   getSavedPrinterIndex,
   getSavedPrinterName,
-  printWithSFPlugin,
 } from '../utils/sfPrintPlugin'
 
 const cargoPresets = ['文件', '电子产品', '日用品', '服装', '食品', '配件', '商品']
@@ -49,6 +49,10 @@ const carriers = ref<CarrierAccount[]>([])
 const shippers = ref<ShipperProfile[]>([])
 const handoffMeta = ref<Pick<SFOrderHandoff, 'orderId' | 'sourceSystem'> | null>(null)
 const result = ref<{ shipmentId: number; mailNo: string; cancelled?: boolean } | null>(null)
+
+function emptyGoodsLine(skuName = ''): OrderGoods {
+  return { title: '', skuName, num: 1, outerId: '', price: 0 }
+}
 
 const form = reactive({
   carrierAccountId: undefined as number | undefined,
@@ -78,8 +82,33 @@ const form = reactive({
   shopId: '',
   sysTid: '',
   sourceTid: '',
-  goods: [] as OrderSnapshot['goods'],
+  goods: [emptyGoodsLine('文件')] as OrderGoods[],
 })
+
+function syncCargoSummary() {
+  const lines = form.goods.filter((g) => (g.skuName || g.title || '').trim())
+  form.cargoName = lines.length ? goodsCargoName(lines) : form.cargoName || '文件'
+  form.cargoCount = lines.reduce((s, g) => s + (g.num > 0 ? g.num : 1), 0) || 1
+}
+
+function addGoodsLine() {
+  form.goods.push(emptyGoodsLine())
+}
+
+function removeGoodsLine(idx: number) {
+  if (form.goods.length <= 1) {
+    form.goods[0] = emptyGoodsLine()
+    syncCargoSummary()
+    return
+  }
+  form.goods.splice(idx, 1)
+  syncCargoSummary()
+}
+
+watch(
+  () => form.goods.map((g) => `${g.skuName}|${g.num}`).join(';'),
+  () => syncCargoSummary(),
+)
 
 const uploadingImg = ref(false)
 const computedVolume = computed(() => {
@@ -121,10 +150,16 @@ function applyHandoff(h: SFOrderHandoff) {
   form.receiverCity = o.receiverCity
   form.receiverCounty = o.receiverCounty
   form.receiverAddress = o.receiverAddress
-  form.goods = o.goods || []
-  form.cargoName = goodsCargoName(form.goods) || '文件'
+  const lines = (o.goods || []).map((g) => ({
+    title: g.title || '',
+    skuName: (g.skuName || g.title || '').trim(),
+    num: g.num > 0 ? g.num : 1,
+    outerId: g.outerId || '',
+    price: g.price || 0,
+  }))
+  form.goods = lines.length ? lines : [emptyGoodsLine('文件')]
   form.parcelQty = goodsParcelQty(form.goods) || 1
-  form.cargoCount = form.goods.reduce((s, g) => s + (g.num > 0 ? g.num : 1), 0) || 1
+  syncCargoSummary()
 }
 
 async function uploadRemarkImage(options: UploadRequestOptions) {
@@ -213,24 +248,15 @@ function recognizeReceiver() {
 function buildOrderSnapshot(): OrderSnapshot {
   const sysTid = form.sysTid.trim() || `SC-MANUAL-${Date.now()}`
   const sourceTid = form.sourceTid.trim() || sysTid
-  const goods =
-    form.goods.length > 0
-      ? form.goods.map((g) => ({
-          ...g,
-          // 规格名称优先；无规格时把手填托寄物写入 skuName 作为发货内容
-          skuName: (g.skuName || form.cargoName || g.title || '').trim(),
-          title: g.title || '',
-          num: g.num > 0 ? g.num : 1,
-        }))
-      : [
-          {
-            title: '',
-            skuName: form.cargoName || '商品',
-            num: form.parcelQty > 0 ? form.parcelQty : 1,
-            outerId: '',
-            price: 0,
-          },
-        ]
+  const goods = form.goods
+    .map((g) => ({
+      title: g.title || '',
+      skuName: (g.skuName || g.title || '').trim(),
+      num: g.num > 0 ? g.num : 1,
+      outerId: g.outerId || '',
+      price: g.price || 0,
+    }))
+    .filter((g) => g.skuName)
   return {
     platform: form.platform || 'manual',
     shopId: form.shopId || '',
@@ -251,19 +277,28 @@ function validate(): string | null {
   if (!form.shipperProfileId) return '请选择寄件人'
   if (!form.receiverName.trim() || !form.receiverMobile.trim()) return '请填写收件人姓名与手机'
   if (!form.receiverAddress.trim()) return '请填写收件详细地址'
-  if (!form.cargoName.trim()) return '请填写物品名称'
+  const named = form.goods.filter((g) => (g.skuName || g.title || '').trim())
+  if (!named.length) return '请至少填写一项物品（规格名称）'
+  if (named.some((g) => !(g.num > 0))) return '物品数量须大于 0'
   return null
 }
 
 async function printShipmentLabel(shipmentId: number) {
-  const printerIndex = getSavedPrinterIndex()
-  if (printerIndex == null) {
-    ElMessage.warning('请先在 C-Lodop 云打印 选择本机打印机')
-    await router.push('/clodop')
-    throw new Error('PRINTER_NOT_SELECTED')
+  const channel = (carrierView.value?.printChannel || 'plugin').toLowerCase()
+  let printerIndex: number | null = null
+  if (channel !== 'pdf') {
+    printerIndex = getSavedPrinterIndex()
+    if (printerIndex == null) {
+      ElMessage.warning('请先在 C-Lodop 云打印 选择本机打印机')
+      await router.push('/clodop')
+      throw new Error('PRINTER_NOT_SELECTED')
+    }
   }
-  const pluginData = await shippingApi.fetchShipmentPrintPluginData(shipmentId)
-  await printWithSFPlugin(pluginData, { printerIndex })
+  await printShipmentByChannel({
+    shipmentId,
+    printChannel: channel,
+    printerIndex,
+  })
 }
 
 async function cancelWaybill() {
@@ -306,9 +341,9 @@ async function submit(doPrint: boolean) {
       remark: form.remark.trim(),
       courierNote: form.courierNote.trim() || undefined,
       remarkImages: form.remarkImages.length ? [...form.remarkImages] : undefined,
-      cargoName: form.cargoName.trim(),
+      cargoName: goodsCargoName(order.goods) || form.cargoName.trim(),
       parcelQty: form.parcelQty,
-      cargoCount: form.cargoCount,
+      cargoCount: order.goods.reduce((s, g) => s + (g.num > 0 ? g.num : 1), 0) || form.cargoCount,
       totalWeight: form.totalWeight > 0 ? form.totalWeight : undefined,
       lengthCm: form.lengthCm || undefined,
       widthCm: form.widthCm || undefined,
@@ -325,7 +360,8 @@ async function submit(doPrint: boolean) {
     if (doPrint) {
       try {
         await printShipmentLabel(waybill.id)
-        ElMessage.success('已发送到本机打印机')
+        const isPdf = (carrierView.value?.printChannel || '').toLowerCase() === 'pdf'
+        ElMessage.success(isPdf ? '已在浏览器打开官方 PDF 面单' : '已发送到本机打印机')
       } catch (pe) {
         const msg = (pe as Error).message || ''
         if (msg !== 'PRINTER_NOT_SELECTED') {
@@ -442,20 +478,42 @@ onMounted(async () => {
     </section>
 
     <section class="card">
-      <div class="card-hd"><span class="sec-title">物品信息</span></div>
-      <div class="cargo-grid">
-        <el-form-item label="物品" required>
-          <el-select
-            v-model="form.cargoName"
-            filterable
-            allow-create
-            default-first-option
-            placeholder="请填写物品名称"
-            style="width: 200px"
-          >
-            <el-option v-for="n in cargoPresets" :key="n" :label="n" :value="n" />
-          </el-select>
-        </el-form-item>
+      <div class="card-hd">
+        <span class="sec-title">物品信息</span>
+        <el-button type="primary" link :icon="Plus" @click="addGoodsLine">添加物品</el-button>
+      </div>
+
+      <div class="goods-editor">
+        <div v-for="(g, idx) in form.goods" :key="idx" class="goods-row">
+          <el-form-item :label="idx === 0 ? '规格名称' : ''" required class="goods-name">
+            <el-select
+              v-model="g.skuName"
+              filterable
+              allow-create
+              default-first-option
+              placeholder="规格名称（发货内容）"
+              style="width: 100%"
+            >
+              <el-option v-for="n in cargoPresets" :key="n" :label="n" :value="n" />
+            </el-select>
+          </el-form-item>
+          <el-form-item :label="idx === 0 ? '数量' : ''" class="goods-qty">
+            <el-input-number v-model="g.num" :min="1" :max="9999" controls-position="right" />
+          </el-form-item>
+          <el-button
+            class="goods-del"
+            :class="{ 'with-label': idx === 0 }"
+            :icon="Delete"
+            text
+            type="danger"
+            :disabled="form.goods.length <= 1 && !(g.skuName || '').trim()"
+            @click="removeGoodsLine(idx)"
+          />
+        </div>
+        <div class="goods-sum">共 {{ form.goods.filter((x) => (x.skuName || '').trim()).length }} 种物品，合计 {{ form.cargoCount }} 件</div>
+      </div>
+
+      <div class="cargo-grid package-meta">
         <el-form-item label="包裹数">
           <el-input-number v-model="form.parcelQty" :min="1" :max="99" controls-position="right" />
         </el-form-item>
@@ -500,15 +558,6 @@ onMounted(async () => {
             <span v-if="computedVolume > 0" class="vol-tip">≈ {{ computedVolume }} dm³</span>
           </div>
         </el-form-item>
-        <el-form-item label="总包裹物品数">
-          <el-input-number v-model="form.cargoCount" :min="1" :max="9999" controls-position="right" />
-        </el-form-item>
-      </div>
-      <div v-if="form.goods.length" class="goods-preview">
-        <div class="goods-hd">订单商品明细</div>
-        <div v-for="(g, i) in form.goods" :key="i" class="goods-line">
-          {{ goodsShipName(g) }} × {{ g.num }}
-        </div>
       </div>
     </section>
 
@@ -692,6 +741,7 @@ onMounted(async () => {
 .card-hd {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
   margin-bottom: 12px;
   font-weight: 600;
@@ -789,19 +839,42 @@ onMounted(async () => {
   font-size: 12px;
   color: #a8abb2;
 }
-.goods-preview {
-  margin-top: 12px;
-  padding-top: 10px;
-  border-top: 1px dashed #ebeef5;
-  font-size: 13px;
-  color: #606266;
+.goods-editor {
+  margin-bottom: 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px dashed #ebeef5;
 }
-.goods-hd {
+.goods-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.goods-name {
+  flex: 1;
+  min-width: 0;
+  margin-bottom: 0 !important;
+}
+.goods-qty {
+  width: 130px;
+  flex-shrink: 0;
+  margin-bottom: 0 !important;
+}
+.goods-del {
+  margin-top: 0;
+  flex-shrink: 0;
+}
+.goods-del.with-label {
+  margin-top: 30px;
+}
+.goods-sum {
   font-size: 12px;
   color: #909399;
-  margin-bottom: 6px;
+  margin-top: 4px;
 }
-.goods-line + .goods-line { margin-top: 4px; }
+.package-meta {
+  margin-top: 4px;
+}
 .remark-block + .remark-block { margin-top: 14px; }
 .remark-label {
   font-size: 13px;

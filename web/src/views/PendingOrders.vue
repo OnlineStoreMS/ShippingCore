@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
 import {
   shippingApi,
@@ -11,6 +11,8 @@ import {
   type ShipperProfile,
 } from '../api/shipping'
 import { omsOrderToSnapshot, saveSFOrderHandoff } from '../utils/sfOrderHandoff'
+import { printShipmentByChannel } from '../utils/sfPrintLabel'
+import { getSavedPrinterIndex } from '../utils/sfPrintPlugin'
 
 type PrintMode = 'kdzs' | 'sf'
 
@@ -35,7 +37,6 @@ const shipForm = reactive({
   shipperProfileId: undefined as number | undefined,
   useMonthly: false,
 })
-const shipResult = ref<{ mailNo: string; labelUrl?: string; shipmentId?: number } | null>(null)
 const kdzsExpressCompany = ref('')
 const kdzsExpressRows = ref<{ order: OMSOrder; expressNo: string }[]>([])
 
@@ -279,7 +280,6 @@ function normalizePrintMode(raw?: string | null): PrintMode {
 
 function prepareShipDialog(orders: OMSOrder[], preferredMode?: PrintMode) {
   shipTargets.value = orders
-  shipResult.value = null
   const mode = preferredMode || 'kdzs'
   // 批量仅支持快递助手
   printMode.value = orders.length > 1 && mode === 'sf' ? 'kdzs' : mode
@@ -506,12 +506,30 @@ async function submitShip() {
       order: omsOrderToSnapshot(order),
     })
     const waybill = await shippingApi.createShipmentWaybill(shipment.id)
-    shipResult.value = {
-      mailNo: waybill.mailNo,
-      labelUrl: waybill.labelUrl,
-      shipmentId: waybill.id,
+    const carrier = carrierAccounts.value.find((c) => c.id === shipForm.carrierAccountId)
+    const channel = (carrier?.printChannel || 'plugin').toLowerCase()
+    let printerIndex: number | null = null
+    if (channel !== 'pdf') {
+      printerIndex = getSavedPrinterIndex()
+      if (printerIndex == null) {
+        ElMessage.warning('请先在 C-Lodop 云打印 选择本机打印机')
+        closeShipDialog()
+        await router.push('/clodop')
+        return
+      }
     }
-    ElMessage.success(`打单成功，运单号：${waybill.mailNo}`)
+    await printShipmentByChannel({
+      shipmentId: waybill.id,
+      printChannel: channel,
+      printerIndex,
+    })
+    ElMessage.success(
+      channel === 'pdf'
+        ? `打单成功 ${waybill.mailNo || ''}，已打开面单`
+        : `打单成功 ${waybill.mailNo || ''}，已发送打印`,
+    )
+    closeShipDialog()
+    selectedOrders.value = []
     await loadOmsOrders()
   } catch (e) {
     ElMessage.error((e as Error).message || '打单失败')
@@ -555,59 +573,9 @@ async function submitKdzsConfirm() {
   }
 }
 
-async function cancelShipResult() {
-  if (!shipResult.value?.shipmentId) return
-  const mailNo = shipResult.value.mailNo || String(shipResult.value.shipmentId)
-  await ElMessageBox.confirm(
-    `确认取消顺丰快递单 ${mailNo}？取消后运单将作废，请确认包裹尚未揽收。`,
-    '取消快递单',
-    { type: 'warning', confirmButtonText: '确认取消' },
-  )
-  loading.ship = true
-  try {
-    await shippingApi.cancelShipment(shipResult.value.shipmentId)
-    ElMessage.success('已取消顺丰快递单')
-    shipResult.value = null
-    shipDialogVisible.value = false
-    await loadOmsOrders()
-  } catch (e) {
-    ElMessage.error((e as Error).message || '取消失败')
-  } finally {
-    loading.ship = false
-  }
-}
-
-async function printResult() {
-  if (!shipResult.value?.shipmentId) return
-  try {
-    await shippingApi.printShipment(shipResult.value.shipmentId)
-    // 优先本机打印组件；否则浏览器打开代理 PDF
-    const { getSavedPrinterIndex, printPDFWithLocalService } = await import('../utils/sfPrintPlugin')
-    const file = await shippingApi.fetchShipmentLabelFile(shipResult.value.shipmentId)
-    try {
-      await printPDFWithLocalService(file, {
-        title: `SF-${shipResult.value.shipmentId}`,
-        printerIndex: getSavedPrinterIndex(),
-      })
-      ElMessage.success('已发送到本机打印组件')
-    } catch {
-      const blobUrl = URL.createObjectURL(file)
-      const win = window.open(blobUrl, '_blank')
-      if (!win) {
-        URL.revokeObjectURL(blobUrl)
-        throw new Error('浏览器拦截了弹窗，请允许后重试')
-      }
-      window.setTimeout(() => URL.revokeObjectURL(blobUrl), 60_000)
-    }
-  } catch (e) {
-    ElMessage.error((e as Error).message || '打印失败')
-  }
-}
-
 function closeShipDialog() {
   shipDialogVisible.value = false
   shipTargets.value = []
-  shipResult.value = null
   confirmKdzsVisible.value = false
   selectedTemplateId.value = ''
 }
@@ -795,41 +763,23 @@ onMounted(async () => {
           </template>
         </el-form>
 
-        <el-result v-if="shipResult" icon="success" title="打单成功">
-          <template #sub-title>
-            运单号：<strong>{{ shipResult.mailNo }}</strong>
-          </template>
-          <template #extra>
-            <el-button type="primary" @click="printResult">打开面单</el-button>
-            <el-button
-              v-if="printMode === 'sf' && shipResult.shipmentId"
-              type="danger"
-              plain
-              :loading="loading.ship"
-              @click="cancelShipResult"
-            >
-              取消快递单
-            </el-button>
-          </template>
-        </el-result>
       </template>
 
       <template #footer>
-        <el-button @click="closeShipDialog">{{ shipResult ? '关闭' : '取消' }}</el-button>
+        <el-button @click="closeShipDialog">取消</el-button>
         <el-button
-          v-if="printMode === 'kdzs' && shipTargets.length && !shipResult"
+          v-if="printMode === 'kdzs' && shipTargets.length"
           @click="confirmKdzsVisible = true"
         >
           确认已打单发货
         </el-button>
         <el-button
-          v-if="!shipResult"
           type="primary"
           :loading="loading.ship"
           :disabled="printMode === 'kdzs' && !selectedTemplateId"
           @click="submitShip"
         >
-          {{ printMode === 'kdzs' ? '打开快递助手' : '确认打单' }}
+          {{ printMode === 'kdzs' ? '打开快递助手' : '打单并打印' }}
         </el-button>
       </template>
     </el-dialog>
