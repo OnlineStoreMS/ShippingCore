@@ -311,10 +311,10 @@ onMounted(load)
             <el-form-item label="自定义模板">
               <el-input
                 v-model="form.customTemplateCode"
-                placeholder="如 fm_76130_standard_custom_10058011961_1"
+                placeholder="暂不使用，可留空"
               />
               <div class="hint">
-                编辑器发布的自定义区模板；变量字段名填 remark。与上方标准模板规格须一致（如均为 76×130）。
+                当前打单仅用上方标准模板；自定义区暂未接入，填了也不会生效。
               </div>
             </el-form-item>
             <el-form-item label="数字签名" required>

@@ -95,6 +95,8 @@ export interface CreateShipmentFromOrderInput {
   heightCm?: number
   totalVolume?: number
   pickupMode?: 'self' | 'appoint'
+  /** 预约上门开始时间 YYYY-MM-DD HH:mm:ss（丰桥 sendStartTm） */
+  sendStartTm?: string
   orderId?: number
   sourceSystem?: 'ordercore' | 'storesyncagent'
   order: OrderSnapshot
@@ -145,15 +147,38 @@ export interface Shipment {
   mailNo: string
   orderCoreOrderId?: number
   sfOrderId: string
+  /** 顺丰临时面单链接（会过期，详情勿用） */
   labelUrl: string
+  /** 发货中心永久存档的云打印 PDF */
+  labelPdfUrl?: string
   labelData?: string
   status: string
   errorMessage?: string
+  /** 最近一次成功打印时间 */
+  printedAt?: string
   cargoName: string
   parcelQty: number
+  remark?: string
+  /** 发货中心存档图片；接口多为 JSON 字符串 */
+  remarkImages?: string | string[]
+  pickupMode?: string
+  sendStartTm?: string
   createdAt: string
   updatedAt: string
   items?: ShipmentItem[]
+}
+
+/** 解析发货单存档图片 URL 列表 */
+export function parseShipmentRemarkImages(s?: Pick<Shipment, 'remarkImages'> | null): string[] {
+  const v = s?.remarkImages
+  if (!v) return []
+  if (Array.isArray(v)) return v.filter(Boolean)
+  try {
+    const parsed = JSON.parse(v) as unknown
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string' && !!x) : []
+  } catch {
+    return []
+  }
 }
 
 export interface TradeGoods {
@@ -364,8 +389,13 @@ export const shippingApi = {
   printShipment: (id: number) =>
     client.post(`/shipments/${id}/print`).then((r) => unwrap<Shipment>(r)),
   /** 云打印插件数据 COM_RECE_CLOUD_PRINT_PARSEDDATA */
-  fetchShipmentPrintPluginData: (id: number) =>
-    client.get(`/shipments/${id}/print-plugin-data`).then((r) => unwrap<SFPrintPluginData>(r)),
+  fetchShipmentPrintPluginData: (
+    id: number,
+    params?: { templateCode?: string; customTemplateCode?: string },
+  ) =>
+    client
+      .get(`/shipments/${id}/print-plugin-data`, { params })
+      .then((r) => unwrap<SFPrintPluginData>(r)),
   /** 拉取本地面单 PDF Blob（带鉴权） */
   fetchShipmentLabelFile: async (id: number): Promise<Blob> => {
     const res = await client.get(`/shipments/${id}/label`, { responseType: 'blob' })

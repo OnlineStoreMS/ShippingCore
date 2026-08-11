@@ -9,6 +9,7 @@ import (
 	jwtmgr "shippingcore/internal/pkg/jwt"
 	"shippingcore/internal/repo"
 	"shippingcore/internal/service"
+	"shippingcore/internal/storage"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -22,14 +23,24 @@ func Setup(db *gorm.DB, cfg *config.Config) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Logger(), gin.Recovery(), corsMiddleware(cfg))
 
+	store, err := storage.New(&cfg.Storage)
+	if err != nil {
+		panic("storage init: " + err.Error())
+	}
+	if cfg.Storage.Driver != "minio" {
+		r.Static("/uploads", cfg.Storage.LocalPath)
+	}
+
 	repos := repo.New(db)
 	carrierSvc := service.NewCarrierService(repos)
 	shipperSvc := service.NewShipperService(repos)
 	ssAgent := storesyncagent.NewClient(cfg.Integrations.StoreSyncAgentAPIURL)
 	orderCore := ordercore.NewClient(cfg.Integrations.OrderCoreAPIURL)
-	shipmentSvc := service.NewShipmentService(repos, carrierSvc, shipperSvc, ssAgent, orderCore)
+	shipmentSvc := service.NewShipmentService(repos, carrierSvc, shipperSvc, ssAgent, orderCore, store)
 	kdzsSvc := service.NewKdzsService(repos, ssAgent)
 	h := admin.NewHandlers(carrierSvc, shipperSvc, shipmentSvc, kdzsSvc)
+	uploadH := admin.NewUploadHandler(store)
+	photoH := admin.NewPhotoUploadHandler(store)
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok", "service": "shippingcore"})
@@ -40,6 +51,13 @@ func Setup(db *gorm.DB, cfg *config.Config) *gin.Engine {
 	jwtMgr := jwtmgr.NewManager(cfg.Auth.JWTSecret)
 	adminGroup.Use(adminmw.AdminAuth(&cfg.Auth, jwtMgr))
 	admin.RegisterRoutes(adminGroup, h)
+	adminGroup.POST("/upload", uploadH.Upload)
+	adminGroup.POST("/photo-upload-sessions", photoH.CreateSession)
+	adminGroup.GET("/photo-upload-sessions/:token", photoH.GetSession)
+
+	mobile := v1.Group("/mobile")
+	mobile.GET("/photo-upload/:token", photoH.MobileGet)
+	mobile.POST("/photo-upload/:token", photoH.MobileUpload)
 
 	return r
 }

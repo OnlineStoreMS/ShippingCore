@@ -227,3 +227,17 @@ func errorsIsNotFound(err error) bool {
 func shipmentOrderID(shipmentID uint64) string {
 	return fmt.Sprintf("SC%d", shipmentID)
 }
+
+// sfCustomerOrderID 丰桥客户订单号（面单「订单号」）：优先平台订单号如 OC202608110009。
+func sfCustomerOrderID(shipment *model.Shipment) string {
+	if shipment == nil {
+		return ""
+	}
+	if ref := strings.TrimSpace(shipment.SourceRef); ref != "" {
+		return ref
+	}
+	if tid := strings.TrimSpace(shipment.SourceTid); tid != "" {
+		return tid
+	}
+	return shipmentOrderID(shipment.ID)
+}

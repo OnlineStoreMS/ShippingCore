@@ -97,11 +97,13 @@ type Shipment struct {
 
 	MailNo       string `gorm:"size:64;index" json:"mailNo"`
 	SFOrderID    string `gorm:"size:128" json:"sfOrderId"`
-	LabelURL     string `gorm:"size:1024" json:"labelUrl"`
-	LabelToken   string `gorm:"size:512" json:"labelToken,omitempty"` // 云打印 PDF 下载 token
+	LabelURL     string `gorm:"size:1024" json:"labelUrl"`                         // 顺丰临时面单链接（会过期）
+	LabelPdfURL  string `gorm:"size:1024" json:"labelPdfUrl,omitempty"`            // 发货中心永久存档 PDF
+	LabelToken   string `gorm:"size:512" json:"labelToken,omitempty"`              // 云打印 PDF 下载 token
 	LabelData    string `gorm:"type:text" json:"labelData,omitempty"`
-	Status       string `gorm:"size:32;index;default:draft" json:"status"`
-	ErrorMessage string `gorm:"size:1024" json:"errorMessage,omitempty"`
+	Status       string     `gorm:"size:32;index;default:draft" json:"status"`
+	ErrorMessage string     `gorm:"size:1024" json:"errorMessage,omitempty"`
+	PrintedAt    *time.Time `json:"printedAt,omitempty"` // 最近一次成功打印时间
 
 	CargoName   string  `gorm:"size:256" json:"cargoName"`
 	ParcelQty   int     `gorm:"default:1" json:"parcelQty"`
@@ -114,7 +116,9 @@ type Shipment struct {
 	WidthCM     float64 `gorm:"type:numeric(10,2);default:0" json:"widthCm,omitempty"`
 	HeightCM    float64 `gorm:"type:numeric(10,2);default:0" json:"heightCm,omitempty"`
 	TotalVolume float64 `gorm:"type:numeric(12,6);default:0" json:"totalVolume,omitempty"` // m³
-	PickupMode  string  `gorm:"size:16;default:self" json:"pickupMode,omitempty"` // self | appoint
+	PickupMode  string `gorm:"size:16;default:self" json:"pickupMode,omitempty"` // self | appoint
+	// SendStartTm 预约上门取件开始时间（丰桥 sendStartTm），格式 2006-01-02 15:04:05
+	SendStartTm string `gorm:"size:32" json:"sendStartTm,omitempty"`
 
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`

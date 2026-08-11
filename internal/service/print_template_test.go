@@ -18,47 +18,49 @@ func TestOrderGoodsShipNamePrefersSpec(t *testing.T) {
 	}
 }
 
-func TestBuildSFCargoDetailsUsesSpec(t *testing.T) {
-	// 历史数据：GoodsName=商品名，SkuCode=规格名 → 下单须用规格
+func TestBuildSFCargoDetailsJoinsAllSpecs(t *testing.T) {
+	// 标准模板托寄物：规格*数量 逗号拼接，末尾 * 总数量
 	sh := &model.Shipment{
-		CargoName: "文件",
+		CargoName:  "文件",
+		CargoCount: 3,
 		Items: []model.ShipmentItem{
 			{GoodsName: "山地车", SkuCode: "R7101-红-26寸", Quantity: 2},
 			{GoodsName: "配件包", SkuCode: "配件-A", Quantity: 1},
 		},
 	}
 	cargos := buildSFCargoDetails(sh)
-	if len(cargos) != 2 || cargos[0].Name != "R7101-红-26寸" || cargos[0].Count != 2 {
+	want := "R7101-红-26寸*2, 配件-A*1 * 3"
+	if len(cargos) != 1 || cargos[0].Name != want || cargos[0].Count != 3 {
 		t.Fatalf("%#v", cargos)
 	}
-	if cargos[1].Name != "配件-A" {
-		t.Fatalf("%#v", cargos)
-	}
-	if name := shipmentSFCargoName(sh); name != "R7101-红-26寸" {
+	if name := shipmentSFCargoName(sh); name != want {
 		t.Fatalf("cargoName=%q", name)
 	}
 }
 
-func TestResolveSFPrintTemplates(t *testing.T) {
+func TestResolveSFPrintTemplatesStandardOnly(t *testing.T) {
 	c := &model.CarrierAccount{
-		PartnerID:    "XSZFMAB1WY1P",
-		TemplateCode: "fm_76130_standard_custom_10058011961_1",
+		PartnerID:          "XSZFMAB1WY1P",
+		TemplateCode:       "fm_76130_standard_XSZFMAB1WY1P",
+		CustomTemplateCode: "fm_76130_standard_custom_10058011961_2",
 	}
 	std, custom := resolveSFPrintTemplates(c)
-	if custom != "fm_76130_standard_custom_10058011961_1" {
-		t.Fatalf("custom=%s", custom)
-	}
 	if std != "fm_76130_standard_XSZFMAB1WY1P" {
-		t.Fatalf("std=%s want partner standard", std)
+		t.Fatalf("std=%s", std)
+	}
+	if custom != "" {
+		t.Fatalf("custom should be ignored, got %s", custom)
 	}
 
 	c2 := &model.CarrierAccount{
-		PartnerID:          "XSZFMAB1WY1P",
-		TemplateCode:       "fm_76130_standard_XSZFMAB1WY1P",
-		CustomTemplateCode: "fm_76130_standard_custom_10058011961_1",
+		PartnerID:    "XSZFMAB1WY1P",
+		TemplateCode: "fm_76130_standard_custom_10058011961_1",
 	}
 	std2, custom2 := resolveSFPrintTemplates(c2)
-	if std2 != "fm_76130_standard_XSZFMAB1WY1P" || custom2 != "fm_76130_standard_custom_10058011961_1" {
-		t.Fatalf("std=%s custom=%s", std2, custom2)
+	if custom2 != "" {
+		t.Fatalf("custom=%s", custom2)
+	}
+	if std2 != "fm_76130_standard_XSZFMAB1WY1P" {
+		t.Fatalf("std=%s want partner standard", std2)
 	}
 }

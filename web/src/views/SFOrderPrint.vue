@@ -2,11 +2,10 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox, type UploadRequestOptions } from 'element-plus'
-import { Camera, Delete, Plus, Printer, RefreshRight } from '@element-plus/icons-vue'
+import { Box, Camera, InfoFilled, Minus, Plus, Printer, RefreshRight, Van, Warning } from '@element-plus/icons-vue'
 import {
   shippingApi,
   type CarrierAccount,
-  type OrderGoods,
   type OrderSnapshot,
   type ShipperProfile,
 } from '../api/shipping'
@@ -14,7 +13,6 @@ import { uploadImage } from '../api/upload'
 import {
   consumeSFOrderHandoff,
   goodsCargoName,
-  goodsParcelQty,
   parsePastedContact,
   type SFOrderHandoff,
 } from '../utils/sfOrderHandoff'
@@ -23,24 +21,30 @@ import {
   getSavedPrinterIndex,
   getSavedPrinterName,
 } from '../utils/sfPrintPlugin'
+import { forbidItemsCatalog } from '../data/forbidItems'
 
 const cargoPresets = ['文件', '电子产品', '日用品', '服装', '食品', '配件', '商品']
 
 const router = useRouter()
 
 const EXPRESS_TYPE_KEY = 'shippingcore.sf.expressType'
+/** 重量/体积/尺寸：按合计填写 | 按单件填写（对齐企服寄件页） */
+type FillMode = 'total' | 'unit'
 
 const expressProducts = [
-  { value: '1', name: '顺丰特快', hint: '时效更快' },
-  { value: '2', name: '顺丰标快', hint: '经济实惠' },
-  { value: '6', name: '顺丰即日', hint: '当日达（视区域）' },
+  { value: '1', name: '顺丰特快', tag: '时效最优', hint: '时效更快，适合急件' },
+  { value: '2', name: '顺丰标快', tag: '经济实惠', hint: '常规时效，性价比高' },
 ] as const
+
+type ExpressTypeValue = (typeof expressProducts)[number]['value']
 
 function loadSavedExpressType(): string {
   const v = localStorage.getItem(EXPRESS_TYPE_KEY)
-  if (v === '1' || v === '2' || v === '6') return v
+  if (expressProducts.some((p) => p.value === v)) return v as ExpressTypeValue
   return '2'
 }
+
+type PayMode = 'monthly' | 'cash' | 'receiver'
 
 const loading = ref(false)
 const submitting = ref(false)
@@ -50,25 +54,64 @@ const shippers = ref<ShipperProfile[]>([])
 const handoffMeta = ref<Pick<SFOrderHandoff, 'orderId' | 'sourceSystem'> | null>(null)
 const result = ref<{ shipmentId: number; mailNo: string; cancelled?: boolean } | null>(null)
 
-function emptyGoodsLine(skuName = ''): OrderGoods {
-  return { title: '', skuName, num: 1, outerId: '', price: 0 }
+/** 物品信息多行（对齐企服：可增减行） */
+type CargoLine = {
+  name: string
+  parcelQty: number
+  /** 按合计=该行总重；按单件=单个包裹重量 */
+  weight: number
+  /** m³：按合计=该行总体积；按单件=单个包裹体积 */
+  volume?: number
+  lengthCm?: number
+  widthCm?: number
+  heightCm?: number
+  /** 按合计=该行总件数；按单件=单个包裹物品数 */
+  itemCount: number
+  title?: string
+  outerId?: string
+  price?: number
+}
+
+function emptyCargoLine(name = ''): CargoLine {
+  return {
+    name,
+    parcelQty: 1,
+    weight: 1,
+    volume: undefined,
+    lengthCm: undefined,
+    widthCm: undefined,
+    heightCm: undefined,
+    itemCount: 1,
+    title: '',
+    outerId: '',
+    price: 0,
+  }
+}
+
+function lineDimsVolumeM3(line: CargoLine): number {
+  const l = line.lengthCm || 0
+  const w = line.widthCm || 0
+  const h = line.heightCm || 0
+  if (l <= 0 || w <= 0 || h <= 0) return 0
+  return (l * w * h) / 1_000_000
+}
+
+function lineVolumeM3(line: CargoLine): number {
+  if (line.volume && line.volume > 0) return line.volume
+  return lineDimsVolumeM3(line)
 }
 
 const form = reactive({
   carrierAccountId: undefined as number | undefined,
   shipperProfileId: undefined as number | undefined,
-  payMode: 'monthly' as 'monthly' | 'cash',
+  payMode: 'monthly' as PayMode,
   expressType: loadSavedExpressType(),
-  cargoName: '文件',
-  parcelQty: 1,
-  cargoCount: 1,
-  totalWeight: 1,
-  lengthCm: undefined as number | undefined,
-  widthCm: undefined as number | undefined,
-  heightCm: undefined as number | undefined,
+  fillMode: 'unit' as FillMode,
+  cargoLines: [emptyCargoLine('文件')] as CargoLine[],
   pickupMode: 'self' as 'self' | 'appoint',
+  /** 级联值：[dayOffset, slotKey]，如 [0, '09:00'] */
+  appointSlot: [] as (string | number)[],
   remark: '',
-  courierNote: '',
   remarkImages: [] as string[],
   receiverName: '',
   receiverMobile: '',
@@ -82,49 +125,133 @@ const form = reactive({
   shopId: '',
   sysTid: '',
   sourceTid: '',
-  goods: [emptyGoodsLine('文件')] as OrderGoods[],
 })
 
-function syncCargoSummary() {
-  const lines = form.goods.filter((g) => (g.skuName || g.title || '').trim())
-  form.cargoName = lines.length ? goodsCargoName(lines) : form.cargoName || '文件'
-  form.cargoCount = lines.reduce((s, g) => s + (g.num > 0 ? g.num : 1), 0) || 1
+const itemLibVisible = ref(false)
+const forbidDialogVisible = ref(false)
+
+function addCargoLine() {
+  form.cargoLines.push(emptyCargoLine())
 }
 
-function addGoodsLine() {
-  form.goods.push(emptyGoodsLine())
-}
-
-function removeGoodsLine(idx: number) {
-  if (form.goods.length <= 1) {
-    form.goods[0] = emptyGoodsLine()
-    syncCargoSummary()
+function removeCargoLine(idx: number) {
+  if (form.cargoLines.length <= 1) {
+    form.cargoLines[0] = emptyCargoLine()
     return
   }
-  form.goods.splice(idx, 1)
-  syncCargoSummary()
+  form.cargoLines.splice(idx, 1)
 }
 
-watch(
-  () => form.goods.map((g) => `${g.skuName}|${g.num}`).join(';'),
-  () => syncCargoSummary(),
-)
+function onLineDimsChange(line: CargoLine) {
+  const v = lineDimsVolumeM3(line)
+  if (v > 0) line.volume = Math.round(v * 1_000_000) / 1_000_000
+}
+
+function pickFromItemLib(name: string) {
+  const empty = form.cargoLines.find((l) => !(l.name || '').trim())
+  if (empty) empty.name = name
+  else form.cargoLines.push(emptyCargoLine(name))
+  itemLibVisible.value = false
+}
+
+/**
+ * 切换合计/单件时换算各行数值，保证运单合计不变：
+ * - 按单件：输入=单个包裹的重量/件数/体积，表头合计 = Σ(值 × 包裹数)
+ * - 按合计：输入=该物品类型全部包裹的总重量/件数/体积，表头合计 = Σ(值)
+ */
+function setFillMode(mode: FillMode) {
+  if (mode === form.fillMode) return
+  const from = form.fillMode
+  for (const line of form.cargoLines) {
+    const pq = line.parcelQty > 0 ? line.parcelQty : 1
+    if (from === 'unit' && mode === 'total') {
+      // 单件 → 合计：乘以包裹数
+      line.weight = Math.round(line.weight * pq * 1000) / 1000
+      if (line.volume && line.volume > 0) {
+        line.volume = Math.round(line.volume * pq * 1_000_000) / 1_000_000
+      }
+      line.itemCount = Math.max(1, Math.round(line.itemCount * pq))
+    } else if (from === 'total' && mode === 'unit') {
+      // 合计 → 单件：除以包裹数
+      line.weight = Math.round((line.weight / pq) * 1000) / 1000
+      if (line.volume && line.volume > 0) {
+        line.volume = Math.round((line.volume / pq) * 1_000_000) / 1_000_000
+      }
+      line.itemCount = Math.max(1, Math.round(line.itemCount / pq) || 1)
+    }
+  }
+  form.fillMode = mode
+}
 
 const uploadingImg = ref(false)
-const computedVolume = computed(() => {
-  const l = form.lengthCm || 0
-  const w = form.widthCm || 0
-  const h = form.heightCm || 0
-  if (l <= 0 || w <= 0 || h <= 0) return 0
-  return Math.round((l * w * h) / 1000) / 1000 // dm³ → 显示用，存 m³ 时再 /1000
+
+const namedCargoLines = computed(() => form.cargoLines.filter((l) => (l.name || '').trim()))
+
+/** 各行贡献到运单合计（两种模式都支持多行） */
+function lineContribWeight(line: CargoLine): number {
+  const w = line.weight > 0 ? line.weight : 0
+  const pq = line.parcelQty > 0 ? line.parcelQty : 1
+  // 按单件：单个包裹重量 × 包裹数；按合计：已是该行总重，不再乘
+  return form.fillMode === 'unit' ? w * pq : w
+}
+
+function lineContribVolume(line: CargoLine): number {
+  const v = lineVolumeM3(line)
+  if (!(v > 0)) return 0
+  const pq = line.parcelQty > 0 ? line.parcelQty : 1
+  return form.fillMode === 'unit' ? v * pq : v
+}
+
+function lineContribCount(line: CargoLine): number {
+  const c = line.itemCount > 0 ? line.itemCount : 0
+  const pq = line.parcelQty > 0 ? line.parcelQty : 1
+  return form.fillMode === 'unit' ? c * pq : c
+}
+
+/** 表头合计：有物品名的行参与汇总（空行不计入，避免点「+」就抬高合计） */
+const cargoTotals = computed(() => {
+  const lines = namedCargoLines.value.length ? namedCargoLines.value : form.cargoLines
+  let parcelQty = 0
+  let weight = 0
+  let volume = 0
+  let itemCount = 0
+  for (const line of lines) {
+    parcelQty += line.parcelQty > 0 ? line.parcelQty : 0
+    weight += lineContribWeight(line)
+    volume += lineContribVolume(line)
+    itemCount += lineContribCount(line)
+  }
+  return {
+    parcelQty: parcelQty || 1,
+    weight: Math.round(weight * 1000) / 1000,
+    volume: Math.round(volume * 1_000_000) / 1_000_000,
+    itemCount: itemCount || 0,
+  }
 })
-const volumeM3 = computed(() => {
-  const l = form.lengthCm || 0
-  const w = form.widthCm || 0
-  const h = form.heightCm || 0
-  if (l <= 0 || w <= 0 || h <= 0) return 0
-  return (l * w * h) / 1_000_000
-})
+
+function fmtTotalNum(n: number, digits = 2): string {
+  if (!(n > 0)) return '0'
+  const fixed = n.toFixed(digits)
+  return fixed.replace(/\.?0+$/, '')
+}
+
+const weightLabel = computed(() =>
+  form.fillMode === 'unit' ? '单个包裹重量' : '总包裹重量',
+)
+const volumeLabel = computed(() =>
+  form.fillMode === 'unit' ? '单个包裹体积' : '总包裹体积',
+)
+const sizeLabel = computed(() =>
+  form.fillMode === 'unit' ? '单个包裹尺寸' : '总包裹尺寸',
+)
+const countLabel = computed(() =>
+  form.fillMode === 'unit' ? '单个包裹物品数' : '总包裹物品数',
+)
+
+const fillModeTips = {
+  total: '每种物品类型的包裹总重量/件数/体积',
+  unit: '按单个包裹填写重量件数体积',
+} as const
 
 const shipperView = computed(() => shippers.value.find((s) => s.id === form.shipperProfileId) || null)
 const carrierView = computed(() => carriers.value.find((c) => c.id === form.carrierAccountId) || null)
@@ -150,16 +277,21 @@ function applyHandoff(h: SFOrderHandoff) {
   form.receiverCity = o.receiverCity
   form.receiverCounty = o.receiverCounty
   form.receiverAddress = o.receiverAddress
-  const lines = (o.goods || []).map((g) => ({
-    title: g.title || '',
-    skuName: (g.skuName || g.title || '').trim(),
-    num: g.num > 0 ? g.num : 1,
-    outerId: g.outerId || '',
-    price: g.price || 0,
-  }))
-  form.goods = lines.length ? lines : [emptyGoodsLine('文件')]
-  form.parcelQty = goodsParcelQty(form.goods) || 1
-  syncCargoSummary()
+  const lines = (o.goods || [])
+    .map((g) => {
+      const name = (g.skuName || g.title || '').trim()
+      if (!name) return null
+      const line = emptyCargoLine(name)
+      line.title = g.title || ''
+      line.itemCount = g.num > 0 ? g.num : 1
+      line.parcelQty = 1
+      line.outerId = g.outerId || ''
+      line.price = g.price || 0
+      return line
+    })
+    .filter((x): x is CargoLine => !!x)
+  form.cargoLines = lines.length ? lines : [emptyCargoLine('文件')]
+  form.fillMode = 'unit'
 }
 
 async function uploadRemarkImage(options: UploadRequestOptions) {
@@ -217,18 +349,103 @@ watch(
   (id) => {
     const c = carriers.value.find((x) => x.id === id)
     if (!c) return
-    form.payMode = c.useMonthly ? 'monthly' : 'cash'
+    if (c.useMonthly && c.custId) form.payMode = 'monthly'
+    else if (form.payMode === 'monthly') form.payMode = 'cash'
   },
 )
 
 watch(
   () => form.expressType,
   (v) => {
-    if (v === '1' || v === '2' || v === '6') {
+    if (expressProducts.some((p) => p.value === v)) {
       localStorage.setItem(EXPRESS_TYPE_KEY, v)
     }
   },
 )
+
+const selectedProduct = computed(
+  () => expressProducts.find((p) => p.value === form.expressType) || expressProducts[1],
+)
+
+const payModeOptions = computed(() => {
+  const monthlyLabel = carrierView.value?.custId
+    ? `寄付月结 / ${carrierView.value.custId}`
+    : '寄付月结'
+  return [
+    { value: 'monthly' as PayMode, label: monthlyLabel, disabled: !carrierView.value?.custId },
+    { value: 'cash' as PayMode, label: '寄付现结', disabled: false },
+    { value: 'receiver' as PayMode, label: '收方付', disabled: false },
+  ]
+})
+
+function resolvePayMethod(): number {
+  return form.payMode === 'receiver' ? 2 : 1
+}
+
+const APPOINT_HOURS = [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20] as const
+
+function pad2(n: number) {
+  return String(n).padStart(2, '0')
+}
+
+function formatLocalDateTime(d: Date): string {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
+}
+
+/** 预约上门时段选项（对齐企服：今天/明天/后天 + 小时段） */
+const appointCascaderOptions = computed(() => {
+  const now = new Date()
+  const hourNow = now.getHours()
+  const days = [
+    { value: 0, label: '今天' },
+    { value: 1, label: '明天' },
+    { value: 2, label: '后天' },
+  ]
+  return days.map((day) => {
+    const slots: { value: string; label: string }[] = []
+    if (day.value === 0) {
+      slots.push({ value: 'within1h', label: '1小时内' })
+    }
+    for (const h of APPOINT_HOURS) {
+      if (day.value === 0 && h <= hourNow) continue // 今天已过时段不展示
+      slots.push({
+        value: `${pad2(h)}:00`,
+        label: `${pad2(h)}:00-${pad2(h + 1)}:00`,
+      })
+    }
+    return { value: day.value, label: day.label, children: slots }
+  }).filter((d) => d.children.length > 0)
+})
+
+function resolveSendStartTm(): string | undefined {
+  if (form.pickupMode !== 'appoint') return undefined
+  const [dayRaw, slot] = form.appointSlot
+  if (dayRaw === undefined || dayRaw === null || !slot) return undefined
+  const dayOffset = Number(dayRaw)
+  const now = new Date()
+  if (slot === 'within1h') {
+    const d = new Date(now.getTime() + 15 * 60 * 1000) // 约 15 分钟后起算
+    return formatLocalDateTime(d)
+  }
+  const m = String(slot).match(/^(\d{1,2}):(\d{2})$/)
+  if (!m) return undefined
+  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() + dayOffset, Number(m[1]), Number(m[2]), 0)
+  return formatLocalDateTime(d)
+}
+
+function setPickupMode(mode: 'self' | 'appoint') {
+  form.pickupMode = mode
+  if (mode === 'self') {
+    form.appointSlot = []
+  } else if (!form.appointSlot.length) {
+    // 默认选第一个可用时段
+    const firstDay = appointCascaderOptions.value[0]
+    const firstSlot = firstDay?.children?.[0]
+    if (firstDay && firstSlot) {
+      form.appointSlot = [firstDay.value, firstSlot.value]
+    }
+  }
+}
 
 function recognizeReceiver() {
   const parsed = parsePastedContact(form.pasteText)
@@ -248,15 +465,13 @@ function recognizeReceiver() {
 function buildOrderSnapshot(): OrderSnapshot {
   const sysTid = form.sysTid.trim() || `SC-MANUAL-${Date.now()}`
   const sourceTid = form.sourceTid.trim() || sysTid
-  const goods = form.goods
-    .map((g) => ({
-      title: g.title || '',
-      skuName: (g.skuName || g.title || '').trim(),
-      num: g.num > 0 ? g.num : 1,
-      outerId: g.outerId || '',
-      price: g.price || 0,
-    }))
-    .filter((g) => g.skuName)
+  const goods = namedCargoLines.value.map((l) => ({
+    title: l.title || '',
+    skuName: l.name.trim(),
+    num: lineContribCount(l) || 1,
+    outerId: l.outerId || '',
+    price: l.price || 0,
+  }))
   return {
     platform: form.platform || 'manual',
     shopId: form.shopId || '',
@@ -272,14 +487,32 @@ function buildOrderSnapshot(): OrderSnapshot {
   }
 }
 
+function firstDimsLine(): CargoLine | undefined {
+  return form.cargoLines.find(
+    (l) => (l.lengthCm || 0) > 0 && (l.widthCm || 0) > 0 && (l.heightCm || 0) > 0,
+  )
+}
+
 function validate(): string | null {
   if (!form.carrierAccountId) return '请选择物流账号'
   if (!form.shipperProfileId) return '请选择寄件人'
   if (!form.receiverName.trim() || !form.receiverMobile.trim()) return '请填写收件人姓名与手机'
   if (!form.receiverAddress.trim()) return '请填写收件详细地址'
-  const named = form.goods.filter((g) => (g.skuName || g.title || '').trim())
-  if (!named.length) return '请至少填写一项物品（规格名称）'
-  if (named.some((g) => !(g.num > 0))) return '物品数量须大于 0'
+  if (!namedCargoLines.value.length) return '请至少填写一行物品名称'
+  for (const [i, line] of namedCargoLines.value.entries()) {
+    if (!(line.parcelQty > 0)) return `第 ${i + 1} 行请填写包裹数`
+    if (!(line.weight > 0)) return `第 ${i + 1} 行请填写重量`
+    if (!(line.itemCount > 0)) return `第 ${i + 1} 行请填写物品数`
+  }
+  if (!(cargoTotals.value.weight > 0)) return '请填写包裹重量'
+  if (!(cargoTotals.value.itemCount > 0)) return '请填写物品件数'
+  if (!form.expressType) return '请选择物流产品'
+  if (form.payMode === 'monthly' && !carrierView.value?.custId) {
+    return '当前物流账号未配置月结卡号，请改选寄付现结或收方付'
+  }
+  if (form.pickupMode === 'appoint' && !resolveSendStartTm()) {
+    return '请选择预约上门时间'
+  }
   return null
 }
 
@@ -337,19 +570,19 @@ async function submit(doPrint: boolean) {
       shipperProfileId: form.shipperProfileId!,
       useMonthly,
       expressType: form.expressType,
-      payMethod: 1,
+      payMethod: resolvePayMethod(),
       remark: form.remark.trim(),
-      courierNote: form.courierNote.trim() || undefined,
       remarkImages: form.remarkImages.length ? [...form.remarkImages] : undefined,
-      cargoName: goodsCargoName(order.goods) || form.cargoName.trim(),
-      parcelQty: form.parcelQty,
-      cargoCount: order.goods.reduce((s, g) => s + (g.num > 0 ? g.num : 1), 0) || form.cargoCount,
-      totalWeight: form.totalWeight > 0 ? form.totalWeight : undefined,
-      lengthCm: form.lengthCm || undefined,
-      widthCm: form.widthCm || undefined,
-      heightCm: form.heightCm || undefined,
-      totalVolume: volumeM3.value || undefined,
+      cargoName: goodsCargoName(order.goods) || namedCargoLines.value[0]?.name.trim() || '商品',
+      parcelQty: cargoTotals.value.parcelQty,
+      cargoCount: cargoTotals.value.itemCount || 1,
+      totalWeight: cargoTotals.value.weight > 0 ? cargoTotals.value.weight : undefined,
+      lengthCm: firstDimsLine()?.lengthCm || undefined,
+      widthCm: firstDimsLine()?.widthCm || undefined,
+      heightCm: firstDimsLine()?.heightCm || undefined,
+      totalVolume: cargoTotals.value.volume > 0 ? cargoTotals.value.volume : undefined,
       pickupMode: form.pickupMode,
+      sendStartTm: resolveSendStartTm(),
       orderId: handoffMeta.value?.orderId,
       sourceSystem: handoffMeta.value?.sourceSystem || (handoffMeta.value?.orderId ? 'ordercore' : undefined),
       order,
@@ -477,118 +710,273 @@ onMounted(async () => {
       </div>
     </section>
 
-    <section class="card">
-      <div class="card-hd">
-        <span class="sec-title">物品信息</span>
-        <el-button type="primary" link :icon="Plus" @click="addGoodsLine">添加物品</el-button>
-      </div>
-
-      <div class="goods-editor">
-        <div v-for="(g, idx) in form.goods" :key="idx" class="goods-row">
-          <el-form-item :label="idx === 0 ? '规格名称' : ''" required class="goods-name">
-            <el-select
-              v-model="g.skuName"
-              filterable
-              allow-create
-              default-first-option
-              placeholder="规格名称（发货内容）"
-              style="width: 100%"
-            >
-              <el-option v-for="n in cargoPresets" :key="n" :label="n" :value="n" />
-            </el-select>
-          </el-form-item>
-          <el-form-item :label="idx === 0 ? '数量' : ''" class="goods-qty">
-            <el-input-number v-model="g.num" :min="1" :max="9999" controls-position="right" />
-          </el-form-item>
-          <el-button
-            class="goods-del"
-            :class="{ 'with-label': idx === 0 }"
-            :icon="Delete"
-            text
-            type="danger"
-            :disabled="form.goods.length <= 1 && !(g.skuName || '').trim()"
-            @click="removeGoodsLine(idx)"
-          />
+    <section class="card cargo-card">
+      <div class="card-hd cargo-hd">
+        <div class="cargo-hd-left">
+          <el-icon class="cargo-icon"><Box /></el-icon>
+          <span class="sec-title">物品信息</span>
+          <button type="button" class="forbid-link" @click="forbidDialogVisible = true">
+            <el-icon><Warning /></el-icon>
+            禁寄物品
+          </button>
         </div>
-        <div class="goods-sum">共 {{ form.goods.filter((x) => (x.skuName || '').trim()).length }} 种物品，合计 {{ form.cargoCount }} 件</div>
+        <div class="cargo-hd-right">
+          <span class="fill-label">重量/体积/尺寸</span>
+          <div class="fill-mode">
+            <el-tooltip :content="fillModeTips.total" placement="top">
+              <button
+                type="button"
+                class="fill-btn"
+                :class="{ active: form.fillMode === 'total' }"
+                @click="setFillMode('total')"
+              >
+                按合计填写
+              </button>
+            </el-tooltip>
+            <el-tooltip :content="fillModeTips.unit" placement="top">
+              <button
+                type="button"
+                class="fill-btn"
+                :class="{ active: form.fillMode === 'unit' }"
+                @click="setFillMode('unit')"
+              >
+                按单件填写
+              </button>
+            </el-tooltip>
+          </div>
+          <el-popover v-model:visible="itemLibVisible" placement="bottom-end" :width="220" trigger="click">
+            <div class="item-lib">
+              <button
+                v-for="n in cargoPresets"
+                :key="n"
+                type="button"
+                class="item-lib-btn"
+                @click="pickFromItemLib(n)"
+              >
+                {{ n }}
+              </button>
+            </div>
+            <template #reference>
+              <el-button link type="primary" class="lib-link">使用物品库</el-button>
+            </template>
+          </el-popover>
+        </div>
       </div>
 
-      <div class="cargo-grid package-meta">
-        <el-form-item label="包裹数">
-          <el-input-number v-model="form.parcelQty" :min="1" :max="99" controls-position="right" />
-        </el-form-item>
-        <el-form-item label="总包裹重量">
-          <div class="unit-field">
+      <p class="fill-mode-hint">
+        {{ form.fillMode === 'unit' ? fillModeTips.unit : fillModeTips.total }}
+        · 两种模式均可添加多个物品行，表头显示全部行合计
+      </p>
+
+      <div class="cargo-table-wrap">
+        <div class="cargo-table-hd">
+          <div class="col-name cell-label required">物品</div>
+          <div class="col-parcel cell-label required">
+            包裹数
+            <el-tooltip content="包裹总数量=母件数量+子件数量。一单需要几个包裹，填写对应数量即可" placement="top">
+              <el-icon class="tip-ico"><InfoFilled /></el-icon>
+            </el-tooltip>
+          </div>
+          <div class="col-weight cell-label required">
+            {{ weightLabel }}
+            <span class="cell-sub">（合计{{ fmtTotalNum(cargoTotals.weight) }}KG）</span>
+          </div>
+          <div class="col-vol cell-label">
+            {{ volumeLabel }}
+            <span class="cell-sub">（合计{{ cargoTotals.volume > 0 ? fmtTotalNum(cargoTotals.volume, 6) : '' }}m³）</span>
+            <el-tag size="small" type="danger" effect="plain" class="unit-tag">单位已调整为m³</el-tag>
+          </div>
+          <div class="col-size cell-label">
+            {{ sizeLabel }}
+            <span class="cell-sub">（CM）</span>
+          </div>
+          <div class="col-count cell-label required">
+            {{ countLabel }}
+            <span class="cell-sub">（合计{{ cargoTotals.itemCount || 0 }}件）</span>
+            <el-tooltip
+              :content="form.fillMode === 'unit' ? '单个包裹内的物品件数；合计=各行件数×包裹数之和' : '该物品类型全部包裹的物品总件数；合计=各行之和'"
+              placement="top"
+            >
+              <el-icon class="tip-ico"><InfoFilled /></el-icon>
+            </el-tooltip>
+          </div>
+          <div class="col-opt">
+            <el-button circle size="small" type="primary" plain :icon="Plus" @click="addCargoLine" />
+          </div>
+        </div>
+
+        <div v-for="(line, idx) in form.cargoLines" :key="idx" class="cargo-table-row">
+          <div class="col-name">
+            <el-input v-model="line.name" placeholder="请填写物品名称" maxlength="40" />
+          </div>
+          <div class="col-parcel">
             <el-input-number
-              v-model="form.totalWeight"
+              v-model="line.parcelQty"
+              :min="1"
+              :max="99"
+              controls-position="right"
+              placeholder="请输入包裹数"
+            />
+          </div>
+          <div class="col-weight">
+            <el-input-number
+              v-model="line.weight"
               :min="0.01"
               :step="0.1"
               :precision="2"
               controls-position="right"
+              :placeholder="form.fillMode === 'unit' ? '单个包裹重量' : '合计物品重量'"
             />
-            <span class="unit">KG</span>
           </div>
-        </el-form-item>
-        <el-form-item label="总包裹体积">
-          <div class="dim-row">
+          <div class="col-vol">
             <el-input-number
-              v-model="form.lengthCm"
+              v-model="line.volume"
               :min="0"
-              :precision="1"
+              :step="0.001"
+              :precision="6"
               controls-position="right"
-              placeholder="长"
+              placeholder="合计物品体积"
             />
-            <span class="dim-x">×</span>
-            <el-input-number
-              v-model="form.widthCm"
-              :min="0"
-              :precision="1"
-              controls-position="right"
-              placeholder="宽"
-            />
-            <span class="dim-x">×</span>
-            <el-input-number
-              v-model="form.heightCm"
-              :min="0"
-              :precision="1"
-              controls-position="right"
-              placeholder="高"
-            />
-            <span class="unit">CM</span>
-            <span v-if="computedVolume > 0" class="vol-tip">≈ {{ computedVolume }} dm³</span>
           </div>
-        </el-form-item>
+          <div class="col-size">
+            <div class="dim-row">
+              <el-input-number
+                v-model="line.lengthCm"
+                :min="0"
+                :precision="1"
+                controls-position="right"
+                placeholder="长"
+                @change="onLineDimsChange(line)"
+              />
+              <span class="dim-x">×</span>
+              <el-input-number
+                v-model="line.widthCm"
+                :min="0"
+                :precision="1"
+                controls-position="right"
+                placeholder="宽"
+                @change="onLineDimsChange(line)"
+              />
+              <span class="dim-x">×</span>
+              <el-input-number
+                v-model="line.heightCm"
+                :min="0"
+                :precision="1"
+                controls-position="right"
+                placeholder="高"
+                @change="onLineDimsChange(line)"
+              />
+            </div>
+          </div>
+          <div class="col-count">
+            <el-input-number
+              v-model="line.itemCount"
+              :min="1"
+              :max="9999"
+              controls-position="right"
+              :placeholder="form.fillMode === 'unit' ? '请输入件数' : '合计物品数'"
+            />
+          </div>
+          <div class="col-opt">
+            <el-button
+              circle
+              size="small"
+              type="danger"
+              plain
+              :icon="Minus"
+              :disabled="form.cargoLines.length <= 1"
+              @click="removeCargoLine(idx)"
+            />
+          </div>
+        </div>
       </div>
     </section>
 
-    <section class="card">
-      <div class="card-hd"><span class="sec-title">物流信息</span></div>
-      <div class="logistics-row">
-        <el-form-item label="物流账号" required>
-          <el-select v-model="form.carrierAccountId" placeholder="选择物流账号" style="width: 260px">
+    <section class="card logistics-card">
+      <div class="card-hd logistics-hd">
+        <div class="logistics-hd-left">
+          <el-icon class="logistics-icon"><Van /></el-icon>
+          <span class="sec-title">物流信息</span>
+        </div>
+        <div class="logistics-hd-right">
+          <span class="carrier-label">物流账号</span>
+          <el-select
+            v-model="form.carrierAccountId"
+            placeholder="选择物流账号"
+            size="small"
+            style="width: 220px"
+          >
             <el-option v-for="c in carriers" :key="c.id" :label="c.name" :value="c.id!" />
           </el-select>
-        </el-form-item>
-        <el-form-item label="物流付款方式">
-          <el-select v-model="form.payMode" style="width: 220px">
-            <el-option
-              value="monthly"
-              :label="carrierView?.custId ? `寄付月结 / ${carrierView.custId}` : '寄付月结'"
-            />
-            <el-option value="cash" label="寄付现结" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="寄件方式">
-          <el-radio-group v-model="form.pickupMode">
-            <el-radio value="self">自行联系快递员</el-radio>
-            <el-radio value="appoint">预约寄件</el-radio>
-          </el-radio-group>
-        </el-form-item>
+        </div>
       </div>
 
-      <div class="product-label">
-        物流产品
-        <span class="product-hint">每次下单可选，不跟物流账号绑定</span>
+      <div class="express-form-row">
+        <div class="express-field">
+          <div class="cell-label required">物流付款方式</div>
+          <el-select v-model="form.payMode" placeholder="请选择" style="width: 100%">
+            <el-option
+              v-for="opt in payModeOptions"
+              :key="opt.value"
+              :value="opt.value"
+              :label="opt.label"
+              :disabled="opt.disabled"
+            />
+          </el-select>
+        </div>
+
+        <div class="express-field product-field">
+          <div class="cell-label required">物流产品</div>
+          <el-select v-model="form.expressType" placeholder="请选择物流产品" style="width: 100%">
+            <el-option
+              v-for="p in expressProducts"
+              :key="p.value"
+              :value="p.value"
+              :label="p.name"
+            />
+          </el-select>
+        </div>
+
+        <div class="express-field pickup-field" :class="{ 'is-appoint': form.pickupMode === 'appoint' }">
+          <div class="cell-label required">寄件方式</div>
+          <div class="pickup-inline">
+            <div class="pickup-mode">
+              <button
+                type="button"
+                class="pickup-btn"
+                :class="{ active: form.pickupMode === 'self' }"
+                @click="setPickupMode('self')"
+              >
+                自行联系快递员
+              </button>
+              <button
+                type="button"
+                class="pickup-btn"
+                :class="{ active: form.pickupMode === 'appoint' }"
+                @click="setPickupMode('appoint')"
+              >
+                预约寄件
+              </button>
+            </div>
+            <el-cascader
+              v-if="form.pickupMode === 'appoint'"
+              v-model="form.appointSlot"
+              :options="appointCascaderOptions"
+              placeholder="请选择预约上门时间"
+              class="appoint-cascader"
+              :props="{ expandTrigger: 'hover' }"
+            />
+          </div>
+          <div v-if="form.pickupMode === 'appoint'" class="pickup-tip">
+            将通知快递员按所选时段上门揽收
+            <span v-if="resolveSendStartTm()">（{{ resolveSendStartTm() }} 起）</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="product-reco-hd">
+        物流产品推荐
+        <span class="product-hint">点击卡片即可切换，与上方「物流产品」同步</span>
       </div>
       <div class="product-cards">
         <button
@@ -599,10 +987,17 @@ onMounted(async () => {
           :class="{ active: form.expressType === p.value }"
           @click="form.expressType = p.value"
         >
+          <span v-if="p.tag" class="ptag">{{ p.tag }}</span>
           <div class="pname">{{ p.name }}</div>
           <div class="phint">{{ p.hint }}</div>
           <span v-if="form.expressType === p.value" class="check">✓</span>
         </button>
+      </div>
+      <div class="product-current muted">
+        当前选择：{{ selectedProduct.name }}
+        <template v-if="form.payMode === 'monthly' && carrierView?.custId">
+          · 月结卡号 {{ carrierView.custId }}
+        </template>
       </div>
     </section>
 
@@ -624,20 +1019,9 @@ onMounted(async () => {
       </div>
       <div class="remark-block">
         <div class="remark-label">
-          给快递员捎个话
-          <span class="tag-warn">仅快递员可见，不显示在面单/清单上</span>
+          上传图片
+          <span class="tag-muted">可选，存档于发货中心，可在发货单详情查看</span>
         </div>
-        <el-input
-          v-model="form.courierNote"
-          type="textarea"
-          :rows="2"
-          maxlength="40"
-          show-word-limit
-          placeholder="请输入你要对快递员说的话……"
-        />
-      </div>
-      <div class="remark-block">
-        <div class="remark-label">上传图片 <span class="tag-muted">可选，随发货单存档</span></div>
         <div class="img-list">
           <div v-for="(url, idx) in form.remarkImages" :key="url" class="img-item">
             <el-image :src="url" fit="cover" :preview-src-list="form.remarkImages" />
@@ -693,12 +1077,35 @@ onMounted(async () => {
         </el-button>
       </div>
     </footer>
+
+    <el-dialog
+      v-model="forbidDialogVisible"
+      title="禁止寄递物品目录"
+      width="720px"
+      top="6vh"
+      append-to-body
+      class="forbid-dialog"
+    >
+      <div class="forbid-scroll">
+        <p class="forbid-intro">以下物品禁止寄递，请确认托寄物不在目录范围内。</p>
+        <section v-for="sec in forbidItemsCatalog" :key="sec.no" class="forbid-sec">
+          <h4>{{ sec.no }}、{{ sec.title }}</h4>
+          <p v-if="sec.body">{{ sec.body }}</p>
+          <ol v-if="sec.items?.length">
+            <li v-for="(it, i) in sec.items" :key="i">{{ it }}</li>
+          </ol>
+        </section>
+      </div>
+      <template #footer>
+        <el-button type="primary" @click="forbidDialogVisible = false">我知道了</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <style scoped>
 .sf-page {
-  max-width: 1100px;
+  max-width: 1280px;
   margin: 0 auto;
   padding: 0 0 96px;
 }
@@ -809,72 +1216,176 @@ onMounted(async () => {
 }
 .formish :deep(.el-form-item) { margin-bottom: 10px; }
 .region-preview { font-size: 12px; color: #909399; margin-top: -4px; }
-.cargo-grid {
-  display: flex;
+.cargo-hd {
   flex-wrap: wrap;
-  gap: 12px 20px;
-  align-items: flex-end;
+  gap: 10px 16px;
 }
-.cargo-grid :deep(.el-form-item) { margin-bottom: 0; }
-.unit-field {
+.cargo-hd-left,
+.cargo-hd-right {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.cargo-icon {
+  color: #c8161d;
+  font-size: 18px;
+}
+.forbid-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 12px;
+  color: #909399;
+  border: none;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+.forbid-link:hover { color: #c8161d; }
+.forbid-scroll {
+  max-height: 65vh;
+  overflow: auto;
+  padding-right: 8px;
+  font-size: 13px;
+  line-height: 1.65;
+  color: #303133;
+}
+.forbid-intro {
+  margin: 0 0 12px;
+  color: #c8161d;
+  font-size: 13px;
+}
+.forbid-sec {
+  margin-bottom: 14px;
+}
+.forbid-sec h4 {
+  margin: 0 0 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1f2329;
+}
+.forbid-sec p {
+  margin: 0;
+  color: #4e5969;
+}
+.forbid-sec ol {
+  margin: 4px 0 0;
+  padding-left: 1.4em;
+  color: #4e5969;
+}
+.forbid-sec li { margin-bottom: 4px; }
+.fill-label {
+  font-size: 12px;
+  color: #909399;
+}
+.fill-mode {
+  display: inline-flex;
+  border: 1px solid #e4e7ec;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.fill-btn {
+  border: none;
+  background: #fff;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: #606266;
+  cursor: pointer;
+  line-height: 1.4;
+}
+.fill-btn + .fill-btn { border-left: 1px solid #e4e7ec; }
+.fill-btn.active {
+  background: #fff1f0;
+  color: #c8161d;
+  font-weight: 600;
+}
+.fill-mode-hint {
+  margin: -4px 0 12px;
+  font-size: 12px;
+  color: #909399;
+  line-height: 1.4;
+}
+.lib-link { font-size: 13px; }
+.item-lib {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.item-lib-btn {
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  color: #303133;
+}
+.item-lib-btn:hover {
+  background: #f5f7fa;
+  color: #c8161d;
+}
+.cargo-table-wrap {
+  overflow-x: auto;
+}
+.cargo-table-hd,
+.cargo-table-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 1.2fr) 90px 130px 130px minmax(240px, 1.4fr) 130px 40px;
+  gap: 8px;
+  align-items: center;
+  min-width: 980px;
+}
+.cargo-table-hd {
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #f0f2f5;
+}
+.cargo-table-row {
+  margin-bottom: 8px;
+}
+.cargo-table-row :deep(.el-input-number) { width: 100%; }
+.col-opt {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+.cell-label {
+  font-size: 13px;
+  color: #606266;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  min-height: 22px;
+}
+.cell-label.required::before {
+  content: '*';
+  color: #c8161d;
+  margin-right: 2px;
+}
+.cell-sub {
+  font-size: 12px;
+  color: #a8abb2;
+  font-weight: normal;
+}
+.tip-ico {
+  color: #c0c4cc;
+  font-size: 14px;
+  cursor: help;
+}
+.unit-tag {
+  margin-left: 2px;
 }
 .dim-row {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
 }
-.dim-row :deep(.el-input-number) { width: 100px; }
-.dim-x { color: #909399; padding: 0 2px; }
-.unit {
-  font-size: 12px;
-  color: #909399;
-  margin-left: 2px;
-}
-.vol-tip {
-  margin-left: 8px;
-  font-size: 12px;
-  color: #a8abb2;
-}
-.goods-editor {
-  margin-bottom: 14px;
-  padding-bottom: 12px;
-  border-bottom: 1px dashed #ebeef5;
-}
-.goods-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  margin-bottom: 8px;
-}
-.goods-name {
-  flex: 1;
-  min-width: 0;
-  margin-bottom: 0 !important;
-}
-.goods-qty {
-  width: 130px;
-  flex-shrink: 0;
-  margin-bottom: 0 !important;
-}
-.goods-del {
-  margin-top: 0;
-  flex-shrink: 0;
-}
-.goods-del.with-label {
-  margin-top: 30px;
-}
-.goods-sum {
-  font-size: 12px;
-  color: #909399;
-  margin-top: 4px;
-}
-.package-meta {
-  margin-top: 4px;
-}
+.dim-row :deep(.el-input-number) { width: 72px; }
+.dim-x { color: #909399; padding: 0 1px; font-size: 12px; }
 .remark-block + .remark-block { margin-top: 14px; }
 .remark-label {
   font-size: 13px;
@@ -886,7 +1397,6 @@ onMounted(async () => {
   flex-wrap: wrap;
 }
 .tag-opt { color: #c8161d; font-size: 12px; }
-.tag-warn { color: #c8161d; font-size: 12px; }
 .tag-muted { color: #a8abb2; font-size: 12px; }
 .img-list {
   display: flex;
@@ -939,22 +1449,98 @@ onMounted(async () => {
   border-color: #c8161d;
   color: #c8161d;
 }
-.logistics-row {
+.logistics-hd {
+  flex-wrap: wrap;
+  gap: 10px 16px;
+}
+.logistics-hd-left,
+.logistics-hd-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.logistics-icon {
+  color: #c8161d;
+  font-size: 18px;
+}
+.carrier-label {
+  font-size: 12px;
+  color: #909399;
+}
+.express-form-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px 20px;
-  align-items: center;
-  margin-bottom: 8px;
+  gap: 16px 24px;
+  align-items: flex-start;
+  margin-bottom: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px dashed #ebeef5;
 }
-.logistics-row :deep(.el-form-item) { margin-bottom: 0; }
-.cust { font-size: 12px; color: #909399; }
-.product-label {
+.express-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 180px;
+  flex: 1;
+}
+.express-field.product-field { min-width: 160px; max-width: 220px; flex: 0.8; }
+.express-field.pickup-field { min-width: 280px; flex: 1.6; }
+.express-field.pickup-field.is-appoint {
+  flex: 2 1 420px;
+  min-width: 420px;
+}
+.pickup-inline {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.pickup-mode {
+  display: inline-flex;
+  flex-shrink: 0;
+  border: 1px solid #e4e7ec;
+  border-radius: 4px;
+  overflow: hidden;
+  width: fit-content;
+}
+.pickup-btn {
+  border: none;
+  background: #fff;
+  padding: 8px 14px;
   font-size: 13px;
   color: #606266;
-  margin: 8px 0;
+  cursor: pointer;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.pickup-btn + .pickup-btn { border-left: 1px solid #e4e7ec; }
+.pickup-btn.active {
+  background: #fff1f0;
+  color: #c8161d;
+  font-weight: 600;
+}
+.appoint-cascader {
+  width: 280px;
+  min-width: 220px;
+  flex: 1 1 220px;
+  max-width: 320px;
+}
+.pickup-tip {
+  font-size: 12px;
+  color: #a8abb2;
+}
+.product-reco-hd {
+  font-size: 13px;
+  color: #606266;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 .product-hint {
-  margin-left: 8px;
   font-size: 12px;
   color: #a8abb2;
   font-weight: 400;
@@ -966,14 +1552,15 @@ onMounted(async () => {
 }
 .product-card {
   position: relative;
-  width: 160px;
+  width: 168px;
   text-align: left;
   border: 1px solid #dcdfe6;
-  background: #fafafa;
+  background: #fff;
   border-radius: 8px;
-  padding: 12px 14px;
+  padding: 14px 14px 12px;
   cursor: pointer;
   transition: border-color 0.15s, background 0.15s;
+  overflow: hidden;
 }
 .product-card:hover { border-color: #f89898; }
 .product-card.active {
@@ -981,8 +1568,21 @@ onMounted(async () => {
   background: #fff5f5;
   box-shadow: 0 0 0 1px #c8161d inset;
 }
+.ptag {
+  display: inline-block;
+  font-size: 11px;
+  color: #c8161d;
+  background: #fff1f0;
+  border-radius: 2px;
+  padding: 1px 6px;
+  margin-bottom: 6px;
+}
 .pname { font-weight: 700; font-size: 15px; color: #303133; }
-.phint { margin-top: 4px; font-size: 12px; color: #909399; }
+.phint { margin-top: 4px; font-size: 12px; color: #909399; line-height: 1.4; }
+.product-current {
+  margin-top: 10px;
+  font-size: 12px;
+}
 .check {
   position: absolute;
   right: 8px;

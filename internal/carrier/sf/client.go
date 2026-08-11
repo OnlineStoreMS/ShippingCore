@@ -115,7 +115,8 @@ type CreateOrderRequest struct {
 	LengthCM     float64
 	WidthCM      float64
 	HeightCM     float64
-	IsDoCall     bool // 预约上门揽收
+	IsDoCall     bool   // 预约上门揽收 isDocall=1
+	SendStartTm  string // 要求上门取件开始时间 YYYY-MM-DD HH:mm:ss
 	Shipper      ContactInfo
 	Receiver     ContactInfo
 }
@@ -217,8 +218,10 @@ func (c *Client) CreateOrder(ctx context.Context, req CreateOrderRequest) (*Crea
 			payload["monthlyCard"] = custID
 		}
 	}
-	if remark := strings.TrimSpace(req.Remark); remark != "" {
+	// 保留内部换行（订单备注多行）；只去掉首尾空白
+	if remark := strings.Trim(req.Remark, " \t\r"); remark != "" {
 		payload["remark"] = remark
+		log.Printf("sf create order payload remark=%q", truncate(remark, 120))
 	}
 	if req.TotalWeight > 0 {
 		payload["totalWeight"] = req.TotalWeight
@@ -231,6 +234,9 @@ func (c *Client) CreateOrder(ctx context.Context, req CreateOrderRequest) (*Crea
 	}
 	if req.IsDoCall {
 		payload["isDocall"] = 1
+	}
+	if tm := strings.TrimSpace(req.SendStartTm); tm != "" {
+		payload["sendStartTm"] = tm
 	}
 
 	var apiResp apiEnvelope
@@ -310,6 +316,7 @@ func buildPrintDocument(mailNo string, opt *PrintDocOptions) map[string]interfac
 		doc["cargoDesc"] = r
 		doc["goods"] = r
 		doc["product"] = r
+		doc["备注"] = r
 	}
 	return doc
 }
@@ -327,6 +334,7 @@ func buildPrintExtJSON(opt *PrintDocOptions) map[string]interface{} {
 		"cargoDesc": r,
 		"goods":     r,
 		"product":   r,
+		"备注":       r,
 	}
 }
 
@@ -355,10 +363,15 @@ func (c *Client) CloudPrintParsedData(ctx context.Context, mailNo, templateCode 
 		}
 	}
 	if ext := buildPrintExtJSON(opt); ext != nil {
-		payload["extJson"] = ext
+		// 丰桥部分网关要求 extJson 为 JSON 字符串
+		if b, err := json.Marshal(ext); err == nil {
+			payload["extJson"] = string(b)
+		} else {
+			payload["extJson"] = ext
+		}
 	}
 	if r, _ := doc["remark"].(string); r != "" {
-		log.Printf("sf cloud print parsed %s template=%s custom=%s remarkLen=%d", mailNo, templateCode, customTpl, len(r))
+		log.Printf("sf cloud print parsed %s template=%s custom=%s remark=%q", mailNo, templateCode, customTpl, truncate(r, 120))
 	} else {
 		log.Printf("sf cloud print parsed %s template=%s custom=%s remark=EMPTY", mailNo, templateCode, customTpl)
 	}
@@ -452,10 +465,14 @@ func (c *Client) CloudPrint(ctx context.Context, mailNo, templateCode string, op
 		}
 	}
 	if ext := buildPrintExtJSON(opt); ext != nil {
-		payload["extJson"] = ext
+		if b, err := json.Marshal(ext); err == nil {
+			payload["extJson"] = string(b)
+		} else {
+			payload["extJson"] = ext
+		}
 	}
 	if r, _ := doc["remark"].(string); r != "" {
-		log.Printf("sf cloud print %s template=%s custom=%s remarkLen=%d", mailNo, templateCode, customTpl, len(r))
+		log.Printf("sf cloud print %s template=%s custom=%s remark=%q", mailNo, templateCode, customTpl, truncate(r, 120))
 	} else {
 		log.Printf("sf cloud print %s template=%s custom=%s remark=EMPTY", mailNo, templateCode, customTpl)
 	}
@@ -619,14 +636,27 @@ func decodeResultData(apiResp apiEnvelope, out interface{}) error {
 		}
 		return fmt.Errorf("sf api: %s", msg)
 	}
-	if len(apiResp.APIResultData) == 0 {
-		return fmt.Errorf("sf api: empty result data")
+	if len(apiResp.APIResultData) == 0 || string(apiResp.APIResultData) == "null" || string(apiResp.APIResultData) == `""` {
+		return fmt.Errorf("sf api: empty result data (apiResultData=%s)", truncate(string(apiResp.APIResultData), 64))
 	}
-	var raw string
-	if err := json.Unmarshal(apiResp.APIResultData, &raw); err == nil && raw != "" {
-		return json.Unmarshal([]byte(raw), out)
+	data := apiResp.APIResultData
+	// 丰桥偶发多层 JSON 字符串包裹
+	for i := 0; i < 5; i++ {
+		var asStr string
+		if err := json.Unmarshal(data, &asStr); err == nil {
+			asStr = strings.TrimSpace(asStr)
+			if asStr == "" {
+				return fmt.Errorf("sf api: empty result data after unwrap")
+			}
+			data = json.RawMessage(asStr)
+			continue
+		}
+		break
 	}
-	return json.Unmarshal(apiResp.APIResultData, out)
+	if err := json.Unmarshal(data, out); err != nil {
+		return fmt.Errorf("sf result decode: %w (raw=%s)", err, truncate(string(data), 256))
+	}
+	return nil
 }
 
 func (c *Client) call(ctx context.Context, serviceCode string, payload interface{}, out *apiEnvelope) error {

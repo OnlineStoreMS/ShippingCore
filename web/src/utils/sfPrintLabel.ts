@@ -7,6 +7,9 @@ export async function printShipmentByChannel(opts: {
   printChannel?: string | null
   /** 仅 plugin 通道需要 */
   printerIndex?: number | null
+  /** 覆盖账号默认模板（plugin） */
+  templateCode?: string
+  customTemplateCode?: string
 }): Promise<'pdf' | 'plugin'> {
   const channel = (opts.printChannel || 'plugin').toLowerCase() === 'pdf' ? 'pdf' : 'plugin'
   if (channel === 'pdf') {
@@ -16,7 +19,7 @@ export async function printShipmentByChannel(opts: {
     const win = window.open(blobUrl, '_blank')
     if (!win) {
       URL.revokeObjectURL(blobUrl)
-      throw new Error('浏览器拦截了弹窗，请允许后重试；也可在发货单详情打开面单')
+      throw new Error('浏览器拦截了弹窗，请允许后重试；也可在发货单详情查看存档 PDF')
     }
     // 延后释放，避免标签页尚未加载完 PDF 就被回收
     window.setTimeout(() => URL.revokeObjectURL(blobUrl), 120_000)
@@ -25,7 +28,13 @@ export async function printShipmentByChannel(opts: {
   if (opts.printerIndex == null) {
     throw new Error('PRINTER_NOT_SELECTED')
   }
-  const pluginData = await shippingApi.fetchShipmentPrintPluginData(opts.shipmentId)
+  const params: { templateCode?: string; customTemplateCode?: string } = {}
+  if (opts.templateCode) params.templateCode = opts.templateCode
+  if (opts.customTemplateCode) params.customTemplateCode = opts.customTemplateCode
+  const pluginData = await shippingApi.fetchShipmentPrintPluginData(
+    opts.shipmentId,
+    Object.keys(params).length ? params : undefined,
+  )
   await printWithSFPlugin(pluginData, { printerIndex: opts.printerIndex })
   return 'plugin'
 }

@@ -3,8 +3,15 @@ import { onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Printer, Refresh, Search } from '@element-plus/icons-vue'
-import { shippingApi, shipmentStatusMap, type CarrierAccount, type Shipment } from '../api/shipping'
+import {
+  shippingApi,
+  shipmentStatusMap,
+  parseShipmentRemarkImages,
+  type CarrierAccount,
+  type Shipment,
+} from '../api/shipping'
 import { printShipmentByChannel } from '../utils/sfPrintLabel'
+import { formatDateTime } from '../utils/date'
 import {
   getSavedPrinterIndex,
   listLocalPrinters,
@@ -89,6 +96,19 @@ function goodsText(row: Shipment) {
     .slice(0, 4)
     .map((it) => `${it.goodsName || '商品'}×${it.quantity || 1}`)
     .join('；') + (items.length > 4 ? ` 等${items.length}件` : '')
+}
+
+function detailRemarkImages(row: Shipment | null) {
+  return parseShipmentRemarkImages(row)
+}
+
+function fmtTime(v?: string | null) {
+  if (!v) return '-'
+  const d = new Date(v)
+  if (Number.isNaN(d.getTime())) {
+    return String(v).replace('T', ' ').replace(/\.\d+Z?$/, '').slice(0, 19)
+  }
+  return formatDateTime(d)
 }
 
 async function load() {
@@ -375,7 +395,12 @@ onMounted(() => {
             {{ [row.shipperName, row.shipperMobile].filter(Boolean).join(' ') || '-' }}
           </template>
         </el-table-column>
-        <el-table-column prop="createdAt" label="创建时间" width="170" />
+        <el-table-column label="创建时间" width="170">
+          <template #default="{ row }">{{ fmtTime(row.createdAt) }}</template>
+        </el-table-column>
+        <el-table-column label="打印时间" width="170">
+          <template #default="{ row }">{{ fmtTime(row.printedAt) }}</template>
+        </el-table-column>
         <el-table-column label="操作" width="220" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="openDetail(row)">详情</el-button>
@@ -438,15 +463,31 @@ onMounted(() => {
             {{ detail.shipperName }} / {{ detail.shipperMobile }} / {{ detail.shipperAddress }}
           </el-descriptions-item>
           <el-descriptions-item label="托寄物">{{ detail.cargoName || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="运单备注">{{ detail.remark || '-' }}</el-descriptions-item>
           <el-descriptions-item label="月结">{{ detail.useMonthly ? '是' : '否' }}</el-descriptions-item>
-          <el-descriptions-item label="面单链接">
-            <el-link v-if="detail.labelUrl" :href="detail.labelUrl" target="_blank" type="primary">打开面单</el-link>
-            <span v-else>-</span>
+          <el-descriptions-item label="面单 PDF">
+            <el-link v-if="detail.labelPdfUrl" :href="detail.labelPdfUrl" target="_blank" type="primary">查看存档 PDF</el-link>
+            <span v-else class="muted">打单后自动存档</span>
           </el-descriptions-item>
           <el-descriptions-item v-if="detail.errorMessage" label="错误">
             <span class="error-text">{{ detail.errorMessage }}</span>
           </el-descriptions-item>
         </el-descriptions>
+
+        <div v-if="detailRemarkImages(detail).length" class="items-block">
+          <div class="block-title">存档图片</div>
+          <div class="remark-imgs">
+            <el-image
+              v-for="url in detailRemarkImages(detail)"
+              :key="url"
+              :src="url"
+              fit="cover"
+              class="remark-img"
+              :preview-src-list="detailRemarkImages(detail)"
+              preview-teleported
+            />
+          </div>
+        </div>
 
         <div v-if="detail.items?.length" class="items-block">
           <div class="block-title">商品明细</div>
@@ -515,5 +556,18 @@ onMounted(() => {
 .items-block { margin-top: 20px; }
 .block-title { font-weight: 600; margin-bottom: 8px; }
 .error-text { color: #f56c6c; }
+.muted { color: #909399; }
 .detail-actions { margin-top: 20px; }
+.remark-imgs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.remark-img {
+  width: 88px;
+  height: 88px;
+  border-radius: 6px;
+  border: 1px solid #e4e7ec;
+  cursor: pointer;
+}
 </style>

@@ -71,6 +71,7 @@ type CreateShipmentFromOrderDTO struct {
 	HeightCM         float64          `json:"heightCm,omitempty"`
 	TotalVolume      float64          `json:"totalVolume,omitempty"` // m³
 	PickupMode       string           `json:"pickupMode,omitempty"`  // self | appoint
+	SendStartTm      string           `json:"sendStartTm,omitempty"` // 预约上门开始时间 YYYY-MM-DD HH:mm:ss
 	OrderID          uint64           `json:"orderId,omitempty"`
 	SourceSystem     string           `json:"sourceSystem,omitempty"`
 	Order            OrderSnapshotDTO `json:"order"`

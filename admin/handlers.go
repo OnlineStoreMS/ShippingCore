@@ -307,7 +307,12 @@ func (h *Handlers) GetShipmentPrintPluginData(c *gin.Context) {
 		response.Fail(c, http.StatusBadRequest, "invalid id")
 		return
 	}
-	data, err := h.shipment(c).FetchPrintPluginData(c.Request.Context(), id)
+	data, err := h.shipment(c).FetchPrintPluginData(
+		c.Request.Context(),
+		id,
+		c.Query("templateCode"),
+		c.Query("customTemplateCode"),
+	)
 	if err != nil {
 		httputil.HandleServiceError(c, err)
 		return

@@ -14,6 +14,7 @@ import (
 	"shippingcore/internal/integrations/storesyncagent"
 	"shippingcore/internal/model"
 	"shippingcore/internal/repo"
+	"shippingcore/internal/storage"
 
 	"gorm.io/gorm"
 )
@@ -24,11 +25,12 @@ type ShipmentService struct {
 	shipper   *ShipperService
 	ssAgent   *storesyncagent.Client
 	orderCore *ordercore.Client
+	store     storage.Storage
 	tenantID  uint64
 }
 
-func NewShipmentService(repos *repo.Repos, carrier *CarrierService, shipper *ShipperService, ssAgent *storesyncagent.Client, orderCore *ordercore.Client) *ShipmentService {
-	return &ShipmentService{repos: repos, carrier: carrier, shipper: shipper, ssAgent: ssAgent, orderCore: orderCore}
+func NewShipmentService(repos *repo.Repos, carrier *CarrierService, shipper *ShipperService, ssAgent *storesyncagent.Client, orderCore *ordercore.Client, store storage.Storage) *ShipmentService {
+	return &ShipmentService{repos: repos, carrier: carrier, shipper: shipper, ssAgent: ssAgent, orderCore: orderCore, store: store}
 }
 
 func (s *ShipmentService) ForTenant(tenantID uint64) *ShipmentService {
@@ -39,6 +41,7 @@ func (s *ShipmentService) ForTenant(tenantID uint64) *ShipmentService {
 		shipper:   s.shipper.ForTenant(tid),
 		ssAgent:   s.ssAgent,
 		orderCore: s.orderCore,
+		store:     s.store,
 		tenantID:  tid,
 	}
 }
@@ -213,6 +216,18 @@ func (s *ShipmentService) CreateFromOrder(in *dto.CreateShipmentFromOrderDTO) (*
 	if pickupMode == "" {
 		pickupMode = "self"
 	}
+	sendStartTm := strings.TrimSpace(in.SendStartTm)
+	if strings.EqualFold(pickupMode, "appoint") && sendStartTm == "" {
+		return nil, fmt.Errorf("%w: 预约寄件请选择上门时间", ErrBadRequest)
+	}
+	if sendStartTm != "" {
+		if _, err := time.ParseInLocation("2006-01-02 15:04:05", sendStartTm, time.Local); err != nil {
+			return nil, fmt.Errorf("%w: sendStartTm 格式须为 YYYY-MM-DD HH:mm:ss", ErrBadRequest)
+		}
+	}
+	if !strings.EqualFold(pickupMode, "appoint") {
+		sendStartTm = ""
+	}
 
 	sourceSystem := strings.TrimSpace(in.SourceSystem)
 	if sourceSystem == "" {
@@ -279,7 +294,6 @@ func (s *ShipmentService) CreateFromOrder(in *dto.CreateShipmentFromOrderDTO) (*
 		ParcelQty:        parcelQty,
 		CargoCount:       cargoCount,
 		Remark:           strings.TrimSpace(in.Remark),
-		CourierNote:      strings.TrimSpace(in.CourierNote),
 		RemarkImages:     remarkImagesJSON,
 		TotalWeight:      in.TotalWeight,
 		LengthCM:         in.LengthCM,
@@ -287,6 +301,7 @@ func (s *ShipmentService) CreateFromOrder(in *dto.CreateShipmentFromOrderDTO) (*
 		HeightCM:         in.HeightCM,
 		TotalVolume:      volume,
 		PickupMode:       pickupMode,
+		SendStartTm:      sendStartTm,
 		Items:            items,
 	}
 
@@ -329,16 +344,8 @@ func (s *ShipmentService) CreateWaybill(ctx context.Context, token string, id ui
 	sfCargoName := shipmentSFCargoName(shipment)
 
 	client := newSFClient(carrier)
-	orderID := shipmentOrderID(shipment.ID)
-	sfRemark := strings.TrimSpace(shipment.Remark)
-	if note := strings.TrimSpace(shipment.CourierNote); note != "" {
-		// 开放平台无独立「捎话」字段时并入 remark，前缀区分
-		if sfRemark != "" {
-			sfRemark = sfRemark + "；捎话:" + note
-		} else {
-			sfRemark = "捎话:" + note
-		}
-	}
+	// 面单「订单号」用平台订单号（如 OC202608110009），无则回退 SC{发货单id}
+	orderID := sfCustomerOrderID(shipment)
 	result, err := client.CreateOrder(ctx, sf.CreateOrderRequest{
 		OrderID:      orderID,
 		UseMonthly:   shipment.UseMonthly,
@@ -348,13 +355,14 @@ func (s *ShipmentService) CreateWaybill(ctx context.Context, token string, id ui
 		ParcelQty:    shipment.ParcelQty,
 		CargoName:    sfCargoName,
 		CargoDetails: cargos,
-		Remark:       sfRemark,
+		Remark:       strings.TrimSpace(shipment.Remark),
 		TotalWeight:  shipment.TotalWeight,
 		TotalVolume:  shipment.TotalVolume,
 		LengthCM:     shipment.LengthCM,
 		WidthCM:      shipment.WidthCM,
 		HeightCM:     shipment.HeightCM,
 		IsDoCall:     strings.EqualFold(shipment.PickupMode, "appoint"),
+		SendStartTm:  strings.TrimSpace(shipment.SendStartTm),
 		Shipper: sf.ContactInfo{
 			ContactType: 1,
 			Contact:     shipment.ShipperName,
@@ -446,79 +454,35 @@ func (s *ShipmentService) Print(ctx context.Context, id uint64) (*model.Shipment
 	return s.Get(shipment.ID)
 }
 
-// buildLabelRemark 拼进云打印 documents.remark（模板自定义区「备注」），含托寄物与商品摘要。
-func buildLabelRemark(shipment *model.Shipment) string {
-	parts := make([]string, 0, 4)
-	if name := strings.TrimSpace(shipment.CargoName); name != "" {
-		parts = append(parts, "托寄物:"+name)
+func truncateRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
 	}
-	if len(shipment.Items) > 0 {
-		goods := make([]string, 0, len(shipment.Items))
-		for _, it := range shipment.Items {
-			n := shipmentItemShipName(it)
-			if n == "" {
-				continue
-			}
-			qty := it.Quantity
-			if qty <= 0 {
-				qty = 1
-			}
-			goods = append(goods, fmt.Sprintf("%s×%d", n, qty))
-			if len(goods) >= 6 {
-				break
-			}
-		}
-		if len(goods) > 0 {
-			parts = append(parts, "商品:"+strings.Join(goods, ","))
-		}
+	rs := []rune(s)
+	if len(rs) <= max {
+		return s
 	}
-	if r := strings.TrimSpace(shipment.Remark); r != "" {
-		parts = append(parts, r)
-	}
-	out := strings.Join(parts, "；")
-	// 自定义区空间有限，避免过长
-	const maxLen = 180
-	if len([]rune(out)) > maxLen {
-		rs := []rune(out)
-		out = string(rs[:maxLen]) + "…"
-	}
-	return out
+	return string(rs[:max])
 }
 
-func (s *ShipmentService) printDocOpt(shipment *model.Shipment, carrier *model.CarrierAccount) *sf.PrintDocOptions {
-	opt := &sf.PrintDocOptions{Remark: buildLabelRemark(shipment)}
-	if carrier != nil {
-		opt.CustomTemplateCode = strings.TrimSpace(carrier.CustomTemplateCode)
-	}
-	return opt
+func (s *ShipmentService) printDocOpt(_ *model.Shipment, _ *model.CarrierAccount) *sf.PrintDocOptions {
+	// 仅使用标准模板；不传自定义区 / remark（托寄物走 cargoDetails）
+	return &sf.PrintDocOptions{}
 }
 
-// resolveSFPrintTemplates 拆分标准模板 / 自定义模板。
-// 丰桥要求 templateCode 必须归属当前顾客编码；*_custom_* 只能走 customTemplateCode。
+// resolveSFPrintTemplates 仅返回标准模板；自定义区暂不使用。
 func resolveSFPrintTemplates(carrier *model.CarrierAccount) (templateCode, customTemplateCode string) {
 	std := strings.TrimSpace(carrier.TemplateCode)
-	custom := strings.TrimSpace(carrier.CustomTemplateCode)
-
-	// 误把自定义码填进「面单模板」时自动纠正
+	// 误把自定义码填进「面单模板」时改回顾客标准模板
 	if strings.Contains(std, "_custom_") {
-		if custom == "" {
-			custom = std
-		}
 		std = ""
 	}
-	if custom != "" && !strings.Contains(custom, "_custom_") && std == "" {
-		// 自定义栏误填了标准码
-		std = custom
-		custom = ""
-	}
-
 	if std == "" {
-		// 常见：fm_76130_standard_{partnerID}
 		if p := strings.TrimSpace(carrier.PartnerID); p != "" {
 			std = "fm_76130_standard_" + p
 		}
 	}
-	return std, custom
+	return std, ""
 }
 
 func resolvePrintTemplateCode(carrier *model.CarrierAccount) string {
@@ -526,13 +490,28 @@ func resolvePrintTemplateCode(carrier *model.CarrierAccount) string {
 	return std
 }
 
+func markShipmentPrinted(shipment *model.Shipment) {
+	if shipment == nil {
+		return
+	}
+	now := time.Now()
+	shipment.PrintedAt = &now
+	if shipment.Status == model.ShipmentStatusCancelled {
+		return
+	}
+	if shipment.Status == model.ShipmentStatusCreated ||
+		shipment.Status == model.ShipmentStatusFailed ||
+		shipment.Status == model.ShipmentStatusDraft {
+		shipment.Status = model.ShipmentStatusPrinted
+	}
+}
+
 func (s *ShipmentService) applyCloudPrint(ctx context.Context, client *sf.Client, carrier *model.CarrierAccount, shipment *model.Shipment, tpl string) error {
-	std, custom := resolveSFPrintTemplates(carrier)
+	std, _ := resolveSFPrintTemplates(carrier)
 	if std != "" {
 		tpl = std
 	}
 	opt := s.printDocOpt(shipment, carrier)
-	opt.CustomTemplateCode = custom
 	channel := strings.ToLower(strings.TrimSpace(carrier.PrintChannel))
 	if channel == "plugin" || channel == "parsed" || channel == "parseddata" {
 		parsed, err := client.CloudPrintParsedData(ctx, shipment.MailNo, tpl, opt)
@@ -542,9 +521,9 @@ func (s *ShipmentService) applyCloudPrint(ctx context.Context, client *sf.Client
 		shipment.LabelURL = "sf-plugin://" + shipment.MailNo
 		shipment.LabelToken = ""
 		shipment.LabelData = string(parsed.ObjJSON)
-		if shipment.Status == model.ShipmentStatusCreated || shipment.Status == model.ShipmentStatusFailed {
-			shipment.Status = model.ShipmentStatusPrinted
-		}
+		markShipmentPrinted(shipment)
+		// 插件通道刚出单后立刻拉 PDF 常被丰桥返回空结果；异步重试存档，不挡出单/打印
+		s.scheduleArchiveLabelPDF(shipment.ID, shipment.CarrierAccountID, shipment.MailNo, tpl, "")
 		return nil
 	}
 
@@ -556,17 +535,123 @@ func (s *ShipmentService) applyCloudPrint(ctx context.Context, client *sf.Client
 	shipment.LabelToken = result.LabelToken
 	shipment.LabelData = result.LabelData
 	if shipment.LabelURL != "" && !strings.HasPrefix(shipment.LabelURL, "sf://") {
-		if shipment.Status == model.ShipmentStatusCreated || shipment.Status == model.ShipmentStatusFailed {
-			shipment.Status = model.ShipmentStatusPrinted
+		markShipmentPrinted(shipment)
+	}
+	if url, err := s.archiveLabelPDFOnce(ctx, client, carrier, shipment, tpl, "", result); err == nil && url != "" {
+		shipment.LabelPdfURL = url
+	} else {
+		if err != nil {
+			log.Printf("archive label pdf immediate %s: %v", shipment.MailNo, err)
 		}
+		s.scheduleArchiveLabelPDF(shipment.ID, shipment.CarrierAccountID, shipment.MailNo, tpl, "")
 	}
 	return nil
+}
+
+// scheduleArchiveLabelPDF 后台重试拉取云打印 PDF 并写入 label_pdf_url。
+// 首次下单/插件打印后立刻调 COM_RECE_CLOUD_PRINT_WAYBILLS 常得到空 apiResultData，需稍后再试。
+func (s *ShipmentService) scheduleArchiveLabelPDF(shipmentID, carrierAccountID uint64, mailNo, tpl, custom string) {
+	if s.store == nil || shipmentID == 0 || strings.TrimSpace(mailNo) == "" {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		// 首次稍等，避开出单后立刻拉 PDF 的空包窗口；间隔拉长提高成功率
+		delays := []time.Duration{5 * time.Second, 10 * time.Second, 20 * time.Second, 40 * time.Second, 60 * time.Second}
+		for i, wait := range delays {
+			select {
+			case <-ctx.Done():
+				log.Printf("archive label pdf aborted %s: %v", mailNo, ctx.Err())
+				return
+			case <-time.After(wait):
+			}
+			var existing model.Shipment
+			if err := s.db().Select("id", "label_pdf_url", "mail_no").First(&existing, shipmentID).Error; err != nil {
+				log.Printf("archive label pdf load %d: %v", shipmentID, err)
+				return
+			}
+			if strings.TrimSpace(existing.LabelPdfURL) != "" {
+				return
+			}
+			carrier, err := s.carrier.GetRaw(carrierAccountID)
+			if err != nil {
+				log.Printf("archive label pdf carrier %d: %v", carrierAccountID, err)
+				return
+			}
+			client := newSFClient(carrier)
+			url, err := s.archiveLabelPDFOnce(ctx, client, carrier, &existing, tpl, custom, nil)
+			if err != nil {
+				log.Printf("archive label pdf attempt %d/%d %s: %v", i+1, len(delays), mailNo, err)
+				continue
+			}
+			if url == "" {
+				log.Printf("archive label pdf attempt %d/%d %s: empty url", i+1, len(delays), mailNo)
+				continue
+			}
+			if err := s.db().Model(&model.Shipment{}).Where("id = ?", shipmentID).Update("label_pdf_url", url).Error; err != nil {
+				log.Printf("archive label pdf save %s: %v", mailNo, err)
+				return
+			}
+			log.Printf("archive label pdf ok %s -> %s", mailNo, url)
+			return
+		}
+		log.Printf("archive label pdf gave up %s after %d attempts", mailNo, len(delays))
+	}()
+}
+
+// archiveLabelPDFOnce 单次拉取并上传面单 PDF；成功返回永久 URL。
+func (s *ShipmentService) archiveLabelPDFOnce(ctx context.Context, client *sf.Client, carrier *model.CarrierAccount, shipment *model.Shipment, tpl, custom string, printRes *sf.PrintResult) (string, error) {
+	if s.store == nil || shipment == nil || strings.TrimSpace(shipment.MailNo) == "" {
+		return "", fmt.Errorf("store/shipment unavailable")
+	}
+	if tpl == "" {
+		tpl, custom = resolveSFPrintTemplates(carrier)
+	}
+	if strings.TrimSpace(tpl) == "" {
+		return "", fmt.Errorf("templateCode empty")
+	}
+	opt := s.printDocOpt(shipment, carrier)
+	opt.CustomTemplateCode = custom
+
+	var pdf []byte
+	var err error
+	if printRes != nil && strings.TrimSpace(printRes.LabelURL) != "" {
+		pdf, err = client.DownloadLabelPDF(ctx, printRes.LabelURL, printRes.LabelToken)
+	} else {
+		res, cErr := client.CloudPrint(ctx, shipment.MailNo, tpl, opt)
+		if cErr != nil {
+			return "", cErr
+		}
+		if res == nil || strings.TrimSpace(res.LabelURL) == "" {
+			return "", fmt.Errorf("cloud print empty url")
+		}
+		shipment.LabelURL = res.LabelURL
+		shipment.LabelToken = res.LabelToken
+		if res.LabelData != "" {
+			shipment.LabelData = res.LabelData
+		}
+		pdf, err = client.DownloadLabelPDF(ctx, res.LabelURL, res.LabelToken)
+	}
+	if err != nil {
+		return "", err
+	}
+	if len(pdf) == 0 {
+		return "", fmt.Errorf("downloaded pdf empty")
+	}
+	filename := "sf-" + shipment.MailNo + ".pdf"
+	url, upErr := s.store.UploadBytes(pdf, filename, "shipment-labels", "application/pdf")
+	if upErr != nil {
+		return "", upErr
+	}
+	shipment.LabelPdfURL = url
+	return url, nil
 }
 
 // FetchPrintPluginData 返回官方云打印插件打印参数。
 // 前端 SCPPrint.print 需 accessToken（OAuth2）+ templateCode + documents；
 // SDK 内部会调 COM_RECE_CLOUD_PRINT_PARSEDDATA。此处同时尽力预取 PARSEDDATA 供排查。
-func (s *ShipmentService) FetchPrintPluginData(ctx context.Context, id uint64) (map[string]interface{}, error) {
+func (s *ShipmentService) FetchPrintPluginData(ctx context.Context, id uint64, overrideTpl, overrideCustom string) (map[string]interface{}, error) {
 	shipment, err := s.Get(id)
 	if err != nil {
 		return nil, err
@@ -595,32 +680,21 @@ func (s *ShipmentService) FetchPrintPluginData(ctx context.Context, id uint64) (
 		env = "pro"
 	}
 
-	std, custom := resolveSFPrintTemplates(carrier)
+	std, _ := resolveSFPrintTemplates(carrier)
 	if std != "" {
 		tpl = std
 	}
-	opt := s.printDocOpt(shipment, carrier)
-	opt.CustomTemplateCode = custom
-	doc := map[string]interface{}{"masterWaybillNo": shipment.MailNo}
-	if r := strings.TrimSpace(opt.Remark); r != "" {
-		doc["remark"] = r
-		doc["cargoDesc"] = r
-		doc["goods"] = r
-		doc["product"] = r
+	if ot := strings.TrimSpace(overrideTpl); ot != "" && !strings.Contains(ot, "_custom_") {
+		tpl = ot
 	}
+	_ = overrideCustom // 自定义模板已停用，忽略
+	opt := s.printDocOpt(shipment, carrier)
+	doc := map[string]interface{}{"masterWaybillNo": shipment.MailNo}
 	sdkData := map[string]interface{}{
 		"requestID":    requestID,
 		"accessToken":  accessToken,
 		"templateCode": tpl,
 		"documents":    []map[string]interface{}{doc},
-	}
-	if custom != "" {
-		sdkData["customTemplateCode"] = custom
-	}
-	if r := strings.TrimSpace(opt.Remark); r != "" {
-		sdkData["extJson"] = map[string]interface{}{
-			"remark": r, "cargoDesc": r, "goods": r, "product": r,
-		}
 	}
 	out := map[string]interface{}{
 		"partnerId":    carrier.PartnerID,
@@ -629,21 +703,16 @@ func (s *ShipmentService) FetchPrintPluginData(ctx context.Context, id uint64) (
 		"mailNo":       shipment.MailNo,
 		"requestId":    requestID,
 		"accessToken":  accessToken,
-		"labelRemark":  opt.Remark,
 		"sdkPrintData": sdkData,
-	}
-	if custom != "" {
-		out["customTemplateCode"] = custom
 	}
 
 	// 预取插件排版数据（非必须；失败不影响官方 SDK 打印）
 	if parsed, err := client.CloudPrintParsedData(ctx, shipment.MailNo, tpl, opt); err == nil && parsed != nil {
 		shipment.LabelURL = "sf-plugin://" + shipment.MailNo
 		shipment.LabelData = string(parsed.ObjJSON)
-		if shipment.Status == model.ShipmentStatusCreated || shipment.Status == model.ShipmentStatusFailed {
-			shipment.Status = model.ShipmentStatusPrinted
-		}
+		markShipmentPrinted(shipment)
 		_ = s.db().Save(shipment).Error
+		s.scheduleArchiveLabelPDF(shipment.ID, shipment.CarrierAccountID, shipment.MailNo, tpl, "")
 
 		out["requestId"] = firstNonEmptyTrim(parsed.RequestID, requestID)
 		out["fileType"] = parsed.FileType
@@ -659,10 +728,9 @@ func (s *ShipmentService) FetchPrintPluginData(ctx context.Context, id uint64) (
 		sdk["templateCode"] = firstNonEmptyTrim(parsed.TemplateCode, tpl)
 	} else {
 		shipment.LabelURL = "sf-plugin://" + shipment.MailNo
-		if shipment.Status == model.ShipmentStatusCreated || shipment.Status == model.ShipmentStatusFailed {
-			shipment.Status = model.ShipmentStatusPrinted
-		}
+		markShipmentPrinted(shipment)
 		_ = s.db().Save(shipment).Error
+		s.scheduleArchiveLabelPDF(shipment.ID, shipment.CarrierAccountID, shipment.MailNo, tpl, "")
 		if err != nil {
 			out["parsedDataError"] = err.Error()
 		}
@@ -685,13 +753,12 @@ func (s *ShipmentService) FetchLabelPDF(ctx context.Context, id uint64) ([]byte,
 	}
 	client := newSFClient(carrier)
 
-	// 始终重新云打印：旧 LabelURL 可能是无 remark/无自定义区的缓存面单
-	tpl, custom := resolveSFPrintTemplates(carrier)
+	// 始终重新云打印：旧 LabelURL 可能是缓存面单
+	tpl, _ := resolveSFPrintTemplates(carrier)
 	if tpl == "" {
-		return nil, "", fmt.Errorf("%w: 请在物流账号配置归属本顾客编码的标准模板（如 fm_76130_standard_%s），自定义模板填到「自定义模板」", ErrBadRequest, strings.TrimSpace(carrier.PartnerID))
+		return nil, "", fmt.Errorf("%w: 请在物流账号配置归属本顾客编码的标准模板（如 fm_76130_standard_%s）", ErrBadRequest, strings.TrimSpace(carrier.PartnerID))
 	}
 	opt := s.printDocOpt(shipment, carrier)
-	opt.CustomTemplateCode = custom
 	printRes, err := client.CloudPrint(ctx, shipment.MailNo, tpl, opt)
 	if err != nil {
 		return nil, "", fmt.Errorf("云打印失败: %w", err)
@@ -704,15 +771,21 @@ func (s *ShipmentService) FetchLabelPDF(ctx context.Context, id uint64) ([]byte,
 	shipment.LabelURL = labelURL
 	shipment.LabelToken = labelToken
 	shipment.LabelData = printRes.LabelData
-	if shipment.Status == model.ShipmentStatusCreated || shipment.Status == model.ShipmentStatusFailed {
-		shipment.Status = model.ShipmentStatusPrinted
-	}
-	_ = s.db().Save(shipment).Error
+	markShipmentPrinted(shipment)
 
 	pdf, err := client.DownloadLabelPDF(ctx, labelURL, labelToken)
 	if err != nil {
 		return nil, "", err
 	}
+	if s.store != nil && len(pdf) > 0 {
+		if url, upErr := s.store.UploadBytes(pdf, "sf-"+shipment.MailNo+".pdf", "shipment-labels", "application/pdf"); upErr != nil {
+			log.Printf("archive label pdf upload %s: %v", shipment.MailNo, upErr)
+		} else {
+			shipment.LabelPdfURL = url
+		}
+	}
+	_ = s.db().Save(shipment).Error
+
 	filename := "sf-" + shipment.MailNo + ".pdf"
 	return pdf, filename, nil
 }
@@ -740,8 +813,8 @@ func (s *ShipmentService) Cancel(ctx context.Context, id uint64) (*model.Shipmen
 		return nil, err
 	}
 	client := newSFClient(carrier)
-	// 下单时 orderId 为 SC{id}；优先用顺丰回写的 sfOrderId，否则回退本地约定
-	sfOrderID := firstNonEmptyTrim(shipment.SFOrderID, shipmentOrderID(shipment.ID))
+	// 取消须与下单 orderId 一致：优先顺丰回写，其次平台订单号 / SC{id}
+	sfOrderID := firstNonEmptyTrim(shipment.SFOrderID, sfCustomerOrderID(shipment))
 	if err := client.CancelOrder(ctx, sfOrderID, shipment.MailNo, 2); err != nil {
 		return nil, fmt.Errorf("取消顺丰快递单失败: %w", err)
 	}
@@ -880,38 +953,77 @@ func shipmentItemShipName(it model.ShipmentItem) string {
 	return strings.TrimSpace(it.GoodsName)
 }
 
-// buildSFCargoDetails 组装丰桥 cargoDetails，名称一律用规格。
-func buildSFCargoDetails(shipment *model.Shipment) []sf.CargoDetail {
+// 丰桥 cargoDetails[].name 上限 String(128)；76×130 面单「托寄物」通常只显示一行。
+const sfCargoNameMaxRunes = 128
+
+// joinShipmentCargoLabel 对齐企服托寄物：规格*数量, 规格2*数量 * 总数量
+func joinShipmentCargoLabel(shipment *model.Shipment) string {
 	if shipment == nil {
-		return nil
+		return ""
 	}
-	out := make([]sf.CargoDetail, 0, len(shipment.Items))
+	parts := make([]string, 0, len(shipment.Items))
 	for _, it := range shipment.Items {
-		name := shipmentItemShipName(it)
-		if name == "" {
+		n := shipmentItemShipName(it)
+		if n == "" {
 			continue
 		}
 		qty := it.Quantity
 		if qty <= 0 {
 			qty = 1
 		}
-		out = append(out, sf.CargoDetail{Name: name, Count: qty})
+		parts = append(parts, fmt.Sprintf("%s*%d", n, qty))
 	}
-	return out
+	out := strings.Join(parts, ", ")
+	if out == "" {
+		out = strings.TrimSpace(shipment.CargoName)
+	}
+	if out == "" {
+		return ""
+	}
+	total := shipmentCargoTotalQty(shipment)
+	out = fmt.Sprintf("%s * %d", out, total)
+	return truncateRunes(out, sfCargoNameMaxRunes)
 }
 
-// shipmentSFCargoName 顺丰托寄物摘要：首个规格名，否则 CargoName。
-func shipmentSFCargoName(shipment *model.Shipment) string {
+// shipmentCargoTotalQty 订单商品总数量（托寄物 count）。
+func shipmentCargoTotalQty(shipment *model.Shipment) int {
 	if shipment == nil {
-		return "商品"
+		return 1
 	}
+	if shipment.CargoCount > 0 {
+		return shipment.CargoCount
+	}
+	sum := 0
 	for _, it := range shipment.Items {
-		if name := shipmentItemShipName(it); name != "" {
-			return name
+		qty := it.Quantity
+		if qty <= 0 {
+			qty = 1
+		}
+		if shipmentItemShipName(it) != "" || strings.TrimSpace(it.GoodsName) != "" {
+			sum += qty
 		}
 	}
-	if name := strings.TrimSpace(shipment.CargoName); name != "" {
-		return name
+	if sum > 0 {
+		return sum
+	}
+	return 1
+}
+
+// buildSFCargoDetails 组装丰桥 cargoDetails。
+// 面单托寄物区一般只画第一条 name，故多规格合并为一条完整文案（限 128 字）；
+// count 传订单商品总数量。
+func buildSFCargoDetails(shipment *model.Shipment) []sf.CargoDetail {
+	label := joinShipmentCargoLabel(shipment)
+	if label == "" {
+		return nil
+	}
+	return []sf.CargoDetail{{Name: label, Count: shipmentCargoTotalQty(shipment)}}
+}
+
+// shipmentSFCargoName 托寄物摘要（无明细时的兜底）。
+func shipmentSFCargoName(shipment *model.Shipment) string {
+	if label := joinShipmentCargoLabel(shipment); label != "" {
+		return label
 	}
 	return "商品"
 }
