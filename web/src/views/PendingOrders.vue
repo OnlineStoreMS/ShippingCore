@@ -8,30 +8,11 @@ import {
   type CarrierAccount,
   type ExpressTemplate,
   type OMSOrder,
+  type OrderSnapshot,
   type ShipperProfile,
 } from '../api/shipping'
-import { omsOrderToSnapshot, saveSFOrderHandoff } from '../utils/sfOrderHandoff'
-import { printShipmentByChannel } from '../utils/sfPrintLabel'
-import {
-  getSavedPrinterIndex,
-  listLocalPrinters,
-  savePrinterSelection,
-  type LocalPrinter,
-} from '../utils/sfPrintPlugin'
 
-const TEMPLATE_MEMORY_KEY = 'shippingcore.sf.printTemplateKey'
-
-type LabelTemplateOpt = {
-  key: string
-  label: string
-  templateCode: string
-  customTemplateCode: string
-}
-
-/** 顶层：快递助手 | 自建物流 */
 type PrintMode = 'kdzs' | 'sf'
-/** 自建物流 + 顺丰账号时的子方式 */
-type SFShipAction = 'standard' | 'quick'
 
 const route = useRoute()
 const router = useRouter()
@@ -48,128 +29,15 @@ const shipDialogVisible = ref(false)
 const confirmKdzsVisible = ref(false)
 const shipTargets = ref<OMSOrder[]>([])
 const printMode = ref<PrintMode>('kdzs')
-/** 顺丰：标准寄件页 / 快速下单后选模板打印机 */
-const sfShipAction = ref<SFShipAction>('standard')
 const selectedTemplateId = ref('')
 const shipForm = reactive({
   carrierAccountId: undefined as number | undefined,
   shipperProfileId: undefined as number | undefined,
   useMonthly: false,
 })
+const shipResult = ref<{ mailNo: string; labelUrl?: string; shipmentId?: number } | null>(null)
 const kdzsExpressCompany = ref('')
 const kdzsExpressRows = ref<{ order: OMSOrder; expressNo: string }[]>([])
-
-/** 云打印：取单成功后面单模板 + 打印机确认 */
-const printDialogVisible = ref(false)
-const printDialogLoading = ref(false)
-const printersLoading = ref(false)
-const printers = ref<LocalPrinter[]>([])
-const selectedPrinterIndex = ref<number | null>(getSavedPrinterIndex())
-const templateOptions = ref<LabelTemplateOpt[]>([])
-const selectedTemplateKey = ref('')
-const pendingPrint = ref<{
-  shipmentId: number
-  mailNo: string
-  printChannel: string
-} | null>(null)
-
-function buildTemplateOptions(carrier?: CarrierAccount): LabelTemplateOpt[] {
-  if (!carrier) return []
-  const std = (carrier.templateCode || '').trim()
-  // 仅标准模板（自定义区暂不启用）
-  if (!std || std.includes('_custom_')) return []
-  return [
-    {
-      key: 'std',
-      label: `标准模板（${std}）`,
-      templateCode: std,
-      customTemplateCode: '__none__',
-    },
-  ]
-}
-
-function rememberTemplateKey(key: string) {
-  if (key) localStorage.setItem(TEMPLATE_MEMORY_KEY, key)
-}
-
-function loadRememberedTemplateKey(opts: LabelTemplateOpt[]): string {
-  return opts[0]?.key || ''
-}
-
-async function loadPrintersForDialog() {
-  printersLoading.value = true
-  try {
-    printers.value = await listLocalPrinters()
-    const saved = getSavedPrinterIndex()
-    if (saved != null && printers.value.some((p) => p.index === saved)) {
-      selectedPrinterIndex.value = saved
-    } else if (printers.value.length) {
-      selectedPrinterIndex.value = printers.value[0].index
-    } else {
-      selectedPrinterIndex.value = null
-    }
-  } catch (e) {
-    printers.value = []
-    selectedPrinterIndex.value = null
-    ElMessage.warning((e as Error).message || '无法读取本机打印机，请确认 C-Lodop 已启动')
-  } finally {
-    printersLoading.value = false
-  }
-}
-
-async function openCloudPrintDialog(opts: {
-  shipmentId: number
-  mailNo: string
-  carrier?: CarrierAccount
-}) {
-  const channel = (opts.carrier?.printChannel || 'plugin').toLowerCase()
-  pendingPrint.value = {
-    shipmentId: opts.shipmentId,
-    mailNo: opts.mailNo,
-    printChannel: channel,
-  }
-  templateOptions.value = buildTemplateOptions(opts.carrier)
-  selectedTemplateKey.value = loadRememberedTemplateKey(templateOptions.value)
-  printDialogVisible.value = true
-  await loadPrintersForDialog()
-}
-
-async function confirmCloudPrint() {
-  const pending = pendingPrint.value
-  if (!pending) return
-  if (selectedPrinterIndex.value == null) {
-    ElMessage.warning('请选择打印机')
-    return
-  }
-  const tpl = templateOptions.value.find((t) => t.key === selectedTemplateKey.value)
-  if (!tpl && templateOptions.value.length) {
-    ElMessage.warning('请选择面单模板')
-    return
-  }
-  printDialogLoading.value = true
-  try {
-    const p = printers.value.find((x) => x.index === selectedPrinterIndex.value)
-    savePrinterSelection(selectedPrinterIndex.value, p?.name)
-    if (selectedTemplateKey.value) rememberTemplateKey(selectedTemplateKey.value)
-    await printShipmentByChannel({
-      shipmentId: pending.shipmentId,
-      printChannel: pending.printChannel,
-      printerIndex: selectedPrinterIndex.value,
-      templateCode: tpl?.templateCode,
-      customTemplateCode: '__none__',
-    })
-    ElMessage.success(`打印成功 ${pending.mailNo || ''}`)
-    printDialogVisible.value = false
-    pendingPrint.value = null
-    closeShipDialog()
-    selectedOrders.value = []
-    await router.push('/shipments')
-  } catch (e) {
-    ElMessage.error((e as Error).message || '打印失败')
-  } finally {
-    printDialogLoading.value = false
-  }
-}
 
 const expressCompanyOptions = [
   '圆通速递',
@@ -303,10 +171,9 @@ function labelPlatform(v?: string) {
 }
 
 function formatGoodsLine(g: { productName?: string; skuSpecs?: string; quantity?: number }): string {
-  // 列表展示也以规格名称为主（真正发货内容）
-  const spec = g.skuSpecs?.trim() || ''
   const name = g.productName?.trim() || ''
-  const title = spec || name
+  const spec = g.skuSpecs?.trim() || ''
+  const title = name && spec && name !== spec ? `${name} ${spec}` : name || spec || ''
   if (!title) return ''
   const num = g.quantity && g.quantity > 0 ? g.quantity : 1
   return `${title} x${num}`
@@ -336,27 +203,6 @@ const selectedTemplate = computed(() =>
 )
 
 const isBatchShip = computed(() => shipTargets.value.length > 1)
-
-const selectedCarrier = computed(() =>
-  carrierAccounts.value.find((c) => c.id === shipForm.carrierAccountId),
-)
-
-/** 当前所选物流账号是否为顺丰 */
-const isSFCarrier = computed(() => {
-  const code = (selectedCarrier.value?.carrierCode || '').trim().toUpperCase()
-  return !code || code === 'SF' || code === 'SHUNFENG' || code === '顺丰'
-})
-
-function defaultPrintMode(orders: OMSOrder[], preferred?: PrintMode): PrintMode {
-  if (orders.length > 1) return 'kdzs'
-  if (preferred === 'kdzs' || preferred === 'sf') return preferred
-  // 单笔且有顺丰账号时，默认自建物流（内含标准寄件）
-  const hasSF = carrierAccounts.value.some((c) => {
-    const code = (c.carrierCode || '').trim().toUpperCase()
-    return !code || code === 'SF' || code === 'SHUNFENG'
-  })
-  return hasSF ? 'sf' : 'kdzs'
-}
 
 async function loadOmsOrders() {
   loading.orders = true
@@ -415,40 +261,49 @@ function onSelectionChange(rows: OMSOrder[]) {
   }
 }
 
-function goSFOrder(order: OMSOrder) {
-  saveSFOrderHandoff({
-    orderId: order.id,
-    sourceSystem: 'ordercore',
-    order: omsOrderToSnapshot(order),
-  })
-  router.push('/sf-order')
+function omsOrderToSnapshot(order: OMSOrder): OrderSnapshot {
+  const addr = order.address
+  return {
+    platform: order.platform || '',
+    shopId: order.shopId || '',
+    sysTid: order.platformSysTid || '',
+    sourceTid: order.platformOrderId || order.orderNo,
+    receiverName: addr?.name || order.buyerName || '',
+    receiverMobile: addr?.phone || order.buyerPhone || '',
+    receiverProvince: addr?.province || '',
+    receiverCity: addr?.city || '',
+    receiverCounty: addr?.district || '',
+    receiverAddress: addr?.fullText || addr?.address || '',
+    goods: (order.items || []).map((g) => ({
+      title: g.productName || '',
+      skuName: g.skuSpecs || '',
+      num: g.quantity && g.quantity > 0 ? g.quantity : 1,
+      outerId: '',
+      price: 0,
+    })),
+  }
 }
 
 function normalizePrintMode(raw?: string | null): PrintMode {
   const v = (raw || '').trim().toLowerCase()
-  if (v === 'sf' || v === 'carrier' || v === 'sf_standard' || v === 'standard' || v === 'print') {
-    return 'sf'
-  }
-  if (v === 'kdzs') return 'kdzs'
-  return 'sf'
+  if (v === 'sf' || v === 'carrier') return 'sf'
+  return 'kdzs'
 }
 
 function prepareShipDialog(orders: OMSOrder[], preferredMode?: PrintMode) {
   shipTargets.value = orders
+  shipResult.value = null
+  const mode = preferredMode || 'kdzs'
+  // 批量仅支持快递助手
+  printMode.value = orders.length > 1 && mode === 'sf' ? 'kdzs' : mode
   selectedTemplateId.value = ''
   kdzsExpressCompany.value = ''
   kdzsExpressRows.value = orders.map((order) => ({ order, expressNo: '' }))
-  const defaultCarrier =
-    carrierAccounts.value.find((c) => {
-      const code = (c.carrierCode || '').trim().toUpperCase()
-      return !code || code === 'SF' || code === 'SHUNFENG'
-    }) || carrierAccounts.value[0]
+  const defaultCarrier = carrierAccounts.value[0]
   const defaultShipper = shipperProfiles.value.find((s) => s.isDefault) || shipperProfiles.value[0]
   shipForm.carrierAccountId = defaultCarrier?.id
   shipForm.shipperProfileId = defaultShipper?.id
   shipForm.useMonthly = defaultCarrier?.useMonthly ?? false
-  printMode.value = defaultPrintMode(orders, preferredMode)
-  sfShipAction.value = 'standard'
 
   const tpls = allTemplates.value.filter(
     (t) => t.enabled !== false && t.platform === templatePlatformGroup(orders[0]),
@@ -527,18 +382,12 @@ function openBatchShipDialog() {
 function onCarrierChange(id: number | undefined) {
   const carrier = carrierAccounts.value.find((c) => c.id === id)
   if (carrier) shipForm.useMonthly = carrier.useMonthly
-  if (isSFCarrier.value) {
-    sfShipAction.value = 'standard'
-  }
 }
 
 function onPrintModeChange() {
   if (printMode.value === 'sf' && isBatchShip.value) {
     ElMessage.warning('自建物流暂不支持批量，请单笔操作或改用快递助手')
     printMode.value = 'kdzs'
-  }
-  if (printMode.value === 'sf' && isSFCarrier.value) {
-    sfShipAction.value = 'standard'
   }
 }
 
@@ -650,55 +499,34 @@ async function submitShip() {
 
   const order = shipTargets.value[0]
   if (!order) return
-
-  // 自建物流 + 顺丰：标准寄件 → 完整下单页
-  if (isSFCarrier.value && sfShipAction.value === 'standard') {
-    closeShipDialog()
-    goSFOrder(order)
-    return
-  }
-
   if (!shipForm.carrierAccountId || !shipForm.shipperProfileId) {
     ElMessage.warning('请选择物流账号和寄件人')
     return
   }
   loading.ship = true
   try {
-    // 快件类型在「标准寄件」页选择并记住；快速下单复用上次选择
-    const savedExpress = localStorage.getItem('shippingcore.sf.expressType')
-    const expressType =
-      savedExpress === '1' || savedExpress === '2' ? savedExpress : undefined
     const shipment = await shippingApi.createShipmentFromOrder({
       carrierAccountId: shipForm.carrierAccountId,
       shipperProfileId: shipForm.shipperProfileId,
       useMonthly: shipForm.useMonthly,
-      expressType,
       orderId: order.id,
       sourceSystem: 'ordercore',
       order: omsOrderToSnapshot(order),
     })
     const waybill = await shippingApi.createShipmentWaybill(shipment.id)
-    const carrier = carrierAccounts.value.find((c) => c.id === shipForm.carrierAccountId)
-
-    // 快速下单打印：取号后进入模板 + 打印机选择
-    closeShipDialog()
-    await openCloudPrintDialog({
+    shipResult.value = {
+      mailNo: waybill.mailNo,
+      labelUrl: waybill.labelUrl,
       shipmentId: waybill.id,
-      mailNo: waybill.mailNo || '',
-      carrier,
-    })
+    }
+    ElMessage.success(`打单成功，运单号：${waybill.mailNo}`)
+    await loadOmsOrders()
   } catch (e) {
     ElMessage.error((e as Error).message || '打单失败')
   } finally {
     loading.ship = false
   }
 }
-
-const primaryShipLabel = computed(() => {
-  if (printMode.value === 'kdzs') return '打开快递助手'
-  if (isSFCarrier.value && sfShipAction.value === 'standard') return '前往标准寄件'
-  return '快速下单打印'
-})
 
 async function submitKdzsConfirm() {
   const rows = kdzsExpressRows.value
@@ -735,9 +563,24 @@ async function submitKdzsConfirm() {
   }
 }
 
+async function printResult() {
+  if (!shipResult.value?.shipmentId) return
+  try {
+    const updated = await shippingApi.printShipment(shipResult.value.shipmentId)
+    if (updated.labelUrl) {
+      window.open(updated.labelUrl, '_blank')
+    } else {
+      ElMessage.info('暂无面单链接')
+    }
+  } catch (e) {
+    ElMessage.error((e as Error).message || '打印失败')
+  }
+}
+
 function closeShipDialog() {
   shipDialogVisible.value = false
   shipTargets.value = []
+  shipResult.value = null
   confirmKdzsVisible.value = false
   selectedTemplateId.value = ''
 }
@@ -827,10 +670,9 @@ onMounted(async () => {
           </template>
         </el-table-column>
         <el-table-column prop="payTime" label="付款时间" width="170" />
-        <el-table-column label="操作" width="200" fixed="right">
+        <el-table-column label="操作" width="110" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="openShipDialogOms(row)">打单发货</el-button>
-            <el-button link type="danger" size="small" @click="goSFOrder(row)">顺丰寄件</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -922,117 +764,35 @@ onMounted(async () => {
             <el-form-item label="月结">
               <el-switch v-model="shipForm.useMonthly" />
             </el-form-item>
-
-            <el-form-item v-if="isSFCarrier" label="寄件方式">
-              <el-radio-group v-model="sfShipAction" class="print-mode-radios">
-                <el-radio value="standard">顺丰标准寄件</el-radio>
-                <el-radio value="quick">快速下单打印</el-radio>
-              </el-radio-group>
-            </el-form-item>
-
-            <el-alert
-              v-if="isSFCarrier && sfShipAction === 'standard'"
-              type="info"
-              :closable="false"
-              title="将进入顺丰标准寄件页，可完善托寄物、预约上门、运单备注后下单打印。"
-            />
-            <el-alert
-              v-else-if="isSFCarrier && sfShipAction === 'quick'"
-              type="info"
-              :closable="false"
-              title="将快速取号，随后选择面单模板与本机打印机完成打印。"
-            />
-            <el-alert
-              v-else
-              type="info"
-              :closable="false"
-              title="将按所选物流账号取号并进入打印。"
-            />
           </template>
         </el-form>
 
+        <el-result v-if="shipResult" icon="success" title="打单成功">
+          <template #sub-title>
+            运单号：<strong>{{ shipResult.mailNo }}</strong>
+          </template>
+          <template #extra>
+            <el-button type="primary" @click="printResult">打开面单</el-button>
+          </template>
+        </el-result>
       </template>
 
       <template #footer>
-        <el-button @click="closeShipDialog">取消</el-button>
+        <el-button @click="closeShipDialog">{{ shipResult ? '关闭' : '取消' }}</el-button>
         <el-button
-          v-if="printMode === 'kdzs' && shipTargets.length"
+          v-if="printMode === 'kdzs' && shipTargets.length && !shipResult"
           @click="confirmKdzsVisible = true"
         >
           确认已打单发货
         </el-button>
         <el-button
+          v-if="!shipResult"
           type="primary"
           :loading="loading.ship"
           :disabled="printMode === 'kdzs' && !selectedTemplateId"
           @click="submitShip"
         >
-          {{ primaryShipLabel }}
-        </el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog
-      v-model="printDialogVisible"
-      title="打印快递单"
-      width="480px"
-      append-to-body
-      :close-on-click-modal="false"
-    >
-      <div v-if="pendingPrint" class="print-mail muted">
-        运单号：{{ pendingPrint.mailNo || '-' }}
-      </div>
-      <el-form label-width="100px">
-        <el-form-item label="面单模板" required>
-          <el-select
-            v-model="selectedTemplateKey"
-            placeholder="选择面单模板"
-            style="width: 100%"
-            :disabled="!templateOptions.length"
-          >
-            <el-option
-              v-for="t in templateOptions"
-              :key="t.key"
-              :label="t.label"
-              :value="t.key"
-            />
-          </el-select>
-          <div v-if="!templateOptions.length" class="warn-tip">
-            物流账号未配置模板编码，请先在物流账号中填写
-          </div>
-        </el-form-item>
-        <el-form-item label="打印机" required>
-          <el-select
-            v-model="selectedPrinterIndex"
-            placeholder="选择本机打印机"
-            style="width: 100%"
-            :loading="printersLoading"
-            filterable
-          >
-            <el-option
-              v-for="p in printers"
-              :key="p.index"
-              :label="p.name"
-              :value="p.index"
-            />
-          </el-select>
-          <div class="print-actions">
-            <el-button link type="primary" :loading="printersLoading" @click="loadPrintersForDialog">
-              刷新打印机
-            </el-button>
-            <el-button link type="primary" @click="router.push('/clodop')">C-Lodop 服务</el-button>
-          </div>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="printDialogVisible = false">取消</el-button>
-        <el-button
-          type="primary"
-          :loading="printDialogLoading"
-          :disabled="selectedPrinterIndex == null || (!!templateOptions.length && !selectedTemplateKey)"
-          @click="confirmCloudPrint"
-        >
-          打印快递单
+          {{ printMode === 'kdzs' ? '打开快递助手' : '确认打单' }}
         </el-button>
       </template>
     </el-dialog>
@@ -1092,11 +852,6 @@ onMounted(async () => {
 .ship-order-info { margin-bottom: 16px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
 .ml8 { margin-left: 8px; }
 .ship-form { margin-top: 8px; }
-.print-mode-radios {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-}
 .tpl-bar { width: 100%; }
 .tpl-radios { display: flex; flex-wrap: wrap; gap: 8px; }
 .tpl-radio { margin-right: 0 !important; }
@@ -1107,6 +862,4 @@ onMounted(async () => {
 .goods-cell { display: flex; gap: 8px; align-items: flex-start; }
 .goods-thumb { width: 40px; height: 40px; object-fit: cover; border-radius: 4px; flex-shrink: 0; }
 .goods-text { font-size: 13px; line-height: 1.4; white-space: normal; word-break: break-all; }
-.print-mail { margin-bottom: 12px; }
-.print-actions { margin-top: 4px; display: flex; gap: 8px; }
 </style>

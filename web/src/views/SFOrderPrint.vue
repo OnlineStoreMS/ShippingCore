@@ -21,7 +21,7 @@ import {
   getSavedPrinterIndex,
   getSavedPrinterName,
 } from '../utils/sfPrintPlugin'
-import { forbidItemsCatalog } from '../data/forbidItems'
+import { forbidItemsCatalog } from '../constants/forbidItems'
 
 const cargoPresets = ['文件', '电子产品', '日用品', '服装', '食品', '配件', '商品']
 
