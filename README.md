@@ -28,7 +28,7 @@ go run ./cmd/api -config configs/config.local.yaml
 cd web && npm install && npm run dev
 ```
 
-从 UserCore 应用中心进入时，走 `/auth/callback?token=...`。
+从 UserCore 进入：统一父域下靠共享 Cookie；过渡期可用 `/auth/callback?code=`。
 
 ## Admin API（`/api/v1/admin`，JWT）
 

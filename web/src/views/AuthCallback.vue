@@ -2,7 +2,13 @@
 import { onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { fetchSession } from '../api/session'
-import { redirectToPortal, saveAuthTokens, startTokenKeepAlive, trustFreshToken } from '../utils/auth'
+import {
+  exchangeSsoCode,
+  redirectToPortal,
+  saveAuthTokens,
+  startTokenKeepAlive,
+  trustFreshToken,
+} from '../utils/auth'
 
 const route = useRoute()
 const router = useRouter()
@@ -17,17 +23,30 @@ function safeRedirect(raw?: string | string[]): string {
 }
 
 onMounted(async () => {
-  const token = route.query.token as string | undefined
-  if (!token) {
+  const dest = safeRedirect(route.query.redirect as string | undefined)
+  const code = route.query.code as string | undefined
+  if (code) {
+    try {
+      const tokens = await exchangeSsoCode(code)
+      saveAuthTokens(tokens.accessToken, tokens.refreshToken, tokens.expiresAt)
+      trustFreshToken()
+      startTokenKeepAlive()
+      await fetchSession()
+      router.replace(dest)
+      return
+    } catch {
+      redirectToPortal()
+      return
+    }
+  }
+  const info = await fetchSession()
+  if (!info) {
     redirectToPortal()
     return
   }
-  const refresh = route.query.refresh as string | undefined
-  saveAuthTokens(token, refresh)
   trustFreshToken()
   startTokenKeepAlive()
-  await fetchSession()
-  router.replace(safeRedirect(route.query.redirect as string | undefined))
+  router.replace(dest)
 })
 </script>
 
