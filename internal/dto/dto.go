@@ -87,6 +87,12 @@ type ConfirmKdzsShipDTO struct {
 	Order          OrderSnapshotDTO `json:"order"`
 }
 
+// DeleteShipmentsByOrderCoreDTO 按订单中心销售单删除发货运单。
+type DeleteShipmentsByOrderCoreDTO struct {
+	OrderCoreOrderID uint64 `json:"orderCoreOrderId"`
+	SourceRef        string `json:"sourceRef"`
+}
+
 type DecryptPendingOrdersDTO struct {
 	Platform    string   `json:"platform"`
 	TradeStatus string   `json:"tradeStatus"`

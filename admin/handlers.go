@@ -386,6 +386,20 @@ func (h *Handlers) CancelShipment(c *gin.Context) {
 	response.OK(c, item)
 }
 
+func (h *Handlers) DeleteShipmentsByOrderCore(c *gin.Context) {
+	var in dto.DeleteShipmentsByOrderCoreDTO
+	if err := c.ShouldBindJSON(&in); err != nil {
+		response.Fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	n, err := h.shipment(c).DeleteByOrderCore(in.OrderCoreOrderID, in.SourceRef)
+	if err != nil {
+		httputil.HandleServiceError(c, err)
+		return
+	}
+	response.OK(c, gin.H{"deleted": n})
+}
+
 // ── Pending orders proxy ──
 
 func (h *Handlers) ListPendingOrders(c *gin.Context) {

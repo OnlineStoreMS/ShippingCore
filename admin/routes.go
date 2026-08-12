@@ -17,6 +17,7 @@ func RegisterRoutes(g *gin.RouterGroup, h *Handlers) {
 	g.POST("/shipper-profiles/:id/set-default", h.SetDefaultShipperProfile)
 
 	g.GET("/shipments", h.ListShipments)
+	g.POST("/shipments/delete-by-ordercore", h.DeleteShipmentsByOrderCore)
 	g.GET("/shipments/:id", h.GetShipment)
 	g.POST("/shipments/from-order", h.CreateShipmentFromOrder)
 	g.POST("/shipments/:id/create-waybill", h.CreateShipmentWaybill)

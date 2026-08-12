@@ -138,6 +138,44 @@ func (s *ShipmentService) Get(id uint64) (*model.Shipment, error) {
 	return &item, nil
 }
 
+// DeleteByOrderCore 按订单中心销售单删除发货运单（手工单删除级联）。
+func (s *ShipmentService) DeleteByOrderCore(orderCoreOrderID uint64, sourceRef string) (int, error) {
+	sourceRef = strings.TrimSpace(sourceRef)
+	if orderCoreOrderID == 0 && sourceRef == "" {
+		return 0, fmt.Errorf("%w: orderCoreOrderId 或 sourceRef 必填", ErrBadRequest)
+	}
+
+	dbq := s.db().Model(&model.Shipment{})
+	switch {
+	case orderCoreOrderID > 0 && sourceRef != "":
+		dbq = dbq.Where("order_core_order_id = ? OR source_ref = ? OR source_tid = ?", orderCoreOrderID, sourceRef, sourceRef)
+	case orderCoreOrderID > 0:
+		dbq = dbq.Where("order_core_order_id = ?", orderCoreOrderID)
+	default:
+		dbq = dbq.Where("source_ref = ? OR source_tid = ?", sourceRef, sourceRef)
+	}
+
+	var ids []uint64
+	if err := dbq.Pluck("id", &ids).Error; err != nil {
+		return 0, err
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+
+	err := s.repos.DB.Transaction(func(tx *gorm.DB) error {
+		// shipment_items 无 tenant_id，不能走 ForTenant scope
+		if err := tx.Where("shipment_id IN ?", ids).Delete(&model.ShipmentItem{}).Error; err != nil {
+			return err
+		}
+		return tx.Where("tenant_id = ? AND id IN ?", s.tenantID, ids).Delete(&model.Shipment{}).Error
+	})
+	if err != nil {
+		return 0, err
+	}
+	return len(ids), nil
+}
+
 func (s *ShipmentService) CreateFromOrder(in *dto.CreateShipmentFromOrderDTO) (*model.Shipment, error) {
 	if in == nil || in.CarrierAccountID == 0 || in.ShipperProfileID == 0 {
 		return nil, ErrBadRequest
