@@ -990,6 +990,10 @@ func (s *ShipmentService) shipOrderCore(ctx context.Context, token string, order
 			Qty:         it.Quantity,
 		})
 	}
+	// 有发货明细却丢了销售行 ID 时，禁止回落成「空 items=整单发完」，避免部分发货被标成全部已发
+	if len(shipmentItems) > 0 && len(shipItems) == 0 {
+		return fmt.Errorf("发货明细缺少订单商品行 ID，无法按商品同步订单中心；请从待发货勾选商品重新下单")
+	}
 	_, err := s.orderCore.Ship(ctx, token, orderID, ordercore.ShipRequest{
 		ExpressCompany: expressCompany,
 		ExpressNo:      strings.TrimSpace(expressNo),

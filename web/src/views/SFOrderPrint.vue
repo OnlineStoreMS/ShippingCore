@@ -67,6 +67,8 @@ type CargoLine = {
   heightCm?: number
   /** 按合计=该行总件数；按单件=单个包裹物品数 */
   itemCount: number
+  /** 订单中心销售行 ID，按商品发货同步必备 */
+  orderItemId?: number
   title?: string
   outerId?: string
   price?: number
@@ -82,6 +84,7 @@ function emptyCargoLine(name = ''): CargoLine {
     widthCm: undefined,
     heightCm: undefined,
     itemCount: 1,
+    orderItemId: 0,
     title: '',
     outerId: '',
     price: 0,
@@ -282,6 +285,7 @@ function applyHandoff(h: SFOrderHandoff) {
       const name = (g.skuName || g.title || '').trim()
       if (!name) return null
       const line = emptyCargoLine(name)
+      line.orderItemId = g.orderItemId || 0
       line.title = g.title || ''
       line.itemCount = g.num > 0 ? g.num : 1
       line.parcelQty = 1
@@ -466,6 +470,7 @@ function buildOrderSnapshot(): OrderSnapshot {
   const sysTid = form.sysTid.trim() || `SC-MANUAL-${Date.now()}`
   const sourceTid = form.sourceTid.trim() || sysTid
   const goods = namedCargoLines.value.map((l) => ({
+    orderItemId: l.orderItemId || 0,
     title: l.title || '',
     skuName: l.name.trim(),
     num: lineContribCount(l) || 1,
@@ -499,6 +504,13 @@ function validate(): string | null {
   if (!form.receiverName.trim() || !form.receiverMobile.trim()) return '请填写收件人姓名与手机'
   if (!form.receiverAddress.trim()) return '请填写收件详细地址'
   if (!namedCargoLines.value.length) return '请至少填写一行物品名称'
+  // 从订单中心带入时，须保留销售行 ID，否则订单会按「空明细=全部发完」误标已发货
+  if (handoffMeta.value?.orderId) {
+    const linked = namedCargoLines.value.filter((l) => (l.orderItemId || 0) > 0)
+    if (!linked.length) {
+      return '订单商品行 ID 丢失，请关闭本页后从待发货重新勾选商品进入寄件'
+    }
+  }
   for (const [i, line] of namedCargoLines.value.entries()) {
     if (!(line.parcelQty > 0)) return `第 ${i + 1} 行请填写包裹数`
     if (!(line.weight > 0)) return `第 ${i + 1} 行请填写重量`
