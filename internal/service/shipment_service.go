@@ -52,16 +52,18 @@ func (s *ShipmentService) db() *gorm.DB {
 
 // ShipmentListQuery 发货单列表筛选。
 type ShipmentListQuery struct {
-	Status    string
-	Keyword   string // 模糊：运单号/系统单号/平台单号/收件人/手机
-	MailNo    string
-	SourceRef string
-	SourceTid string
-	Receiver  string // 收件人姓名或手机
-	Platform  string
-	Goods     string // 商品名称
-	Page      int
-	PageSize  int
+	Status         string
+	Keyword        string // 模糊：运单号/系统单号/平台单号/收件人/手机
+	MailNo         string
+	SourceRef      string
+	SourceTid      string
+	Receiver       string // 收件人姓名或手机
+	Platform       string
+	Goods          string // 商品名称
+	PrintedAtStart *time.Time
+	PrintedAtEnd   *time.Time
+	Page           int
+	PageSize       int
 }
 
 func (s *ShipmentService) List(q ShipmentListQuery) ([]model.Shipment, int64, error) {
@@ -105,6 +107,12 @@ func (s *ShipmentService) List(q ShipmentListQuery) ([]model.Shipment, int64, er
 			Select("shipment_id").
 			Where("goods_name LIKE ?", "%"+goods+"%")
 		dbq = dbq.Where("id IN (?)", sub)
+	}
+	if q.PrintedAtStart != nil {
+		dbq = dbq.Where("COALESCE(printed_at, created_at) >= ?", q.PrintedAtStart)
+	}
+	if q.PrintedAtEnd != nil {
+		dbq = dbq.Where("COALESCE(printed_at, created_at) <= ?", q.PrintedAtEnd)
 	}
 
 	var total int64
@@ -269,6 +277,9 @@ func (s *ShipmentService) CreateFromOrder(in *dto.CreateShipmentFromOrderDTO) (*
 		SourceTid:        strings.TrimSpace(order.SourceTid),
 		Platform:         strings.TrimSpace(order.Platform),
 		ShopID:           strings.TrimSpace(order.ShopID),
+		ShopName:         strings.TrimSpace(order.ShopName),
+		SourceChannel:    strings.TrimSpace(order.SourceChannel),
+		ManualSourceName: strings.TrimSpace(order.ManualSourceName),
 		OrderCoreOrderID: orderCoreOrderID,
 		CarrierAccountID: carrier.ID,
 		ShipperProfileID: shipper.ID,
@@ -899,6 +910,9 @@ func (s *ShipmentService) ConfirmKdzsShip(ctx context.Context, token string, in 
 		SourceTid:        strings.TrimSpace(order.SourceTid),
 		Platform:         strings.TrimSpace(order.Platform),
 		ShopID:           strings.TrimSpace(order.ShopID),
+		ShopName:         strings.TrimSpace(order.ShopName),
+		SourceChannel:    strings.TrimSpace(order.SourceChannel),
+		ManualSourceName: strings.TrimSpace(order.ManualSourceName),
 		OrderCoreOrderID: in.OrderID,
 		ReceiverName:     strings.TrimSpace(order.ReceiverName),
 		ReceiverMobile:   strings.TrimSpace(order.ReceiverMobile),

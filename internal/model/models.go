@@ -70,6 +70,9 @@ type Shipment struct {
 	SourceTid        string `gorm:"size:128" json:"sourceTid"`
 	Platform         string `gorm:"size:64" json:"platform"`
 	ShopID           string `gorm:"size:64" json:"shopId"`
+	ShopName         string `gorm:"size:128" json:"shopName"`
+	SourceChannel    string `gorm:"size:32" json:"sourceChannel"`
+	ManualSourceName string `gorm:"size:128" json:"manualSourceName"`
 	CarrierAccountID uint64 `gorm:"index" json:"carrierAccountId"`
 	ShipperProfileID uint64 `gorm:"index" json:"shipperProfileId"`
 

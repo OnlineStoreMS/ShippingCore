@@ -179,6 +179,8 @@ func (h *Handlers) ListPendingOMSOrders(c *gin.Context) {
 		Keyword:        c.Query("keyword"),
 		PlatformSysTid: c.Query("platformSysTid"),
 		SourceChannel:  c.Query("sourceChannel"),
+		OrderedAtStart: c.Query("orderedAtStart"),
+		OrderedAtEnd:   c.Query("orderedAtEnd"),
 	}
 	data, err := h.shipment(c).ListPendingOMSOrders(c.Request.Context(), authcontext.BearerToken(c), q)
 	if err != nil {

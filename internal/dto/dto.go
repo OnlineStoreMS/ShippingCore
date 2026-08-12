@@ -42,6 +42,9 @@ type OrderGoodsDTO struct {
 type OrderSnapshotDTO struct {
 	Platform         string          `json:"platform"`
 	ShopID           string          `json:"shopId"`
+	ShopName         string          `json:"shopName"`
+	SourceChannel    string          `json:"sourceChannel"`
+	ManualSourceName string          `json:"manualSourceName"`
 	SysTid           string          `json:"sysTid"`
 	SourceTid        string          `json:"sourceTid"`
 	ReceiverName     string          `json:"receiverName"`

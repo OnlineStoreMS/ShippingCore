@@ -3,6 +3,8 @@ package admin
 import (
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"shippingcore/internal/dto"
 	"shippingcore/internal/integrations/storesyncagent"
@@ -44,6 +46,54 @@ func firstQuery(c *gin.Context, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func parseQueryTime(s string) *time.Time {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	layouts := []string{
+		time.RFC3339,
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05",
+		"2006-01-02",
+	}
+	for _, layout := range layouts {
+		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
+			if layout == "2006-01-02" {
+				// 仅日期：起始按当日 00:00；截止由调用方传 23:59:59 或次日，这里按当天 00:00 解析
+				day := time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.Local)
+				return &day
+			}
+			return &t
+		}
+	}
+	return nil
+}
+
+// parseQueryTimeEnd 解析截止时间；纯日期按含当日（23:59:59）。
+func parseQueryTimeEnd(s string) *time.Time {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	layouts := []string{
+		time.RFC3339,
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05",
+		"2006-01-02",
+	}
+	for _, layout := range layouts {
+		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
+			if layout == "2006-01-02" {
+				end := time.Date(t.Year(), t.Month(), t.Day(), 23, 59, 59, 0, time.Local)
+				return &end
+			}
+			return &t
+		}
+	}
+	return nil
 }
 
 // ── Carrier accounts ──
@@ -209,16 +259,18 @@ func (h *Handlers) SetDefaultShipperProfile(c *gin.Context) {
 func (h *Handlers) ListShipments(c *gin.Context) {
 	page, pageSize := httputil.ParsePage(c)
 	list, total, err := h.shipment(c).List(service.ShipmentListQuery{
-		Status:    c.Query("status"),
-		Keyword:   firstQuery(c, "keyword", "q"),
-		MailNo:    c.Query("mail_no"),
-		SourceRef: firstQuery(c, "source_ref", "sourceRef"),
-		SourceTid: firstQuery(c, "source_tid", "sourceTid"),
-		Receiver:  c.Query("receiver"),
-		Platform:  c.Query("platform"),
-		Goods:     firstQuery(c, "goods", "goods_name"),
-		Page:      page,
-		PageSize:  pageSize,
+		Status:         c.Query("status"),
+		Keyword:        firstQuery(c, "keyword", "q"),
+		MailNo:         c.Query("mail_no"),
+		SourceRef:      firstQuery(c, "source_ref", "sourceRef"),
+		SourceTid:      firstQuery(c, "source_tid", "sourceTid"),
+		Receiver:       c.Query("receiver"),
+		Platform:       c.Query("platform"),
+		Goods:          firstQuery(c, "goods", "goods_name"),
+		PrintedAtStart: parseQueryTime(firstQuery(c, "printedAtStart", "printed_at_start")),
+		PrintedAtEnd:   parseQueryTimeEnd(firstQuery(c, "printedAtEnd", "printed_at_end")),
+		Page:           page,
+		PageSize:       pageSize,
 	})
 	if err != nil {
 		response.Fail(c, http.StatusInternalServerError, err.Error())

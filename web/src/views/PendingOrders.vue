@@ -58,6 +58,8 @@ const shipForm = reactive({
 })
 const kdzsExpressCompany = ref('')
 const kdzsExpressRows = ref<{ order: OMSOrder; expressNo: string }[]>([])
+/** 单笔打单：勾选要发货的商品下标（默认全选；单件也展示） */
+const selectedShipItemIndexes = ref<number[]>([])
 
 /** 云打印：取单成功后面单模板 + 打印机确认 */
 const printDialogVisible = ref(false)
@@ -297,6 +299,26 @@ function labelSource(v?: string) {
   return (key && sourceLabels[key]) || key || '-'
 }
 
+function formatOrderSource(row: {
+  sourceChannel?: string
+  manualSourceName?: string
+  shopName?: string
+  platform?: string
+}) {
+  const channel = (row.sourceChannel || '').trim()
+  if (channel === 'manual') {
+    return (row.manualSourceName || row.shopName || '').trim() || '手工订单'
+  }
+  const src = labelSource(channel)
+  const plat = labelPlatform(row.platform)
+  const shop = (row.shopName || '').trim()
+  if (src !== '-' && shop) return `${src} · ${shop}`
+  if (src !== '-' && plat && plat !== '-') return `${src} · ${plat}`
+  if (src !== '-') return src
+  if (shop) return shop
+  return plat || '-'
+}
+
 function labelPlatform(v?: string) {
   const key = (v || '').trim().toUpperCase()
   return (key && platformLabels[key]) || v || '-'
@@ -336,6 +358,24 @@ const selectedTemplate = computed(() =>
 )
 
 const isBatchShip = computed(() => shipTargets.value.length > 1)
+
+/** 单笔打单时展示的发货商品行 */
+const shipItemRows = computed(() => {
+  if (isBatchShip.value) return []
+  const order = shipTargets.value[0]
+  return order?.items || []
+})
+
+const shipItemAllSelected = computed(
+  () =>
+    shipItemRows.value.length > 0 &&
+    selectedShipItemIndexes.value.length === shipItemRows.value.length,
+)
+
+const shipItemIndeterminate = computed(() => {
+  const n = selectedShipItemIndexes.value.length
+  return n > 0 && n < shipItemRows.value.length
+})
 
 const selectedCarrier = computed(() =>
   carrierAccounts.value.find((c) => c.id === shipForm.carrierAccountId),
@@ -415,11 +455,38 @@ function onSelectionChange(rows: OMSOrder[]) {
   }
 }
 
-function goSFOrder(order: OMSOrder) {
+function initShipItemSelection(order: OMSOrder) {
+  const items = order.items || []
+  selectedShipItemIndexes.value = items.map((_, i) => i)
+}
+
+function toggleShipItemAll(checked: boolean) {
+  selectedShipItemIndexes.value = checked ? shipItemRows.value.map((_, i) => i) : []
+}
+
+function snapshotForShip(order: OMSOrder) {
+  // 批量：整单商品；单笔：仅勾选行
+  if (isBatchShip.value || !shipItemRows.value.length) {
+    return omsOrderToSnapshot(order)
+  }
+  return omsOrderToSnapshot(order, { itemIndexes: [...selectedShipItemIndexes.value] })
+}
+
+function ensureShipItemsSelected(): boolean {
+  if (isBatchShip.value) return true
+  if (!shipItemRows.value.length) return true
+  if (!selectedShipItemIndexes.value.length) {
+    ElMessage.warning('请至少勾选一件要发货的商品')
+    return false
+  }
+  return true
+}
+
+function goSFOrder(order: OMSOrder, itemIndexes?: number[]) {
   saveSFOrderHandoff({
     orderId: order.id,
     sourceSystem: 'ordercore',
-    order: omsOrderToSnapshot(order),
+    order: omsOrderToSnapshot(order, itemIndexes?.length ? { itemIndexes } : undefined),
   })
   router.push('/sf-order')
 }
@@ -438,6 +505,8 @@ function prepareShipDialog(orders: OMSOrder[], preferredMode?: PrintMode) {
   selectedTemplateId.value = ''
   kdzsExpressCompany.value = ''
   kdzsExpressRows.value = orders.map((order) => ({ order, expressNo: '' }))
+  if (orders.length === 1) initShipItemSelection(orders[0])
+  else selectedShipItemIndexes.value = []
   const defaultCarrier =
     carrierAccounts.value.find((c) => {
       const code = (c.carrierCode || '').trim().toUpperCase()
@@ -638,6 +707,8 @@ async function syncWaybillsFromKdzs() {
 }
 
 async function submitShip() {
+  if (!ensureShipItemsSelected()) return
+
   if (printMode.value === 'kdzs') {
     await openKdzsBatchPrint()
     return
@@ -653,8 +724,9 @@ async function submitShip() {
 
   // 自建物流 + 顺丰：标准寄件 → 完整下单页
   if (isSFCarrier.value && sfShipAction.value === 'standard') {
+    const indexes = [...selectedShipItemIndexes.value]
     closeShipDialog()
-    goSFOrder(order)
+    goSFOrder(order, indexes)
     return
   }
 
@@ -675,7 +747,7 @@ async function submitShip() {
       expressType,
       orderId: order.id,
       sourceSystem: 'ordercore',
-      order: omsOrderToSnapshot(order),
+      order: snapshotForShip(order),
     })
     const waybill = await shippingApi.createShipmentWaybill(shipment.id)
     const carrier = carrierAccounts.value.find((c) => c.id === shipForm.carrierAccountId)
@@ -701,6 +773,7 @@ const primaryShipLabel = computed(() => {
 })
 
 async function submitKdzsConfirm() {
+  if (!ensureShipItemsSelected()) return
   const rows = kdzsExpressRows.value
   if (!rows.length) return
   if (!kdzsExpressCompany.value.trim()) {
@@ -720,7 +793,7 @@ async function submitKdzsConfirm() {
         orderId: row.order.id,
         expressNo: row.expressNo.trim(),
         expressCompany: company,
-        order: omsOrderToSnapshot(row.order),
+        order: snapshotForShip(row.order),
       })
     }
     ElMessage.success(isBatchShip.value ? `已确认发货 ${rows.length} 笔` : '已确认发货并回写订单中心')
@@ -740,6 +813,7 @@ function closeShipDialog() {
   shipTargets.value = []
   confirmKdzsVisible.value = false
   selectedTemplateId.value = ''
+  selectedShipItemIndexes.value = []
 }
 
 onMounted(async () => {
@@ -796,7 +870,7 @@ onMounted(async () => {
         <el-table-column type="selection" width="48" />
         <el-table-column prop="orderNo" label="订单号" min-width="160" />
         <el-table-column label="订单类型" width="100">
-          <template #default="{ row }">{{ labelSource(row.sourceChannel) }}</template>
+          <template #default="{ row }">{{ formatOrderSource(row) }}</template>
         </el-table-column>
         <el-table-column label="平台" width="90">
           <template #default="{ row }">{{ labelPlatform(row.platform) }}</template>
@@ -827,10 +901,9 @@ onMounted(async () => {
           </template>
         </el-table-column>
         <el-table-column prop="payTime" label="付款时间" width="170" />
-        <el-table-column label="操作" width="200" fixed="right">
+        <el-table-column label="操作" width="120" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="openShipDialogOms(row)">打单发货</el-button>
-            <el-button link type="danger" size="small" @click="goSFOrder(row)">顺丰寄件</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -857,6 +930,35 @@ onMounted(async () => {
           <span v-if="!isBatchShip">订单中心 #{{ shipTargets[0].orderNo }}</span>
           <span v-else>已选 {{ shipTargets.length }} 笔订单</span>
           <el-tag size="small" type="info" class="ml8">{{ labelPlatform(shipTargets[0].platform) }}</el-tag>
+        </div>
+
+        <div v-if="!isBatchShip && shipItemRows.length" class="ship-items-block">
+          <div class="ship-items-hd">
+            <span class="ship-items-title">发货商品</span>
+            <el-checkbox
+              :model-value="shipItemAllSelected"
+              :indeterminate="shipItemIndeterminate"
+              @change="(v: boolean | string | number) => toggleShipItemAll(!!v)"
+            >
+              全选
+            </el-checkbox>
+            <span class="muted">
+              已选 {{ selectedShipItemIndexes.length }}/{{ shipItemRows.length }}
+            </span>
+          </div>
+          <el-checkbox-group v-model="selectedShipItemIndexes" class="ship-items-list">
+            <label
+              v-for="(g, idx) in shipItemRows"
+              :key="idx"
+              class="ship-item-row"
+            >
+              <el-checkbox :value="idx" />
+              <img v-if="g.picUrl" :src="g.picUrl" class="goods-thumb" alt="" />
+              <div class="ship-item-text">
+                <div>{{ formatGoodsLine(g) || '-' }}</div>
+              </div>
+            </label>
+          </el-checkbox-group>
         </div>
 
         <el-form label-width="100px" class="ship-form">
@@ -1091,6 +1193,49 @@ onMounted(async () => {
 .pager { margin-top: 16px; display: flex; justify-content: flex-end; }
 .ship-order-info { margin-bottom: 16px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
 .ml8 { margin-left: 8px; }
+.ship-items-block {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  background: #fafafa;
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+}
+.ship-items-hd {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.ship-items-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #303133;
+}
+.ship-items-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  overflow: auto;
+}
+.ship-item-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  background: #fff;
+  border: 1px solid #eef0f3;
+}
+.ship-item-row:hover { border-color: #d0d5dd; }
+.ship-item-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.4;
+  color: #303133;
+}
 .ship-form { margin-top: 8px; }
 .print-mode-radios {
   display: flex;

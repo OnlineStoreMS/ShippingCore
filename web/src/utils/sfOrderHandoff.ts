@@ -8,11 +8,29 @@ export interface SFOrderHandoff {
   order: OrderSnapshot
 }
 
-export function omsOrderToSnapshot(order: OMSOrder): OrderSnapshot {
+/** itemIndexes：按订单明细下标勾选发货；不传则全部商品 */
+export function omsOrderToSnapshot(
+  order: OMSOrder,
+  opts?: { itemIndexes?: number[] },
+): OrderSnapshot {
   const addr = order.address
+  const manualSource = (order.manualSourceName || '').trim()
+  const shopName = (order.shopName || '').trim() || manualSource
+  const all = order.items || []
+  const indexes = opts?.itemIndexes
+  const picked =
+    indexes && indexes.length
+      ? indexes
+          .filter((i) => i >= 0 && i < all.length)
+          .map((i) => all[i])
+          .filter(Boolean)
+      : all
   return {
     platform: order.platform || '',
     shopId: order.shopId || '',
+    shopName,
+    sourceChannel: order.sourceChannel || '',
+    manualSourceName: manualSource,
     sysTid: order.platformSysTid || '',
     sourceTid: order.platformOrderId || order.orderNo,
     receiverName: addr?.name || order.buyerName || '',
@@ -21,7 +39,7 @@ export function omsOrderToSnapshot(order: OMSOrder): OrderSnapshot {
     receiverCity: addr?.city || '',
     receiverCounty: addr?.district || '',
     receiverAddress: addr?.fullText || addr?.address || '',
-    goods: (order.items || []).map((g) => {
+    goods: picked.map((g) => {
       const spec = (g.skuSpecs || '').trim()
       const product = (g.productName || '').trim()
       return {

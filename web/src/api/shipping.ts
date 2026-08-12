@@ -66,6 +66,9 @@ export interface OrderGoods {
 export interface OrderSnapshot {
   platform: string
   shopId: string
+  shopName?: string
+  sourceChannel?: string
+  manualSourceName?: string
   sysTid: string
   sourceTid: string
   receiverName: string
@@ -125,6 +128,9 @@ export interface Shipment {
   sourceTid: string
   platform: string
   shopId: string
+  shopName?: string
+  sourceChannel?: string
+  manualSourceName?: string
   carrierAccountId: number
   shipperProfileId: number
   receiverName: string
@@ -324,6 +330,7 @@ export interface OMSOrder {
   platformSysTid?: string
   shopId?: string
   shopName?: string
+  manualSourceName?: string
   buyerName?: string
   buyerPhone?: string
   shipStatus?: string
