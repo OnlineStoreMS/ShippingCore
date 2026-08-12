@@ -56,6 +56,7 @@ export interface ShipperProfile {
 }
 
 export interface OrderGoods {
+  orderItemId?: number
   title: string
   skuName: string
   num: number
@@ -305,6 +306,7 @@ export interface WaybillAuth {
 }
 
 export interface OMSOrderItem {
+  id?: number
   productName?: string
   skuSpecs?: string
   quantity?: number

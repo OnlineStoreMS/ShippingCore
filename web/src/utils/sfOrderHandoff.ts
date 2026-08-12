@@ -43,6 +43,7 @@ export function omsOrderToSnapshot(
       const spec = (g.skuSpecs || '').trim()
       const product = (g.productName || '').trim()
       return {
+        orderItemId: g.id || 0,
         title: product,
         // 发货/下顺丰单用规格名称；无规格时才落商品名到 skuName 兜底
         skuName: spec || product,

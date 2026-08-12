@@ -42,10 +42,16 @@ type OrderQuery struct {
 }
 
 type ShipRequest struct {
-	ExpressCompany string `json:"expressCompany"`
-	ExpressNo      string `json:"expressNo"`
-	Remark         string `json:"remark,omitempty"`
-	Callback       bool   `json:"callback"`
+	ExpressCompany string          `json:"expressCompany"`
+	ExpressNo      string          `json:"expressNo"`
+	Remark         string          `json:"remark,omitempty"`
+	Callback       bool            `json:"callback"`
+	Items          []ShipItemInput `json:"items,omitempty"`
+}
+
+type ShipItemInput struct {
+	OrderItemID uint64 `json:"orderItemId"`
+	Qty         int    `json:"qty"`
 }
 
 type apiBody struct {

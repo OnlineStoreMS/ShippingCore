@@ -32,11 +32,12 @@ type ShipperProfileDTO struct {
 }
 
 type OrderGoodsDTO struct {
-	Title   string  `json:"title"`
-	SkuName string  `json:"skuName"`
-	Num     int     `json:"num"`
-	OuterID string  `json:"outerId"`
-	Price   float64 `json:"price"`
+	OrderItemID uint64  `json:"orderItemId"`
+	Title       string  `json:"title"`
+	SkuName     string  `json:"skuName"`
+	Num         int     `json:"num"`
+	OuterID     string  `json:"outerId"`
+	Price       float64 `json:"price"`
 }
 
 type OrderSnapshotDTO struct {

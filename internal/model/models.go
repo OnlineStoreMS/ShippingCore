@@ -132,12 +132,13 @@ type Shipment struct {
 func (Shipment) TableName() string { return "shipments" }
 
 type ShipmentItem struct {
-	ID         uint64 `gorm:"primaryKey" json:"id"`
-	ShipmentID uint64 `gorm:"index;not null" json:"shipmentId"`
-	GoodsName  string `gorm:"size:256" json:"goodsName"`
-	Quantity   int    `gorm:"default:1" json:"quantity"`
-	SkuCode    string `gorm:"size:128" json:"skuCode"`
-	OuterID    string `gorm:"size:128" json:"outerId"`
+	ID          uint64 `gorm:"primaryKey" json:"id"`
+	ShipmentID  uint64 `gorm:"index;not null" json:"shipmentId"`
+	OrderItemID uint64 `gorm:"index;default:0" json:"orderItemId"`
+	GoodsName   string `gorm:"size:256" json:"goodsName"`
+	Quantity    int    `gorm:"default:1" json:"quantity"`
+	SkuCode     string `gorm:"size:128" json:"skuCode"`
+	OuterID     string `gorm:"size:128" json:"outerId"`
 }
 
 func (ShipmentItem) TableName() string { return "shipment_items" }

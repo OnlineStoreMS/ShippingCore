@@ -224,8 +224,9 @@ func (s *ShipmentService) CreateFromOrder(in *dto.CreateShipmentFromOrderDTO) (*
 			cargoName = name
 		}
 		items = append(items, model.ShipmentItem{
-			GoodsName: name,
-			Quantity:  qty,
+			OrderItemID: g.OrderItemID,
+			GoodsName:   name,
+			Quantity:    qty,
 			// SkuCode 固定存规格名称，供下顺丰单 cargoDetails 使用
 			SkuCode: strings.TrimSpace(g.SkuName),
 			OuterID: g.OuterID,
@@ -456,7 +457,7 @@ func (s *ShipmentService) CreateWaybill(ctx context.Context, token string, id ui
 	}
 
 	if shipment.OrderCoreOrderID > 0 && shipment.MailNo != "" {
-		if err := s.shipOrderCore(ctx, token, shipment.OrderCoreOrderID, "顺丰", shipment.MailNo); err != nil {
+		if err := s.shipOrderCore(ctx, token, shipment.OrderCoreOrderID, "顺丰", shipment.MailNo, shipment.Items); err != nil {
 			return nil, fmt.Errorf("运单已出(%s)，回写订单中心失败: %w", shipment.MailNo, err)
 		}
 	}
@@ -904,7 +905,7 @@ func (s *ShipmentService) ListPendingOMSOrders(ctx context.Context, token string
 		return nil, fmt.Errorf("ordercore 未配置")
 	}
 	if query.ShipStatus == "" {
-		query.ShipStatus = "wait_ship"
+		query.ShipStatus = "need_ship"
 	}
 	if query.AllocType == "" {
 		query.AllocType = "self_ship"
@@ -934,10 +935,11 @@ func (s *ShipmentService) ConfirmKdzsShip(ctx context.Context, token string, in 
 			cargoName = name
 		}
 		items = append(items, model.ShipmentItem{
-			GoodsName: name,
-			Quantity:  qty,
-			SkuCode:   strings.TrimSpace(g.SkuName),
-			OuterID:   g.OuterID,
+			OrderItemID: g.OrderItemID,
+			GoodsName:   name,
+			Quantity:    qty,
+			SkuCode:     strings.TrimSpace(g.SkuName),
+			OuterID:     g.OuterID,
 		})
 	}
 
@@ -968,20 +970,31 @@ func (s *ShipmentService) ConfirmKdzsShip(ctx context.Context, token string, in 
 		return nil, err
 	}
 
-	if err := s.shipOrderCore(ctx, token, in.OrderID, expressCompany, in.ExpressNo); err != nil {
+	if err := s.shipOrderCore(ctx, token, in.OrderID, expressCompany, in.ExpressNo, items); err != nil {
 		return nil, err
 	}
 	return s.Get(shipment.ID)
 }
 
-func (s *ShipmentService) shipOrderCore(ctx context.Context, token string, orderID uint64, expressCompany, expressNo string) error {
+func (s *ShipmentService) shipOrderCore(ctx context.Context, token string, orderID uint64, expressCompany, expressNo string, shipmentItems []model.ShipmentItem) error {
 	if s.orderCore == nil || orderID == 0 || strings.TrimSpace(expressNo) == "" {
 		return nil
+	}
+	shipItems := make([]ordercore.ShipItemInput, 0, len(shipmentItems))
+	for _, it := range shipmentItems {
+		if it.OrderItemID == 0 || it.Quantity <= 0 {
+			continue
+		}
+		shipItems = append(shipItems, ordercore.ShipItemInput{
+			OrderItemID: it.OrderItemID,
+			Qty:         it.Quantity,
+		})
 	}
 	_, err := s.orderCore.Ship(ctx, token, orderID, ordercore.ShipRequest{
 		ExpressCompany: expressCompany,
 		ExpressNo:      strings.TrimSpace(expressNo),
 		Callback:       true,
+		Items:          shipItems,
 	})
 	return err
 }
