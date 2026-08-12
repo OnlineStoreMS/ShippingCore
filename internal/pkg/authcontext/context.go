@@ -58,3 +58,15 @@ func BearerToken(c *gin.Context) string {
 	}
 	return ""
 }
+
+// AuthorizationHeader 供服务间转发：优先 Authorization，否则从 uc_access Cookie 拼 Bearer。
+func AuthorizationHeader(c *gin.Context) string {
+	auth := c.GetHeader("Authorization")
+	if strings.HasPrefix(auth, "Bearer ") {
+		return auth
+	}
+	if tok := BearerToken(c); tok != "" {
+		return "Bearer " + tok
+	}
+	return ""
+}
