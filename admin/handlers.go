@@ -321,13 +321,36 @@ func (h *Handlers) CreateShipmentWaybill(c *gin.Context) {
 	response.OK(c, item)
 }
 
+func parseOptionalCarrierAccountID(c *gin.Context) uint64 {
+	raw := strings.TrimSpace(c.Query("carrierAccountId"))
+	if raw == "" {
+		raw = strings.TrimSpace(c.PostForm("carrierAccountId"))
+	}
+	if raw == "" {
+		return 0
+	}
+	id, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return id
+}
+
 func (h *Handlers) PrintShipment(c *gin.Context) {
 	id, err := httputil.ParseID(c)
 	if err != nil {
 		response.Fail(c, http.StatusBadRequest, "invalid id")
 		return
 	}
-	item, err := h.shipment(c).Print(c.Request.Context(), id)
+	carrierID := parseOptionalCarrierAccountID(c)
+	if carrierID == 0 {
+		var body struct {
+			CarrierAccountID uint64 `json:"carrierAccountId"`
+		}
+		_ = c.ShouldBindJSON(&body)
+		carrierID = body.CarrierAccountID
+	}
+	item, err := h.shipment(c).PrintWithCarrier(c.Request.Context(), id, carrierID)
 	if err != nil {
 		httputil.HandleServiceError(c, err)
 		return
@@ -341,7 +364,7 @@ func (h *Handlers) DownloadShipmentLabel(c *gin.Context) {
 		response.Fail(c, http.StatusBadRequest, "invalid id")
 		return
 	}
-	pdf, filename, err := h.shipment(c).FetchLabelPDF(c.Request.Context(), id)
+	pdf, filename, err := h.shipment(c).FetchLabelPDF(c.Request.Context(), id, parseOptionalCarrierAccountID(c))
 	if err != nil {
 		httputil.HandleServiceError(c, err)
 		return
@@ -364,6 +387,7 @@ func (h *Handlers) GetShipmentPrintPluginData(c *gin.Context) {
 		id,
 		c.Query("templateCode"),
 		c.Query("customTemplateCode"),
+		parseOptionalCarrierAccountID(c),
 	)
 	if err != nil {
 		httputil.HandleServiceError(c, err)
@@ -378,7 +402,7 @@ func (h *Handlers) CancelShipment(c *gin.Context) {
 		response.Fail(c, http.StatusBadRequest, "invalid id")
 		return
 	}
-	item, err := h.shipment(c).Cancel(c.Request.Context(), id)
+	item, err := h.shipment(c).Cancel(c.Request.Context(), authcontext.BearerToken(c), id)
 	if err != nil {
 		httputil.HandleServiceError(c, err)
 		return

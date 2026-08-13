@@ -125,6 +125,19 @@ func (c *Client) Ship(ctx context.Context, token string, orderID uint64, body Sh
 	return c.doJSON(ctx, http.MethodPost, reqURL, token, body)
 }
 
+type UnshipRequest struct {
+	ExpressNo string `json:"expressNo"`
+	Remark    string `json:"remark,omitempty"`
+}
+
+func (c *Client) Unship(ctx context.Context, token string, orderID uint64, body UnshipRequest) (json.RawMessage, error) {
+	if c == nil || c.BaseURL == "" {
+		return nil, fmt.Errorf("ordercore 未配置")
+	}
+	reqURL := fmt.Sprintf("%s/api/v1/admin/orders/%d/unship", c.BaseURL, orderID)
+	return c.doJSON(ctx, http.MethodPost, reqURL, token, body)
+}
+
 func (c *Client) doJSON(ctx context.Context, method, reqURL, token string, body interface{}) (json.RawMessage, error) {
 	var reader io.Reader
 	if body != nil {

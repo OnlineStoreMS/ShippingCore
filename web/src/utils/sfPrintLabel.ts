@@ -10,11 +10,17 @@ export async function printShipmentByChannel(opts: {
   /** 覆盖账号默认模板（plugin） */
   templateCode?: string
   customTemplateCode?: string
+  /** 再次打印时可指定物流账号 */
+  carrierAccountId?: number
 }): Promise<'pdf' | 'plugin'> {
   const channel = (opts.printChannel || 'plugin').toLowerCase() === 'pdf' ? 'pdf' : 'plugin'
+  const carrierAccountId = opts.carrierAccountId
   if (channel === 'pdf') {
-    await shippingApi.printShipment(opts.shipmentId)
-    const file = await shippingApi.fetchShipmentLabelFile(opts.shipmentId)
+    await shippingApi.printShipment(opts.shipmentId, carrierAccountId ? { carrierAccountId } : undefined)
+    const file = await shippingApi.fetchShipmentLabelFile(
+      opts.shipmentId,
+      carrierAccountId ? { carrierAccountId } : undefined,
+    )
     const blobUrl = URL.createObjectURL(file)
     const win = window.open(blobUrl, '_blank')
     if (!win) {
@@ -28,9 +34,14 @@ export async function printShipmentByChannel(opts: {
   if (opts.printerIndex == null) {
     throw new Error('PRINTER_NOT_SELECTED')
   }
-  const params: { templateCode?: string; customTemplateCode?: string } = {}
+  const params: {
+    templateCode?: string
+    customTemplateCode?: string
+    carrierAccountId?: number
+  } = {}
   if (opts.templateCode) params.templateCode = opts.templateCode
   if (opts.customTemplateCode) params.customTemplateCode = opts.customTemplateCode
+  if (carrierAccountId) params.carrierAccountId = carrierAccountId
   const pluginData = await shippingApi.fetchShipmentPrintPluginData(
     opts.shipmentId,
     Object.keys(params).length ? params : undefined,

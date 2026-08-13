@@ -410,19 +410,22 @@ export const shippingApi = {
     client.post('/shipments/from-order', body).then((r) => unwrap<Shipment>(r)),
   createShipmentWaybill: (id: number) =>
     client.post(`/shipments/${id}/create-waybill`).then((r) => unwrap<Shipment>(r)),
-  printShipment: (id: number) =>
-    client.post(`/shipments/${id}/print`).then((r) => unwrap<Shipment>(r)),
+  printShipment: (id: number, body?: { carrierAccountId?: number }) =>
+    client.post(`/shipments/${id}/print`, body || {}).then((r) => unwrap<Shipment>(r)),
   /** 云打印插件数据 COM_RECE_CLOUD_PRINT_PARSEDDATA */
   fetchShipmentPrintPluginData: (
     id: number,
-    params?: { templateCode?: string; customTemplateCode?: string },
+    params?: { templateCode?: string; customTemplateCode?: string; carrierAccountId?: number },
   ) =>
     client
       .get(`/shipments/${id}/print-plugin-data`, { params })
       .then((r) => unwrap<SFPrintPluginData>(r)),
   /** 拉取本地面单 PDF Blob（带鉴权） */
-  fetchShipmentLabelFile: async (id: number): Promise<Blob> => {
-    const res = await client.get(`/shipments/${id}/label`, { responseType: 'blob' })
+  fetchShipmentLabelFile: async (
+    id: number,
+    params?: { carrierAccountId?: number },
+  ): Promise<Blob> => {
+    const res = await client.get(`/shipments/${id}/label`, { responseType: 'blob', params })
     const blob = res.data as Blob
     if (!blob || blob.size === 0) {
       throw new Error('面单 PDF 为空')
@@ -442,8 +445,8 @@ export const shippingApi = {
     return blob.type ? blob : new Blob([blob], { type: 'application/pdf' })
   },
   /** 拉取本地面单 PDF（带鉴权），返回 blob URL，调用方用完应 URL.revokeObjectURL */
-  fetchShipmentLabelBlob: async (id: number): Promise<string> => {
-    const blob = await shippingApi.fetchShipmentLabelFile(id)
+  fetchShipmentLabelBlob: async (id: number, params?: { carrierAccountId?: number }): Promise<string> => {
+    const blob = await shippingApi.fetchShipmentLabelFile(id, params)
     return URL.createObjectURL(blob)
   },
   cancelShipment: (id: number) =>

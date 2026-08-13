@@ -77,7 +77,20 @@ func (s *ShipmentService) List(q ShipmentListQuery) ([]model.Shipment, int64, er
 
 	dbq := s.db().Model(&model.Shipment{})
 	if status := strings.TrimSpace(q.Status); status != "" {
-		dbq = dbq.Where("status = ?", status)
+		if strings.Contains(status, ",") {
+			parts := make([]string, 0, 4)
+			for _, p := range strings.Split(status, ",") {
+				p = strings.TrimSpace(p)
+				if p != "" {
+					parts = append(parts, p)
+				}
+			}
+			if len(parts) > 0 {
+				dbq = dbq.Where("status IN ?", parts)
+			}
+		} else {
+			dbq = dbq.Where("status = ?", status)
+		}
 	}
 	if mailNo := strings.TrimSpace(q.MailNo); mailNo != "" {
 		dbq = dbq.Where("mail_no LIKE ?", "%"+mailNo+"%")
@@ -486,6 +499,11 @@ func firstNonEmptyTrim(values ...string) string {
 }
 
 func (s *ShipmentService) Print(ctx context.Context, id uint64) (*model.Shipment, error) {
+	return s.PrintWithCarrier(ctx, id, 0)
+}
+
+// PrintWithCarrier 云打印；carrierAccountID>0 时用指定物流账号（再次打印可选账号）。
+func (s *ShipmentService) PrintWithCarrier(ctx context.Context, id, carrierAccountID uint64) (*model.Shipment, error) {
 	shipment, err := s.Get(id)
 	if err != nil {
 		return nil, err
@@ -497,9 +515,12 @@ func (s *ShipmentService) Print(ctx context.Context, id uint64) (*model.Shipment
 		return nil, ErrInvalidStatus
 	}
 
-	carrier, err := s.carrier.GetRaw(shipment.CarrierAccountID)
+	carrier, err := s.resolvePrintCarrier(shipment, carrierAccountID)
 	if err != nil {
 		return nil, err
+	}
+	if shipment.CarrierAccountID == 0 {
+		shipment.CarrierAccountID = carrier.ID
 	}
 	tpl := resolvePrintTemplateCode(carrier)
 	if tpl == "" {
@@ -513,6 +534,24 @@ func (s *ShipmentService) Print(ctx context.Context, id uint64) (*model.Shipment
 		return nil, err
 	}
 	return s.Get(shipment.ID)
+}
+
+func (s *ShipmentService) resolvePrintCarrier(shipment *model.Shipment, overrideCarrierID uint64) (*model.CarrierAccount, error) {
+	id := shipment.CarrierAccountID
+	if overrideCarrierID > 0 {
+		id = overrideCarrierID
+	}
+	if id == 0 {
+		return nil, fmt.Errorf("%w: 请选择物流账号后再打印", ErrBadRequest)
+	}
+	carrier, err := s.carrier.GetRaw(id)
+	if err != nil {
+		return nil, fmt.Errorf("%w: 物流账号无效或不存在", ErrBadRequest)
+	}
+	if !carrier.Enabled {
+		return nil, fmt.Errorf("%w: 物流账号已停用", ErrBadRequest)
+	}
+	return carrier, nil
 }
 
 func truncateRunes(s string, max int) string {
@@ -712,7 +751,8 @@ func (s *ShipmentService) archiveLabelPDFOnce(ctx context.Context, client *sf.Cl
 // FetchPrintPluginData 返回官方云打印插件打印参数。
 // 前端 SCPPrint.print 需 accessToken（OAuth2）+ templateCode + documents；
 // SDK 内部会调 COM_RECE_CLOUD_PRINT_PARSEDDATA。此处同时尽力预取 PARSEDDATA 供排查。
-func (s *ShipmentService) FetchPrintPluginData(ctx context.Context, id uint64, overrideTpl, overrideCustom string) (map[string]interface{}, error) {
+// carrierAccountID>0 时用指定物流账号（再次打印可选账号）。
+func (s *ShipmentService) FetchPrintPluginData(ctx context.Context, id uint64, overrideTpl, overrideCustom string, carrierAccountID uint64) (map[string]interface{}, error) {
 	shipment, err := s.Get(id)
 	if err != nil {
 		return nil, err
@@ -720,9 +760,12 @@ func (s *ShipmentService) FetchPrintPluginData(ctx context.Context, id uint64, o
 	if shipment.MailNo == "" {
 		return nil, fmt.Errorf("%w: waybill not created", ErrBadRequest)
 	}
-	carrier, err := s.carrier.GetRaw(shipment.CarrierAccountID)
+	carrier, err := s.resolvePrintCarrier(shipment, carrierAccountID)
 	if err != nil {
 		return nil, err
+	}
+	if shipment.CarrierAccountID == 0 {
+		shipment.CarrierAccountID = carrier.ID
 	}
 	tpl := resolvePrintTemplateCode(carrier)
 	if tpl == "" {
@@ -773,7 +816,7 @@ func (s *ShipmentService) FetchPrintPluginData(ctx context.Context, id uint64, o
 		shipment.LabelData = string(parsed.ObjJSON)
 		markShipmentPrinted(shipment)
 		_ = s.db().Save(shipment).Error
-		s.scheduleArchiveLabelPDF(shipment.ID, shipment.CarrierAccountID, shipment.MailNo, tpl, "")
+		s.scheduleArchiveLabelPDF(shipment.ID, carrier.ID, shipment.MailNo, tpl, "")
 
 		out["requestId"] = firstNonEmptyTrim(parsed.RequestID, requestID)
 		out["fileType"] = parsed.FileType
@@ -791,7 +834,7 @@ func (s *ShipmentService) FetchPrintPluginData(ctx context.Context, id uint64, o
 		shipment.LabelURL = "sf-plugin://" + shipment.MailNo
 		markShipmentPrinted(shipment)
 		_ = s.db().Save(shipment).Error
-		s.scheduleArchiveLabelPDF(shipment.ID, shipment.CarrierAccountID, shipment.MailNo, tpl, "")
+		s.scheduleArchiveLabelPDF(shipment.ID, carrier.ID, shipment.MailNo, tpl, "")
 		if err != nil {
 			out["parsedDataError"] = err.Error()
 		}
@@ -800,7 +843,8 @@ func (s *ShipmentService) FetchPrintPluginData(ctx context.Context, id uint64, o
 }
 
 // FetchLabelPDF 代理下载顺丰云打印 PDF（带 token），供浏览器/本机打印组件打开。
-func (s *ShipmentService) FetchLabelPDF(ctx context.Context, id uint64) ([]byte, string, error) {
+// carrierAccountID>0 时用指定物流账号。
+func (s *ShipmentService) FetchLabelPDF(ctx context.Context, id, carrierAccountID uint64) ([]byte, string, error) {
 	shipment, err := s.Get(id)
 	if err != nil {
 		return nil, "", err
@@ -808,9 +852,12 @@ func (s *ShipmentService) FetchLabelPDF(ctx context.Context, id uint64) ([]byte,
 	if shipment.MailNo == "" {
 		return nil, "", fmt.Errorf("%w: waybill not created", ErrBadRequest)
 	}
-	carrier, err := s.carrier.GetRaw(shipment.CarrierAccountID)
+	carrier, err := s.resolvePrintCarrier(shipment, carrierAccountID)
 	if err != nil {
 		return nil, "", err
+	}
+	if shipment.CarrierAccountID == 0 {
+		shipment.CarrierAccountID = carrier.ID
 	}
 	client := newSFClient(carrier)
 
@@ -851,40 +898,66 @@ func (s *ShipmentService) FetchLabelPDF(ctx context.Context, id uint64) ([]byte,
 	return pdf, filename, nil
 }
 
-func (s *ShipmentService) Cancel(ctx context.Context, id uint64) (*model.Shipment, error) {
+func (s *ShipmentService) Cancel(ctx context.Context, token string, id uint64) (*model.Shipment, error) {
 	shipment, err := s.Get(id)
 	if err != nil {
 		return nil, err
 	}
 	if shipment.Status == model.ShipmentStatusCancelled {
+		_ = s.unshipOrderCore(ctx, token, shipment)
 		return shipment, nil
 	}
+	mailNo := strings.TrimSpace(shipment.MailNo)
 	// 草稿未向顺丰下单：仅作废本地发货单
-	if shipment.Status == model.ShipmentStatusDraft || (shipment.MailNo == "" && strings.TrimSpace(shipment.SFOrderID) == "") {
+	if shipment.Status == model.ShipmentStatusDraft || (mailNo == "" && strings.TrimSpace(shipment.SFOrderID) == "") {
 		shipment.Status = model.ShipmentStatusCancelled
 		shipment.ErrorMessage = ""
 		if err := s.db().Save(shipment).Error; err != nil {
 			return nil, err
 		}
+		_ = s.unshipOrderCore(ctx, token, shipment)
 		return s.Get(shipment.ID)
 	}
 
-	carrier, err := s.carrier.GetRaw(shipment.CarrierAccountID)
-	if err != nil {
-		return nil, err
+	// 有物流账号且已取号：向顺丰取消；手动填单号（无账号）仅本地作废
+	if shipment.CarrierAccountID > 0 && (mailNo != "" || strings.TrimSpace(shipment.SFOrderID) != "") {
+		carrier, err := s.carrier.GetRaw(shipment.CarrierAccountID)
+		if err != nil {
+			return nil, fmt.Errorf("%w: 物流账号无效，无法取消顺丰单", ErrBadRequest)
+		}
+		client := newSFClient(carrier)
+		sfOrderID := firstNonEmptyTrim(shipment.SFOrderID, sfCustomerOrderID(shipment))
+		if err := client.CancelOrder(ctx, sfOrderID, mailNo, 2); err != nil {
+			return nil, fmt.Errorf("取消顺丰快递单失败: %w", err)
+		}
 	}
-	client := newSFClient(carrier)
-	// 取消须与下单 orderId 一致：优先顺丰回写，其次平台订单号 / SC{id}
-	sfOrderID := firstNonEmptyTrim(shipment.SFOrderID, sfCustomerOrderID(shipment))
-	if err := client.CancelOrder(ctx, sfOrderID, shipment.MailNo, 2); err != nil {
-		return nil, fmt.Errorf("取消顺丰快递单失败: %w", err)
-	}
+
 	shipment.Status = model.ShipmentStatusCancelled
 	shipment.ErrorMessage = ""
 	if err := s.db().Save(shipment).Error; err != nil {
 		return nil, err
 	}
+	if err := s.unshipOrderCore(ctx, token, shipment); err != nil {
+		return nil, fmt.Errorf("快递单已取消，但回退订单发货失败: %w", err)
+	}
 	return s.Get(shipment.ID)
+}
+
+// unshipOrderCore 取消快递后清除订单中心该运单对应商品发货明细，重算待发/部分发货。
+func (s *ShipmentService) unshipOrderCore(ctx context.Context, token string, shipment *model.Shipment) error {
+	if s.orderCore == nil || shipment == nil {
+		return nil
+	}
+	orderID := shipment.OrderCoreOrderID
+	mailNo := strings.TrimSpace(shipment.MailNo)
+	if orderID == 0 || mailNo == "" {
+		return nil
+	}
+	_, err := s.orderCore.Unship(ctx, token, orderID, ordercore.UnshipRequest{
+		ExpressNo: mailNo,
+		Remark:    fmt.Sprintf("发货中心取消快递单 #%d", shipment.ID),
+	})
+	return err
 }
 
 func (s *ShipmentService) ListPendingOrders(ctx context.Context, token string, query storesyncagent.OrderQuery) (json.RawMessage, error) {
