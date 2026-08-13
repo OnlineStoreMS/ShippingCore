@@ -423,6 +423,35 @@ export const shippingApi = {
         }>
       }>(r),
     ),
+
+  queryDeliverTm: (body: {
+    carrierAccountId: number
+    srcProvince?: string
+    srcCity?: string
+    srcCounty?: string
+    srcAddress?: string
+    destProvince?: string
+    destCity?: string
+    destCounty?: string
+    destAddress?: string
+    weightKg?: number
+    useMonthly?: boolean
+    consignedTime?: string
+    businessType?: string
+  }) =>
+    client.post('/sf/query-deliver-tm', body).then((r) =>
+      unwrap<{
+        products: Array<{
+          value: string
+          name: string
+          tag?: string
+          hint?: string
+          fee?: number
+          deliverTime?: string
+          deliverLabel?: string
+        }>
+      }>(r),
+    ),
   getShipperProfile: (id: number) =>
     client.get(`/shipper-profiles/${id}`).then((r) => unwrap<ShipperProfile>(r)),
   createShipperProfile: (body: ShipperProfile) =>

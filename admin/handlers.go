@@ -268,6 +268,20 @@ func (h *Handlers) CheckPickupTime(c *gin.Context) {
 	response.OK(c, item)
 }
 
+func (h *Handlers) QueryDeliverTm(c *gin.Context) {
+	var in dto.QueryDeliverTmRequest
+	if err := c.ShouldBindJSON(&in); err != nil {
+		response.Fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	item, err := h.carrier(c).QueryDeliverTm(c.Request.Context(), in)
+	if err != nil {
+		httputil.HandleServiceError(c, err)
+		return
+	}
+	response.OK(c, item)
+}
+
 // ── Shipments ──
 
 func (h *Handlers) ListShipments(c *gin.Context) {

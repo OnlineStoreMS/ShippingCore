@@ -27,6 +27,7 @@ const (
 	ServiceCloudPrint       = "COM_RECE_CLOUD_PRINT_WAYBILLS"   // 云打印转 PDF
 	ServiceCloudPrintParsed = "COM_RECE_CLOUD_PRINT_PARSEDDATA" // 云打印面单打印插件接口
 	ServiceCheckPickupTime  = "EXP_EXCE_CHECK_PICKUP_TIME"      // 上门揽收时段查询
+	ServiceQueryDeliverTm = "EXP_RECE_QUERY_DELIVERTM" // 时效标准及价格查询
 
 	// SignModeStandard 丰桥「标准MD5」：URLEncode → MD5 → Base64
 	SignModeStandard = "standard"
@@ -368,6 +369,149 @@ func (c *Client) CheckPickupTime(ctx context.Context, req CheckPickupTimeRequest
 	out.EndTm = strings.TrimSpace(win.EndTm)
 	out.ExceptionReason = strings.TrimSpace(win.ExceptionReason)
 	return out, nil
+}
+
+// QueryDeliverTmRequest 时效标准及价格查询（EXP_RECE_QUERY_DELIVERTM）。
+type QueryDeliverTmRequest struct {
+	SrcProvince  string
+	SrcCity      string
+	SrcDistrict  string
+	SrcAddress   string
+	DestProvince string
+	DestCity     string
+	DestDistrict string
+	DestAddress  string
+	WeightKG     float64
+	ConsignedTime string // YYYY-MM-DD HH:mm:ss，可选
+	MonthlyCard  string  // 月结卡号，可选
+	BusinessType string  // 产品编码过滤，可选；空则尽量返回可售产品
+}
+
+// DeliverTmItem 单个物流产品的时效/预估价格。
+type DeliverTmItem struct {
+	BusinessType     string  `json:"businessType"`
+	BusinessTypeDesc string  `json:"businessTypeDesc"`
+	DeliverTime      string  `json:"deliverTime"` // 可能为 "开始,结束"
+	Fee              float64 `json:"fee"`
+	CloseTime        string  `json:"closeTime,omitempty"`
+}
+
+type QueryDeliverTmResult struct {
+	Items []DeliverTmItem  `json:"items"`
+	Raw   json.RawMessage  `json:"-"`
+}
+
+func (c *Client) QueryDeliverTm(ctx context.Context, req QueryDeliverTmRequest) (*QueryDeliverTmResult, error) {
+	srcAddr := strings.TrimSpace(req.SrcAddress)
+	destAddr := strings.TrimSpace(req.DestAddress)
+	if strings.TrimSpace(req.SrcProvince) == "" || strings.TrimSpace(req.SrcCity) == "" || srcAddr == "" {
+		return nil, fmt.Errorf("src address is required")
+	}
+	if strings.TrimSpace(req.DestProvince) == "" || strings.TrimSpace(req.DestCity) == "" || destAddr == "" {
+		return nil, fmt.Errorf("dest address is required")
+	}
+	weight := req.WeightKG
+	if weight <= 0 {
+		weight = 1
+	}
+	consigned := strings.TrimSpace(req.ConsignedTime)
+	if consigned == "" {
+		consigned = time.Now().Format("2006-01-02 15:04:05")
+	}
+	payload := map[string]interface{}{
+		"language":      "zh-CN",
+		"searchPrice":   "1",
+		"weight":        weight,
+		"consignedTime": consigned,
+		"srcAddress": map[string]string{
+			"province": strings.TrimSpace(req.SrcProvince),
+			"city":     strings.TrimSpace(req.SrcCity),
+			"district": strings.TrimSpace(req.SrcDistrict),
+			"address":  srcAddr,
+		},
+		"destAddress": map[string]string{
+			"province": strings.TrimSpace(req.DestProvince),
+			"city":     strings.TrimSpace(req.DestCity),
+			"district": strings.TrimSpace(req.DestDistrict),
+			"address":  destAddr,
+		},
+	}
+	if bt := strings.TrimSpace(req.BusinessType); bt != "" {
+		payload["businessType"] = bt
+	}
+	if card := strings.TrimSpace(req.MonthlyCard); card != "" {
+		if c.sandbox {
+			card = SandboxMonthlyCard
+		}
+		payload["monthlyCard"] = card
+	}
+
+	var apiResp apiEnvelope
+	if err := c.call(ctx, ServiceQueryDeliverTm, payload, &apiResp); err != nil {
+		return nil, err
+	}
+	var wrap genericMsgData
+	if err := decodeResultData(apiResp, &wrap); err != nil {
+		return nil, err
+	}
+	if !wrap.Success {
+		return nil, fmt.Errorf("sf query deliver tm: %s", firstNonEmpty(wrap.ErrorMsg, wrap.ErrorCode, "unknown error"))
+	}
+	out := &QueryDeliverTmResult{Raw: wrap.MsgData, Items: nil}
+	if len(wrap.MsgData) == 0 || string(wrap.MsgData) == "null" {
+		return out, nil
+	}
+	var msg struct {
+		DeliverTmDto []struct {
+			BusinessType     interface{} `json:"businessType"`
+			BusinessTypeDesc string      `json:"businessTypeDesc"`
+			DeliverTime      string      `json:"deliverTime"`
+			Fee              interface{} `json:"fee"`
+			CloseTime        interface{} `json:"closeTime"`
+			SearchPrice      interface{} `json:"searchPrice"`
+		} `json:"deliverTmDto"`
+	}
+	if err := json.Unmarshal(wrap.MsgData, &msg); err != nil {
+		return out, nil
+	}
+	for _, d := range msg.DeliverTmDto {
+		item := DeliverTmItem{
+			BusinessType:     fmt.Sprint(d.BusinessType),
+			BusinessTypeDesc: strings.TrimSpace(d.BusinessTypeDesc),
+			DeliverTime:      strings.TrimSpace(d.DeliverTime),
+			Fee:              toFloat64(d.Fee),
+			CloseTime:        strings.TrimSpace(fmt.Sprint(d.CloseTime)),
+		}
+		if item.CloseTime == "<nil>" || item.CloseTime == "null" {
+			item.CloseTime = ""
+		}
+		if item.BusinessType == "" || item.BusinessType == "<nil>" {
+			continue
+		}
+		out.Items = append(out.Items, item)
+	}
+	return out, nil
+}
+
+func toFloat64(v interface{}) float64 {
+	switch t := v.(type) {
+	case float64:
+		return t
+	case float32:
+		return float64(t)
+	case int:
+		return float64(t)
+	case int64:
+		return float64(t)
+	case json.Number:
+		f, _ := t.Float64()
+		return f
+	case string:
+		f, _ := strconv.ParseFloat(strings.TrimSpace(t), 64)
+		return f
+	default:
+		return 0
+	}
 }
 
 // PrintDocOptions 云打印 documents 扩展（自定义区备注等）。

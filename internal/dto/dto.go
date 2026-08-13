@@ -64,6 +64,37 @@ type CheckPickupTimeResult struct {
 	Options         []PickupAppointDayOption  `json:"options"`
 }
 
+// QueryDeliverTmRequest 按寄/收件地址查时效与预估运费。
+type QueryDeliverTmRequest struct {
+	CarrierAccountID uint64  `json:"carrierAccountId"`
+	SrcProvince      string  `json:"srcProvince"`
+	SrcCity          string  `json:"srcCity"`
+	SrcCounty        string  `json:"srcCounty"`
+	SrcAddress       string  `json:"srcAddress"`
+	DestProvince     string  `json:"destProvince"`
+	DestCity         string  `json:"destCity"`
+	DestCounty       string  `json:"destCounty"`
+	DestAddress      string  `json:"destAddress"`
+	WeightKG         float64 `json:"weightKg"`
+	UseMonthly       bool    `json:"useMonthly"`
+	ConsignedTime    string  `json:"consignedTime,omitempty"`
+	BusinessType     string  `json:"businessType,omitempty"`
+}
+
+type DeliverProductOption struct {
+	Value        string  `json:"value"` // expressTypeId / businessType
+	Name         string  `json:"name"`
+	Tag          string  `json:"tag,omitempty"`
+	Hint         string  `json:"hint,omitempty"`
+	Fee          float64 `json:"fee,omitempty"`
+	DeliverTime  string  `json:"deliverTime,omitempty"`
+	DeliverLabel string  `json:"deliverLabel,omitempty"` // 预计 明天 15:00 前送达
+}
+
+type QueryDeliverTmResult struct {
+	Products []DeliverProductOption `json:"products"`
+}
+
 type OrderGoodsDTO struct {
 	OrderItemID uint64  `json:"orderItemId"`
 	Title       string  `json:"title"`
