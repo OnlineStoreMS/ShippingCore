@@ -644,9 +644,8 @@ onMounted(async () => {
       <el-button text @click="router.push('/pending')">返回待发货</el-button>
     </div>
 
-    <div v-if="handoffMeta?.orderId" class="order-banner">
-      已带入订单中心 #{{ handoffMeta.orderId }}
-      <span v-if="form.sourceTid" class="muted"> · {{ form.sourceTid }}</span>
+    <div v-if="handoffMeta?.orderId || form.orderNo" class="order-banner">
+      已带入订单中心 {{ form.orderNo || `#${handoffMeta?.orderId}` }}
     </div>
 
     <section class="card contacts">
