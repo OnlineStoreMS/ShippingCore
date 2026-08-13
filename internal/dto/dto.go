@@ -95,6 +95,14 @@ type QueryDeliverTmResult struct {
 	Products []DeliverProductOption `json:"products"`
 }
 
+// SearchPromiseTmResult 出单后预计派送时间（EXP_RECE_SEARCH_PROMITM）。
+type SearchPromiseTmResult struct {
+	MailNo       string `json:"mailNo"`
+	PromiseTm    string `json:"promiseTm,omitempty"`
+	PromiseLabel string `json:"promiseLabel,omitempty"` // 预计 明天 15:00 前送达
+	Hint         string `json:"hint,omitempty"`
+}
+
 type OrderGoodsDTO struct {
 	OrderItemID uint64  `json:"orderItemId"`
 	Title       string  `json:"title"`

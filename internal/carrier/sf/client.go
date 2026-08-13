@@ -27,7 +27,8 @@ const (
 	ServiceCloudPrint       = "COM_RECE_CLOUD_PRINT_WAYBILLS"   // 云打印转 PDF
 	ServiceCloudPrintParsed = "COM_RECE_CLOUD_PRINT_PARSEDDATA" // 云打印面单打印插件接口
 	ServiceCheckPickupTime  = "EXP_EXCE_CHECK_PICKUP_TIME"      // 上门揽收时段查询
-	ServiceQueryDeliverTm = "EXP_RECE_QUERY_DELIVERTM" // 时效标准及价格查询
+	ServiceQueryDeliverTm = "EXP_RECE_QUERY_DELIVERTM"  // 时效标准及价格查询（下单前）
+	ServiceSearchPromitm  = "EXP_RECE_SEARCH_PROMITM"   // 预计派送时间查询（出单后）
 
 	// SignModeStandard 丰桥「标准MD5」：URLEncode → MD5 → Base64
 	SignModeStandard = "standard"
@@ -512,6 +513,83 @@ func toFloat64(v interface{}) float64 {
 	default:
 		return 0
 	}
+}
+
+// SearchPromitmRequest 预计派送时间查询（EXP_RECE_SEARCH_PROMITM）。
+// checkType=1 时 checkNos 一般为手机号后四位；checkType=2 可为完整手机号等。
+type SearchPromitmRequest struct {
+	SearchNo  string   // 运单号
+	CheckType int      // 1=手机后四位等
+	CheckNos  []string // 校验号列表
+}
+
+type SearchPromitmResult struct {
+	PromiseTm string          `json:"promiseTm"`
+	SearchNo  string          `json:"searchNo,omitempty"`
+	Raw       json.RawMessage `json:"-"`
+}
+
+func (c *Client) SearchPromitm(ctx context.Context, req SearchPromitmRequest) (*SearchPromitmResult, error) {
+	searchNo := strings.TrimSpace(req.SearchNo)
+	if searchNo == "" {
+		return nil, fmt.Errorf("searchNo is required")
+	}
+	checkType := req.CheckType
+	if checkType == 0 {
+		checkType = 1
+	}
+	checkNos := make([]string, 0, len(req.CheckNos))
+	for _, n := range req.CheckNos {
+		n = strings.TrimSpace(n)
+		if n != "" {
+			checkNos = append(checkNos, n)
+		}
+	}
+	if len(checkNos) == 0 {
+		return nil, fmt.Errorf("checkNos is required")
+	}
+	payload := map[string]interface{}{
+		"searchNo":  searchNo,
+		"checkType": checkType,
+		"checkNos":  checkNos,
+	}
+
+	var apiResp apiEnvelope
+	if err := c.call(ctx, ServiceSearchPromitm, payload, &apiResp); err != nil {
+		return nil, err
+	}
+	var wrap genericMsgData
+	if err := decodeResultData(apiResp, &wrap); err != nil {
+		return nil, err
+	}
+	if !wrap.Success {
+		return nil, fmt.Errorf("sf search promitm: %s", firstNonEmpty(wrap.ErrorMsg, wrap.ErrorCode, "unknown error"))
+	}
+	out := &SearchPromitmResult{SearchNo: searchNo, Raw: wrap.MsgData}
+	if len(wrap.MsgData) == 0 || string(wrap.MsgData) == "null" {
+		return out, nil
+	}
+	var msg map[string]interface{}
+	if err := json.Unmarshal(wrap.MsgData, &msg); err != nil {
+		return out, nil
+	}
+	out.PromiseTm = firstMapStr(msg, "promiseTm", "promiseTime", "deliverTm", "promisedTm", "promise_tm")
+	if sn := firstMapStr(msg, "searchNo", "waybillNo", "mailNo"); sn != "" {
+		out.SearchNo = sn
+	}
+	return out, nil
+}
+
+func firstMapStr(m map[string]interface{}, keys ...string) string {
+	for _, k := range keys {
+		if v, ok := m[k]; ok && v != nil {
+			s := strings.TrimSpace(fmt.Sprint(v))
+			if s != "" && s != "<nil>" && s != "null" {
+				return s
+			}
+		}
+	}
+	return ""
 }
 
 // PrintDocOptions 云打印 documents 扩展（自定义区备注等）。

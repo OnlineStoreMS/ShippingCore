@@ -53,6 +53,9 @@ const filters = reactive({
 
 const detailVisible = ref(false)
 const detail = ref<Shipment | null>(null)
+const promiseLabel = ref('')
+const promiseHint = ref('')
+const promiseLoading = ref(false)
 const actionLoading = ref<Record<number, string>>({})
 
 const printers = ref<LocalPrinter[]>([])
@@ -236,10 +239,27 @@ function resetFilters() {
   search()
 }
 
+async function loadPromiseTm(id: number, mailNo?: string) {
+  promiseLabel.value = ''
+  promiseHint.value = ''
+  if (!mailNo?.trim()) return
+  promiseLoading.value = true
+  try {
+    const res = await shippingApi.searchPromiseTm(id)
+    promiseLabel.value = res.promiseLabel || ''
+    promiseHint.value = res.hint || ''
+  } catch (e) {
+    promiseHint.value = (e as Error).message || '预计派送时间查询失败'
+  } finally {
+    promiseLoading.value = false
+  }
+}
+
 async function openDetail(row: Shipment) {
   try {
     detail.value = await shippingApi.getShipment(row.id)
     detailVisible.value = true
+    void loadPromiseTm(detail.value.id, detail.value.mailNo)
   } catch (e) {
     ElMessage.error((e as Error).message || '加载详情失败')
   }
@@ -633,6 +653,11 @@ onMounted(() => {
             <el-tag :type="statusTag(detail.status).type" size="small">{{ statusTag(detail.status).label }}</el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="运单号">{{ detail.mailNo || '-' }}</el-descriptions-item>
+          <el-descriptions-item v-if="detail.mailNo" label="预计派送">
+            <span v-if="promiseLoading" class="muted">查询中…</span>
+            <span v-else-if="promiseLabel">{{ promiseLabel }}</span>
+            <span v-else class="muted">{{ promiseHint || '-' }}</span>
+          </el-descriptions-item>
           <el-descriptions-item label="订单号">{{ orderNoDisplay(detail) }}</el-descriptions-item>
           <el-descriptions-item label="订单类型">{{ formatOrderSource(detail) }}</el-descriptions-item>
           <el-descriptions-item label="平台">{{ labelPlatform(detail.platform) }}</el-descriptions-item>

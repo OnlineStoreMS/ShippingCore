@@ -151,6 +151,92 @@ func (s *ShipmentService) Get(id uint64) (*model.Shipment, error) {
 	return &item, nil
 }
 
+// SearchPromiseTm 出单后查预计派送时间（EXP_RECE_SEARCH_PROMITM）。
+func (s *ShipmentService) SearchPromiseTm(ctx context.Context, id uint64) (*dto.SearchPromiseTmResult, error) {
+	shipment, err := s.Get(id)
+	if err != nil {
+		return nil, err
+	}
+	mailNo := strings.TrimSpace(shipment.MailNo)
+	if mailNo == "" {
+		return nil, fmt.Errorf("%w: 无运单号，无法查询预计派送时间", ErrBadRequest)
+	}
+	if shipment.CarrierAccountID == 0 {
+		return nil, fmt.Errorf("%w: 发货单未关联物流账号", ErrBadRequest)
+	}
+	carrier, err := s.carrier.GetRaw(shipment.CarrierAccountID)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(carrier.PartnerID) == "" || strings.TrimSpace(carrier.Checkword) == "" {
+		return nil, fmt.Errorf("%w: 物流账号未配置顾客编码/校验码", ErrBadRequest)
+	}
+
+	mobileDigits := digitsOnly(shipment.ReceiverMobile)
+	if len(mobileDigits) < 4 {
+		return nil, fmt.Errorf("%w: 收件手机号不足，无法校验查询", ErrBadRequest)
+	}
+	last4 := mobileDigits[len(mobileDigits)-4:]
+
+	client := newSFClient(carrier)
+	// checkType=1：手机号后四位（丰桥常用）
+	res, err := client.SearchPromitm(ctx, sf.SearchPromitmRequest{
+		SearchNo:  mailNo,
+		CheckType: 1,
+		CheckNos:  []string{last4},
+	})
+	if err != nil {
+		// 部分账号要求完整手机号（checkType=2）
+		if strings.Contains(err.Error(), "8013") || strings.Contains(err.Error(), "校验") || strings.Contains(err.Error(), "手机") {
+			if res2, err2 := client.SearchPromitm(ctx, sf.SearchPromitmRequest{
+				SearchNo:  mailNo,
+				CheckType: 2,
+				CheckNos:  []string{mobileDigits},
+			}); err2 == nil {
+				res, err = res2, nil
+			}
+		}
+	}
+	if err != nil {
+		hint := err.Error()
+		if strings.Contains(hint, "无对应服务权限") || strings.Contains(hint, "A1004") {
+			hint = "请在丰桥开通「预计派送时间查询」(EXP_RECE_SEARCH_PROMITM)"
+		}
+		return &dto.SearchPromiseTmResult{
+			MailNo: mailNo,
+			Hint:   hint,
+		}, nil
+	}
+
+	promiseTm := ""
+	if res != nil {
+		promiseTm = strings.TrimSpace(res.PromiseTm)
+	}
+	_, label := formatDeliverTimeLabel(time.Now(), promiseTm)
+	if label == "" && promiseTm != "" {
+		label = "预计 " + promiseTm + " 前送达"
+	}
+	out := &dto.SearchPromiseTmResult{
+		MailNo:       mailNo,
+		PromiseTm:    promiseTm,
+		PromiseLabel: label,
+	}
+	if promiseTm == "" {
+		out.Hint = "未返回预计派送时间"
+	}
+	return out, nil
+}
+
+func digitsOnly(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 // DeleteByOrderCore 按订单中心销售单删除发货运单（手工单删除级联）。
 func (s *ShipmentService) DeleteByOrderCore(orderCoreOrderID uint64, sourceRef string) (int, error) {
 	sourceRef = strings.TrimSpace(sourceRef)

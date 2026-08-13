@@ -464,6 +464,16 @@ export const shippingApi = {
 
   listShipments: (params?: Record<string, unknown>) => page<Shipment>('/shipments', params),
   getShipment: (id: number) => client.get(`/shipments/${id}`).then((r) => unwrap<Shipment>(r)),
+  /** 出单后预计派送时间 EXP_RECE_SEARCH_PROMITM */
+  searchPromiseTm: (id: number) =>
+    client.get(`/shipments/${id}/promise-tm`).then((r) =>
+      unwrap<{
+        mailNo: string
+        promiseTm?: string
+        promiseLabel?: string
+        hint?: string
+      }>(r),
+    ),
   createShipmentFromOrder: (body: CreateShipmentFromOrderInput) =>
     client.post('/shipments/from-order', body).then((r) => unwrap<Shipment>(r)),
   createShipmentWaybill: (id: number) =>

@@ -21,6 +21,7 @@ func RegisterRoutes(g *gin.RouterGroup, h *Handlers) {
 	g.GET("/shipments", h.ListShipments)
 	g.POST("/shipments/delete-by-ordercore", h.DeleteShipmentsByOrderCore)
 	g.GET("/shipments/:id", h.GetShipment)
+	g.GET("/shipments/:id/promise-tm", h.SearchPromiseTm)
 	g.POST("/shipments/from-order", h.CreateShipmentFromOrder)
 	g.POST("/shipments/:id/create-waybill", h.CreateShipmentWaybill)
 	g.POST("/shipments/:id/print", h.PrintShipment)

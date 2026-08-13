@@ -49,6 +49,50 @@ export function remainingQtyByItem(order: OMSOrder & { shipments?: OMSOrderShipm
   return out
 }
 
+/** 从整段中文地址尽量拆出省/市/区与明细（OMS 常只给 fullText）。 */
+export function parseChineseRegion(raw: string): {
+  province: string
+  city: string
+  county: string
+  address: string
+} {
+  const text = (raw || '').replace(/\s+/g, '').trim()
+  if (!text) return { province: '', city: '', county: '', address: '' }
+  const m = text.match(
+    /^(?<province>[\u4e00-\u9fa5]+?(?:省|自治区|特别行政区|市))(?<city>[\u4e00-\u9fa5]+?(?:市|自治州|地区|盟|区|县))?(?<county>[\u4e00-\u9fa5]+?(?:区|县|市|旗|镇))?(?<address>.*)$/,
+  )
+  if (!m?.groups) return { province: '', city: '', county: '', address: text }
+  return {
+    province: m.groups.province || '',
+    city: m.groups.city || '',
+    county: m.groups.county || '',
+    address: (m.groups.address || '').trim() || text,
+  }
+}
+
+function resolveReceiverAddress(addr?: {
+  province?: string
+  city?: string
+  district?: string
+  address?: string
+  fullText?: string
+}) {
+  let province = (addr?.province || '').trim()
+  let city = (addr?.city || '').trim()
+  let county = (addr?.district || '').trim()
+  let detail = (addr?.address || '').trim()
+  const full = (addr?.fullText || '').trim()
+  if ((!province || !city) && full) {
+    const parsed = parseChineseRegion(full)
+    if (!province) province = parsed.province
+    if (!city) city = parsed.city
+    if (!county) county = parsed.county
+    if (!detail) detail = parsed.address
+  }
+  if (!detail) detail = full
+  return { province, city, county, address: detail }
+}
+
 /** itemIndexes：按订单明细下标勾选发货；不传则全部可发商品 */
 export function omsOrderToSnapshot(
   order: OMSOrder & { shipments?: OMSOrderShipment[] },
@@ -71,6 +115,7 @@ export function omsOrderToSnapshot(
           const left = remaining[g.id]
           return left == null || left > 0
         })
+  const receiver = resolveReceiverAddress(addr)
   return {
     platform: order.platform || '',
     shopId: order.shopId || '',
@@ -82,10 +127,10 @@ export function omsOrderToSnapshot(
     sourceTid: order.platformOrderId || order.orderNo,
     receiverName: addr?.name || order.buyerName || '',
     receiverMobile: addr?.phone || order.buyerPhone || '',
-    receiverProvince: addr?.province || '',
-    receiverCity: addr?.city || '',
-    receiverCounty: addr?.district || '',
-    receiverAddress: addr?.fullText || addr?.address || '',
+    receiverProvince: receiver.province,
+    receiverCity: receiver.city,
+    receiverCounty: receiver.county,
+    receiverAddress: receiver.address,
     goods: picked
       .map((g) => {
         const spec = (g.skuSpecs || '').trim()

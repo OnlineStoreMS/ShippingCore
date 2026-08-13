@@ -321,6 +321,20 @@ func (h *Handlers) GetShipment(c *gin.Context) {
 	response.OK(c, item)
 }
 
+func (h *Handlers) SearchPromiseTm(c *gin.Context) {
+	id, err := httputil.ParseID(c)
+	if err != nil {
+		response.Fail(c, http.StatusBadRequest, "invalid id")
+		return
+	}
+	item, err := h.shipment(c).SearchPromiseTm(c.Request.Context(), id)
+	if err != nil {
+		httputil.HandleServiceError(c, err)
+		return
+	}
+	response.OK(c, item)
+}
+
 func (h *Handlers) CreateShipmentFromOrder(c *gin.Context) {
 	var in dto.CreateShipmentFromOrderDTO
 	if err := c.ShouldBindJSON(&in); err != nil {
