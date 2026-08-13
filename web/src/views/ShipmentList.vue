@@ -274,18 +274,25 @@ async function openDetail(row: Shipment) {
 }
 
 async function openLabelPreview(row: Shipment) {
-  const url = (row.labelPdfUrl || '').trim()
-  if (!url) {
-    ElMessage.warning('暂无面单存档，打印后会自动生成，请稍后刷新')
-    return
-  }
   labelVisible.value = true
   labelLoading.value = true
   labelPng.value = ''
   labelError.value = ''
-  labelPdfUrl.value = url
   labelTitle.value = row.mailNo ? `面单 ${row.mailNo}` : '面单预览'
   try {
+    // 再打印后存档 URL 会变，打开前重新拉详情，避免仍用列表里旧链接
+    const fresh = await shippingApi.getShipment(row.id)
+    const url = (fresh.labelPdfUrl || row.labelPdfUrl || '').trim()
+    labelPdfUrl.value = url
+    if (detail.value?.id === fresh.id) detail.value = fresh
+    const idx = list.value.findIndex((s) => s.id === fresh.id)
+    if (idx >= 0) {
+      list.value[idx] = { ...list.value[idx], ...fresh, items: fresh.items?.length ? fresh.items : list.value[idx].items }
+    }
+    if (!url) {
+      labelError.value = '暂无面单存档，打印后约数秒生成，请稍后重试'
+      return
+    }
     labelPng.value = await renderLabelPdfToPng(url)
   } catch (e) {
     labelError.value = (e as Error).message || '面单渲染失败'
@@ -395,8 +402,14 @@ async function printRow(row: Shipment) {
       printChannel: channelName,
       printerIndex: idx,
     })
-    ElMessage.success(channel === 'pdf' ? '已在浏览器打开官方 PDF 面单' : '已按插件通道发送到本机打印机')
-    return shippingApi.getShipment(row.id)
+    ElMessage.success(
+      channel === 'pdf'
+        ? '已在浏览器打开官方 PDF 面单'
+        : '已发送到本机打印机，面单存档数秒内更新',
+    )
+    const updated = await shippingApi.getShipment(row.id)
+    if (detail.value?.id === updated.id) detail.value = updated
+    return updated
   })
 }
 

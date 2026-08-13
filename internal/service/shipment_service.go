@@ -850,14 +850,22 @@ func (s *ShipmentService) scheduleArchiveLabelPDF(shipmentID, carrierAccountID u
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
-		// 首次稍等，避开出单后立刻拉 PDF 的空包窗口；间隔拉长提高成功率
+		// 首次出单：稍等避开丰桥空包；再次打印(force)：立刻重拉，失败再短间隔重试
 		delays := []time.Duration{5 * time.Second, 10 * time.Second, 20 * time.Second, 40 * time.Second, 60 * time.Second}
+		if force {
+			delays = []time.Duration{0, 2 * time.Second, 5 * time.Second, 10 * time.Second, 20 * time.Second, 40 * time.Second}
+		}
 		for i, wait := range delays {
-			select {
-			case <-ctx.Done():
+			if wait > 0 {
+				select {
+				case <-ctx.Done():
+					log.Printf("archive label pdf aborted %s: %v", mailNo, ctx.Err())
+					return
+				case <-time.After(wait):
+				}
+			} else if ctx.Err() != nil {
 				log.Printf("archive label pdf aborted %s: %v", mailNo, ctx.Err())
 				return
-			case <-time.After(wait):
 			}
 			var existing model.Shipment
 			if err := s.db().Select("id", "label_pdf_url", "mail_no").First(&existing, shipmentID).Error; err != nil {
