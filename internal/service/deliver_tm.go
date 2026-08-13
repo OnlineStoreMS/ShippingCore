@@ -75,6 +75,10 @@ func (s *CarrierService) QueryDeliverTm(ctx context.Context, in dto.QueryDeliver
 		if code == "" {
 			continue
 		}
+		// 打单页只展示可下单的特快/标快；丰桥还会回「便利封/袋」等包装产品（如 113），不纳入选型。
+		if !isCoreExpressType(code) {
+			continue
+		}
 		endAt, timeLabel := formatDeliverTimeLabel(now, it.DeliverTime)
 		name := strings.TrimSpace(it.BusinessTypeDesc)
 		if name == "" {
@@ -138,6 +142,15 @@ func (s *CarrierService) QueryDeliverTm(ctx context.Context, in dto.QueryDeliver
 	}
 
 	return &dto.QueryDeliverTmResult{Products: products}, nil
+}
+
+func isCoreExpressType(code string) bool {
+	switch strings.TrimSpace(code) {
+	case "1", "2":
+		return true
+	default:
+		return false
+	}
 }
 
 func defaultExpressName(code string) string {
