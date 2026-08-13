@@ -198,9 +198,12 @@ function fmtTime(v?: string | null) {
   return formatDateTime(d)
 }
 
-/** 发货时间：优先 shippedAt，旧数据回退打印/创建时间 */
-function shipTimeOf(row: Pick<Shipment, 'shippedAt' | 'printedAt' | 'createdAt'>) {
-  return fmtTime(row.shippedAt || row.printedAt || row.createdAt)
+/** 发货时间=取号/确认发货时间；勿回退打印时间（会因再次打印变化） */
+function shipTimeOf(row: Pick<Shipment, 'shippedAt' | 'createdAt' | 'mailNo'>) {
+  if (row.shippedAt) return fmtTime(row.shippedAt)
+  // 历史单：有运单号时用建单时间近似取号时间
+  if (row.mailNo) return fmtTime(row.createdAt)
+  return '-'
 }
 
 async function load() {

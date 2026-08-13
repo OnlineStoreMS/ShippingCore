@@ -728,7 +728,8 @@ func resolvePrintTemplateCode(carrier *model.CarrierAccount) string {
 	return std
 }
 
-// markShipmentShipped 记录首次发货时间（有运单号时）；已有值不覆盖。
+// markShipmentShipped 记录首次取得运单号的发货时间；已有值不覆盖。
+// 注意：再次打印只更新 PrintedAt，不得调用本函数改写发货时间。
 func markShipmentShipped(shipment *model.Shipment) {
 	if shipment == nil || shipment.ShippedAt != nil {
 		return
@@ -746,7 +747,7 @@ func markShipmentPrinted(shipment *model.Shipment) {
 	}
 	now := time.Now()
 	shipment.PrintedAt = &now
-	markShipmentShipped(shipment)
+	// 不在此处写 ShippedAt：发货时间=取号时间，与打印次数无关
 	if shipment.Status == model.ShipmentStatusCancelled {
 		return
 	}
