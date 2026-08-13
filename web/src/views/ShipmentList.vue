@@ -62,16 +62,77 @@ const statusOptions = [
 
 const platformOptions = [
   { label: '全部平台', value: '' },
-  { label: 'manual', value: 'manual' },
-  { label: '淘宝', value: 'taobao' },
-  { label: '天猫', value: 'tmall' },
-  { label: '拼多多', value: 'pdd' },
-  { label: '抖音', value: 'douyin' },
-  { label: '京东', value: 'jd' },
+  { label: '抖店', value: 'FXG' },
+  { label: '淘宝', value: 'TB' },
+  { label: '小红书', value: 'XHS' },
+  { label: '拼多多', value: 'PDD' },
+  { label: '快手', value: 'KSXD' },
+  { label: '京东', value: 'JD' },
+  { label: '视频号', value: 'SPH' },
+  { label: '1688', value: 'ALI1688' },
+  { label: '淘工厂', value: 'TGC' },
+  { label: '手工单', value: 'DFHAND' },
 ]
+
+const sourceLabels: Record<string, string> = {
+  kdzs: '电商',
+  wx_mall: '小程序',
+  store: '门店',
+  xianyu: '闲鱼',
+  manual: '手工订单',
+  ordercore: '订单中心',
+  storesyncagent: '同步代理',
+}
+
+const platformLabels: Record<string, string> = {
+  FXG: '抖店',
+  DY: '抖店',
+  TB: '淘宝',
+  XHS: '小红书',
+  PDD: '拼多多',
+  KSXD: '快手',
+  KS: '快手',
+  JD: '京东',
+  SPH: '视频号',
+  ALI1688: '1688',
+  TGC: '淘工厂',
+  DFHAND: '手工单',
+  HAND: '手工单',
+  MANUAL: '手工单',
+}
 
 function statusTag(statusValue: string) {
   return shipmentStatusMap[statusValue] || { label: statusValue, type: 'info' as const }
+}
+
+function labelSource(v?: string) {
+  const key = (v || '').trim()
+  return (key && sourceLabels[key]) || key || '-'
+}
+
+function labelPlatform(v?: string) {
+  const key = (v || '').trim().toUpperCase()
+  return (key && platformLabels[key]) || v || '-'
+}
+
+/** 与待发货列表「订单类型」一致 */
+function formatOrderSource(row: Shipment) {
+  const channel = (row.sourceChannel || '').trim()
+  if (channel === 'manual') {
+    return (row.manualSourceName || row.shopName || '').trim() || '手工订单'
+  }
+  const src = labelSource(channel)
+  const plat = labelPlatform(row.platform)
+  const shop = (row.shopName || '').trim()
+  if (src !== '-' && shop) return `${src} · ${shop}`
+  if (src !== '-' && plat && plat !== '-') return `${src} · ${plat}`
+  if (src !== '-') return src
+  if (shop) return shop
+  return plat || '-'
+}
+
+function shopDisplay(row: Shipment) {
+  return (row.shopName || row.manualSourceName || '').trim() || '-'
 }
 
 function receiverLines(row: Shipment) {
@@ -87,15 +148,14 @@ function receiverText(row: Shipment) {
   return [nameMobile, addr].filter(Boolean).join(' / ')
 }
 
-function goodsText(row: Shipment) {
-  const items = row.items || []
-  if (!items.length) {
-    return row.cargoName || '-'
-  }
-  return items
-    .slice(0, 4)
-    .map((it) => `${it.goodsName || '商品'}×${it.quantity || 1}`)
-    .join('；') + (items.length > 4 ? ` 等${items.length}件` : '')
+/** 商品行展示：优先规格名(skuCode)，与待发货一致 */
+function formatGoodsLine(it: { goodsName?: string; skuCode?: string; quantity?: number }) {
+  const spec = (it.skuCode || '').trim()
+  const name = (it.goodsName || '').trim()
+  const title = spec || name
+  if (!title) return ''
+  const num = it.quantity && it.quantity > 0 ? it.quantity : 1
+  return `${title} x${num}`
 }
 
 function detailRemarkImages(row: Shipment | null) {
@@ -357,15 +417,39 @@ onMounted(() => {
         <el-button @click="resetFilters">重置</el-button>
       </div>
 
-      <el-table :data="list" border stripe>
-        <el-table-column prop="id" label="ID" width="70" />
-        <el-table-column label="订单" min-width="160">
+      <el-table :data="list" border stripe empty-text="暂无发货单">
+        <el-table-column label="订单号" min-width="160" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.sourceRef || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="订单类型" width="120" show-overflow-tooltip>
+          <template #default="{ row }">{{ formatOrderSource(row) }}</template>
+        </el-table-column>
+        <el-table-column label="平台" width="90">
+          <template #default="{ row }">{{ labelPlatform(row.platform) }}</template>
+        </el-table-column>
+        <el-table-column label="平台单号" min-width="180">
           <template #default="{ row }">
-            <div class="cell-stack">
-              <div class="primary">{{ row.sourceRef || '-' }}</div>
-              <div class="secondary">{{ row.sourceTid || '-' }}</div>
-              <div class="secondary">{{ row.platform || '-' }}</div>
+            <div v-if="row.sourceTid">{{ row.sourceTid }}</div>
+            <div
+              v-if="row.sourceRef && row.sourceRef !== row.sourceTid"
+              class="muted"
+            >
+              系统：{{ row.sourceRef }}
             </div>
+            <span v-if="!row.sourceTid && !row.sourceRef">-</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="店铺" min-width="120" show-overflow-tooltip>
+          <template #default="{ row }">{{ shopDisplay(row) }}</template>
+        </el-table-column>
+        <el-table-column label="商品信息" min-width="260">
+          <template #default="{ row }">
+            <div v-if="row.items?.length" class="goods-list">
+              <div v-for="(it, idx) in row.items" :key="it.id || idx" class="goods-cell">
+                <div class="goods-text">{{ formatGoodsLine(it) || '-' }}</div>
+              </div>
+            </div>
+            <span v-else>{{ row.cargoName || '-' }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="mailNo" label="运单号" min-width="150" show-overflow-tooltip />
@@ -374,7 +458,7 @@ onMounted(() => {
             <el-tag :type="statusTag(row.status).type" size="small">{{ statusTag(row.status).label }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="收件信息" min-width="220">
+        <el-table-column label="收件信息" min-width="200">
           <template #default="{ row }">
             <div class="cell-stack">
               <div class="primary">{{ receiverLines(row).nameMobile || '-' }}</div>
@@ -382,26 +466,10 @@ onMounted(() => {
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="商品明细" min-width="200">
-          <template #default="{ row }">
-            <div class="cell-stack">
-              <div class="primary goods">{{ goodsText(row) }}</div>
-              <div v-if="row.cargoName" class="secondary">托寄物：{{ row.cargoName }}</div>
-            </div>
-          </template>
-        </el-table-column>
-        <el-table-column label="寄件人" min-width="120" show-overflow-tooltip>
-          <template #default="{ row }">
-            {{ [row.shipperName, row.shipperMobile].filter(Boolean).join(' ') || '-' }}
-          </template>
-        </el-table-column>
-        <el-table-column label="创建时间" width="170">
-          <template #default="{ row }">{{ fmtTime(row.createdAt) }}</template>
-        </el-table-column>
-        <el-table-column label="打印时间" width="170">
+        <el-table-column label="打印时间" width="160">
           <template #default="{ row }">{{ fmtTime(row.printedAt) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="220" fixed="right">
+        <el-table-column label="操作" width="200" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="openDetail(row)">详情</el-button>
             <el-button
@@ -456,8 +524,11 @@ onMounted(() => {
             <el-tag :type="statusTag(detail.status).type" size="small">{{ statusTag(detail.status).label }}</el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="运单号">{{ detail.mailNo || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="系统订单号">{{ detail.sourceRef || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="平台订单号">{{ detail.sourceTid || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="订单号">{{ detail.sourceRef || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="订单类型">{{ formatOrderSource(detail) }}</el-descriptions-item>
+          <el-descriptions-item label="平台">{{ labelPlatform(detail.platform) }}</el-descriptions-item>
+          <el-descriptions-item label="平台单号">{{ detail.sourceTid || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="店铺">{{ shopDisplay(detail) }}</el-descriptions-item>
           <el-descriptions-item label="收件信息">{{ receiverText(detail) }}</el-descriptions-item>
           <el-descriptions-item label="寄件人">
             {{ detail.shipperName }} / {{ detail.shipperMobile }} / {{ detail.shipperAddress }}
@@ -553,10 +624,19 @@ onMounted(() => {
   word-break: break-all;
 }
 .pager { margin-top: 16px; display: flex; justify-content: flex-end; }
+.goods-list { display: flex; flex-direction: column; gap: 6px; }
+.goods-cell { display: flex; gap: 8px; align-items: flex-start; }
+.goods-text {
+  font-size: 13px;
+  line-height: 1.4;
+  white-space: normal;
+  word-break: break-all;
+  color: #303133;
+}
 .items-block { margin-top: 20px; }
 .block-title { font-weight: 600; margin-bottom: 8px; }
 .error-text { color: #f56c6c; }
-.muted { color: #909399; }
+.muted { color: #909399; font-size: 12px; }
 .detail-actions { margin-top: 20px; }
 .remark-imgs {
   display: flex;
