@@ -110,7 +110,9 @@ type Shipment struct {
 	LabelData    string `gorm:"type:text" json:"labelData,omitempty"`
 	Status       string     `gorm:"size:32;index;default:draft" json:"status"`
 	ErrorMessage string     `gorm:"size:1024" json:"errorMessage,omitempty"`
-	PrintedAt    *time.Time `json:"printedAt,omitempty"` // 最近一次成功打印时间
+	// ShippedAt 首次取得运单号 / 确认发货时间（不因再次打印改动）
+	ShippedAt *time.Time `json:"shippedAt,omitempty"`
+	PrintedAt *time.Time `json:"printedAt,omitempty"` // 最近一次成功打印时间
 
 	CargoName   string  `gorm:"size:256" json:"cargoName"`
 	ParcelQty   int     `gorm:"default:1" json:"parcelQty"`

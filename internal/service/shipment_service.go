@@ -602,6 +602,7 @@ func (s *ShipmentService) CreateWaybill(ctx context.Context, token string, id ui
 	shipment.MailNo = result.MailNo
 	shipment.Status = model.ShipmentStatusCreated
 	shipment.ErrorMessage = ""
+	markShipmentShipped(shipment)
 
 	// 下单成功后尽量取云打印数据；失败不阻断出单
 	if tpl := resolvePrintTemplateCode(carrier); tpl != "" {
@@ -727,12 +728,25 @@ func resolvePrintTemplateCode(carrier *model.CarrierAccount) string {
 	return std
 }
 
+// markShipmentShipped 记录首次发货时间（有运单号时）；已有值不覆盖。
+func markShipmentShipped(shipment *model.Shipment) {
+	if shipment == nil || shipment.ShippedAt != nil {
+		return
+	}
+	if strings.TrimSpace(shipment.MailNo) == "" {
+		return
+	}
+	now := time.Now()
+	shipment.ShippedAt = &now
+}
+
 func markShipmentPrinted(shipment *model.Shipment) {
 	if shipment == nil {
 		return
 	}
 	now := time.Now()
 	shipment.PrintedAt = &now
+	markShipmentShipped(shipment)
 	if shipment.Status == model.ShipmentStatusCancelled {
 		return
 	}
@@ -1180,6 +1194,7 @@ func (s *ShipmentService) ConfirmKdzsShip(ctx context.Context, token string, in 
 	if sourceRef == "" {
 		sourceRef = firstNonEmptyTrim(orderNo, sourceTid)
 	}
+	now := time.Now()
 	shipment := model.Shipment{
 		TenantID:         s.tenantID,
 		SourceSystem:     model.SourceSystemOrderCore,
@@ -1200,6 +1215,8 @@ func (s *ShipmentService) ConfirmKdzsShip(ctx context.Context, token string, in 
 		ReceiverAddress:  strings.TrimSpace(order.ReceiverAddress),
 		MailNo:           strings.TrimSpace(in.ExpressNo),
 		Status:           model.ShipmentStatusPrinted,
+		ShippedAt:        &now,
+		PrintedAt:        &now,
 		CargoName:        cargoName,
 		ParcelQty:        1,
 		Items:            items,

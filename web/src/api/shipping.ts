@@ -167,6 +167,8 @@ export interface Shipment {
   labelData?: string
   status: string
   errorMessage?: string
+  /** 首次发货/出单时间 */
+  shippedAt?: string
   /** 最近一次成功打印时间 */
   printedAt?: string
   cargoName: string

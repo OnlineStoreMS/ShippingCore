@@ -198,6 +198,11 @@ function fmtTime(v?: string | null) {
   return formatDateTime(d)
 }
 
+/** 发货时间：优先 shippedAt，旧数据回退打印/创建时间 */
+function shipTimeOf(row: Pick<Shipment, 'shippedAt' | 'printedAt' | 'createdAt'>) {
+  return fmtTime(row.shippedAt || row.printedAt || row.createdAt)
+}
+
 async function load() {
   loading.value = true
   try {
@@ -562,7 +567,10 @@ onMounted(() => {
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="打印时间" width="160">
+        <el-table-column label="发货时间" width="170">
+          <template #default="{ row }">{{ shipTimeOf(row) }}</template>
+        </el-table-column>
+        <el-table-column label="打印时间" width="170">
           <template #default="{ row }">{{ fmtTime(row.printedAt) }}</template>
         </el-table-column>
         <el-table-column label="操作" width="240" fixed="right">
@@ -653,6 +661,8 @@ onMounted(() => {
             <el-tag :type="statusTag(detail.status).type" size="small">{{ statusTag(detail.status).label }}</el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="运单号">{{ detail.mailNo || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="发货时间">{{ shipTimeOf(detail) }}</el-descriptions-item>
+          <el-descriptions-item label="打印时间">{{ fmtTime(detail.printedAt) }}</el-descriptions-item>
           <el-descriptions-item v-if="detail.mailNo" label="预计派送">
             <span v-if="promiseLoading" class="muted">查询中…</span>
             <span v-else-if="promiseLabel">{{ promiseLabel }}</span>
