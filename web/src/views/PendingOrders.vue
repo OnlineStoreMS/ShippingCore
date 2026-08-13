@@ -404,7 +404,7 @@ async function loadOmsOrders() {
     const data = await shippingApi.listPendingOMSOrders({
       page: omsFilters.page,
       pageSize: omsFilters.pageSize,
-      shipStatus: 'wait_ship',
+      shipStatus: 'need_ship',
       allocType: 'self_ship',
       sourceChannel: omsFilters.sourceChannel || undefined,
       platform: omsFilters.platform || undefined,
@@ -868,7 +868,14 @@ onMounted(async () => {
 
       <el-table :data="omsOrders" border stripe empty-text="暂无待发货订单" @selection-change="onSelectionChange">
         <el-table-column type="selection" width="48" />
-        <el-table-column prop="orderNo" label="订单号" min-width="160" />
+        <el-table-column label="订单号" min-width="180">
+          <template #default="{ row }">
+            <div class="order-no-cell">
+              <span>{{ row.orderNo || '-' }}</span>
+              <el-tag v-if="row.shipStatus === 'partial_shipped'" size="small" type="warning">部分发货</el-tag>
+            </div>
+          </template>
+        </el-table-column>
         <el-table-column label="订单类型" width="100">
           <template #default="{ row }">{{ formatOrderSource(row) }}</template>
         </el-table-column>
@@ -1190,6 +1197,7 @@ onMounted(async () => {
 .filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .warn-tip { color: #e6a23c; font-size: 13px; }
 .muted { color: #909399; font-size: 13px; }
+.order-no-cell { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .pager { margin-top: 16px; display: flex; justify-content: flex-end; }
 .ship-order-info { margin-bottom: 16px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
 .ml8 { margin-left: 8px; }

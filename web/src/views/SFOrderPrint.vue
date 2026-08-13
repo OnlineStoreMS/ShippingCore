@@ -22,6 +22,7 @@ import {
   getSavedPrinterName,
 } from '../utils/sfPrintPlugin'
 import { forbidItemsCatalog } from '../constants/forbidItems'
+import { nextSCManualOrderNo } from '../utils/manualOrderNo'
 
 const cargoPresets = ['文件', '电子产品', '日用品', '服装', '食品', '配件', '商品']
 
@@ -472,7 +473,7 @@ function buildOrderSnapshot(): OrderSnapshot {
   const orderNo = form.orderNo.trim()
   // 有订单中心单号时不要生成 SC-MANUAL 占位，保证与待发货 orderNo 一致
   const sysTid =
-    form.sysTid.trim() || orderNo || form.sourceTid.trim() || `SC-MANUAL-${Date.now()}`
+    form.sysTid.trim() || orderNo || form.sourceTid.trim() || nextSCManualOrderNo()
   const sourceTid = form.sourceTid.trim() || orderNo || sysTid
   const goods = namedCargoLines.value.map((l) => ({
     orderItemId: l.orderItemId || 0,

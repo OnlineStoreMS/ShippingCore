@@ -173,7 +173,7 @@ func (h *Handlers) ListPendingOMSOrders(c *gin.Context) {
 	q := ordercore.OrderQuery{
 		Page:           page,
 		PageSize:       pageSize,
-		ShipStatus:     c.DefaultQuery("shipStatus", "wait_ship"),
+		ShipStatus:     c.DefaultQuery("shipStatus", "need_ship"),
 		AllocType:      c.DefaultQuery("allocType", "self_ship"),
 		Platform:       c.Query("platform"),
 		Keyword:        c.Query("keyword"),
