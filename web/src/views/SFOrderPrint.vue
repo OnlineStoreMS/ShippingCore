@@ -389,7 +389,7 @@ function resolvePayMethod(): number {
   return form.payMode === 'receiver' ? 2 : 1
 }
 
-const APPOINT_HOURS = [9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20] as const
+const APPOINT_FALLBACK_HOURS = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19] as const
 
 function pad2(n: number) {
   return String(n).padStart(2, '0')
@@ -399,40 +399,130 @@ function formatLocalDateTime(d: Date): string {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
 }
 
-/** 预约上门时段选项（对齐企服：今天/明天/后天 + 小时段） */
-const appointCascaderOptions = computed(() => {
-  const now = new Date()
-  const hourNow = now.getHours()
+type AppointCascaderNode = {
+  value: number | string
+  label: string
+  sendStartTm?: string
+  children?: AppointCascaderNode[]
+}
+
+const pickupWindow = ref<{ startTm: string; endTm: string } | null>(null)
+const appointLoading = ref(false)
+const appointCascaderOptions = ref<AppointCascaderNode[]>([])
+
+function buildLocalAppointOptions(now = new Date()): AppointCascaderNode[] {
+  const startMin = 8 * 60
+  const endMin = 20 * 60
   const days = [
     { value: 0, label: '今天' },
     { value: 1, label: '明天' },
     { value: 2, label: '后天' },
   ]
-  return days.map((day) => {
-    const slots: { value: string; label: string }[] = []
-    if (day.value === 0) {
-      slots.push({ value: 'within1h', label: '1小时内' })
+  return days
+    .map((day) => {
+      const children: AppointCascaderNode[] = []
+      if (day.value === 0) {
+        const within = new Date(now.getTime() + 15 * 60 * 1000)
+        const wm = within.getHours() * 60 + within.getMinutes()
+        if (wm >= startMin && wm < endMin) {
+          children.push({ value: 'within1h', label: '1小时内', sendStartTm: formatLocalDateTime(within) })
+        }
+      }
+      let first = startMin
+      if (day.value === 0) {
+        const next =
+          now.getMinutes() > 0 || now.getSeconds() > 0
+            ? (now.getHours() + 1) * 60
+            : now.getHours() * 60
+        if (next > first) first = next
+      }
+      for (let slotStart = first; slotStart < endMin; slotStart += 60) {
+        const h = Math.floor(slotStart / 60)
+        if (!APPOINT_FALLBACK_HOURS.includes(h as (typeof APPOINT_FALLBACK_HOURS)[number]) && h < 8) continue
+        children.push({
+          value: `${pad2(h)}:00`,
+          label: `${pad2(h)}:00-${pad2(h + 1)}:00`,
+          sendStartTm: formatLocalDateTime(
+            new Date(now.getFullYear(), now.getMonth(), now.getDate() + day.value, h, 0, 0),
+          ),
+        })
+      }
+      return { value: day.value, label: day.label, children }
+    })
+    .filter((d) => (d.children?.length || 0) > 0)
+}
+
+function mapApiAppointOptions(
+  apiDays: Array<{
+    value: number
+    text: string
+    children: Array<{ value: string; text: string; slotKey: string; sendStartTm: string }>
+  }>,
+): AppointCascaderNode[] {
+  return (apiDays || [])
+    .map((d) => ({
+      value: d.value,
+      label: d.text,
+      children: (d.children || []).map((c) => ({
+        value: c.slotKey,
+        label: c.text,
+        sendStartTm: c.sendStartTm,
+      })),
+    }))
+    .filter((d) => (d.children?.length || 0) > 0)
+}
+
+async function refreshPickupOptions() {
+  const carrierId = form.carrierAccountId
+  const shipper = shipperView.value
+  if (!carrierId || !shipper) {
+    appointCascaderOptions.value = buildLocalAppointOptions()
+    pickupWindow.value = null
+    return
+  }
+  appointLoading.value = true
+  try {
+    const res = await shippingApi.checkPickupTime({
+      carrierAccountId: carrierId,
+      province: shipper.province,
+      city: shipper.city,
+      county: shipper.county,
+      address: shipper.address,
+    })
+    pickupWindow.value = { startTm: res.startTm, endTm: res.endTm }
+    const mapped = mapApiAppointOptions(res.options || [])
+    appointCascaderOptions.value = mapped.length ? mapped : buildLocalAppointOptions()
+    if (form.appointSlot.length >= 2) {
+      const [day, slot] = form.appointSlot
+      const ok = appointCascaderOptions.value.some(
+        (d) => d.value === Number(day) && d.children?.some((c) => c.value === slot),
+      )
+      if (!ok) {
+        const firstDay = appointCascaderOptions.value[0]
+        const firstSlot = firstDay?.children?.[0]
+        form.appointSlot = firstDay && firstSlot ? [firstDay.value as number, firstSlot.value as string] : []
+      }
     }
-    for (const h of APPOINT_HOURS) {
-      if (day.value === 0 && h <= hourNow) continue // 今天已过时段不展示
-      slots.push({
-        value: `${pad2(h)}:00`,
-        label: `${pad2(h)}:00-${pad2(h + 1)}:00`,
-      })
-    }
-    return { value: day.value, label: day.label, children: slots }
-  }).filter((d) => d.children.length > 0)
-})
+  } catch {
+    appointCascaderOptions.value = buildLocalAppointOptions()
+    pickupWindow.value = null
+  } finally {
+    appointLoading.value = false
+  }
+}
 
 function resolveSendStartTm(): string | undefined {
   if (form.pickupMode !== 'appoint') return undefined
   const [dayRaw, slot] = form.appointSlot
   if (dayRaw === undefined || dayRaw === null || !slot) return undefined
+  const fromOpt = appointCascaderOptions.value
+    .find((d) => d.value === Number(dayRaw))
+    ?.children?.find((c) => c.value === slot)
+  if (fromOpt?.sendStartTm) return fromOpt.sendStartTm
   const dayOffset = Number(dayRaw)
   const now = new Date()
   if (slot === 'within1h') {
-    const d = new Date(now.getTime() + 15 * 60 * 1000) // 约 15 分钟后起算
-    return formatLocalDateTime(d)
+    return formatLocalDateTime(new Date(now.getTime() + 15 * 60 * 1000))
   }
   const m = String(slot).match(/^(\d{1,2}):(\d{2})$/)
   if (!m) return undefined
@@ -444,15 +534,25 @@ function setPickupMode(mode: 'self' | 'appoint') {
   form.pickupMode = mode
   if (mode === 'self') {
     form.appointSlot = []
-  } else if (!form.appointSlot.length) {
-    // 默认选第一个可用时段
-    const firstDay = appointCascaderOptions.value[0]
-    const firstSlot = firstDay?.children?.[0]
-    if (firstDay && firstSlot) {
-      form.appointSlot = [firstDay.value, firstSlot.value]
-    }
+  } else {
+    void refreshPickupOptions().then(() => {
+      if (!form.appointSlot.length) {
+        const firstDay = appointCascaderOptions.value[0]
+        const firstSlot = firstDay?.children?.[0]
+        if (firstDay && firstSlot) {
+          form.appointSlot = [firstDay.value as number, firstSlot.value as string]
+        }
+      }
+    })
   }
 }
+
+watch(
+  () => [form.carrierAccountId, form.shipperProfileId] as const,
+  () => {
+    if (form.pickupMode === 'appoint') void refreshPickupOptions()
+  },
+)
 
 function recognizeReceiver() {
   const parsed = parsePastedContact(form.pasteText)
@@ -980,7 +1080,7 @@ onMounted(async () => {
               v-if="form.pickupMode === 'appoint'"
               v-model="form.appointSlot"
               :options="appointCascaderOptions"
-              placeholder="请选择预约上门时间"
+              :placeholder="appointLoading ? '正在查询可约时段…' : '请选择预约上门时间'"
               class="appoint-cascader"
               :props="{ expandTrigger: 'hover' }"
             />
@@ -988,6 +1088,8 @@ onMounted(async () => {
           <div v-if="form.pickupMode === 'appoint'" class="pickup-tip">
             将通知快递员按所选时段上门揽收
             <span v-if="resolveSendStartTm()">（{{ resolveSendStartTm() }} 起）</span>
+            <span v-if="pickupWindow"> · 当地可揽 {{ pickupWindow.startTm }}-{{ pickupWindow.endTm }}</span>
+            <span v-if="appointLoading"> · 刷新时段中…</span>
           </div>
         </div>
       </div>

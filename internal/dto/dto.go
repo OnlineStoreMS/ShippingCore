@@ -31,6 +31,39 @@ type ShipperProfileDTO struct {
 	Enabled   bool   `json:"enabled"`
 }
 
+// CheckPickupTimeRequest 按寄件地址查顺丰可约上门时间窗。
+type CheckPickupTimeRequest struct {
+	CarrierAccountID uint64 `json:"carrierAccountId"`
+	Province         string `json:"province"`
+	City             string `json:"city"`
+	County           string `json:"county"`
+	Address          string `json:"address"`
+	CityCode         string `json:"cityCode,omitempty"`
+}
+
+type PickupAppointSlotOption struct {
+	Value       string `json:"value"` // dayOffset|slotKey
+	Text        string `json:"text"`
+	SlotKey     string `json:"slotKey"`
+	SendStartTm string `json:"sendStartTm"`
+}
+
+type PickupAppointDayOption struct {
+	Value    int                       `json:"value"` // dayOffset
+	Text     string                    `json:"text"`
+	Children []PickupAppointSlotOption `json:"children"`
+}
+
+type CheckPickupTimeResult struct {
+	StartTm         string                    `json:"startTm"`
+	EndTm           string                    `json:"endTm"`
+	Status          bool                      `json:"status"`
+	ExceptionReason string                    `json:"exceptionReason,omitempty"`
+	CityCode        string                    `json:"cityCode,omitempty"`
+	Address         string                    `json:"address,omitempty"`
+	Options         []PickupAppointDayOption  `json:"options"`
+}
+
 type OrderGoodsDTO struct {
 	OrderItemID uint64  `json:"orderItemId"`
 	Title       string  `json:"title"`

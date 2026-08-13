@@ -254,6 +254,20 @@ func (h *Handlers) SetDefaultShipperProfile(c *gin.Context) {
 	response.OK(c, item)
 }
 
+func (h *Handlers) CheckPickupTime(c *gin.Context) {
+	var in dto.CheckPickupTimeRequest
+	if err := c.ShouldBindJSON(&in); err != nil {
+		response.Fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	item, err := h.carrier(c).CheckPickupTime(c.Request.Context(), in)
+	if err != nil {
+		httputil.HandleServiceError(c, err)
+		return
+	}
+	response.OK(c, item)
+}
+
 // ── Shipments ──
 
 func (h *Handlers) ListShipments(c *gin.Context) {

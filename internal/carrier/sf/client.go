@@ -26,6 +26,7 @@ const (
 	ServiceUpdateOrder      = "EXP_RECE_UPDATE_ORDER"
 	ServiceCloudPrint       = "COM_RECE_CLOUD_PRINT_WAYBILLS"   // 云打印转 PDF
 	ServiceCloudPrintParsed = "COM_RECE_CLOUD_PRINT_PARSEDDATA" // 云打印面单打印插件接口
+	ServiceCheckPickupTime  = "EXP_EXCE_CHECK_PICKUP_TIME"      // 上门揽收时段查询
 
 	// SignModeStandard 丰桥「标准MD5」：URLEncode → MD5 → Base64
 	SignModeStandard = "standard"
@@ -295,6 +296,78 @@ func (c *Client) CancelOrder(ctx context.Context, orderID, mailNo string, dealTy
 		return fmt.Errorf("sf cancel order: %s", firstNonEmpty(result.ErrorMsg, result.ErrorCode, "unknown error"))
 	}
 	return nil
+}
+
+// CheckPickupTimeRequest 上门揽收时段查询（EXP_EXCE_CHECK_PICKUP_TIME）。
+type CheckPickupTimeRequest struct {
+	Address     string // 寄件详细地址
+	CityCode    string // 顺丰城市码，如 755/571
+	AddressType int    // 1=寄件地址
+	SendTime    string // YYYY-MM-DD HH:mm:ss，可选
+}
+
+// CheckPickupTimeResult 返回当地可揽收时间窗（HHMM）。
+type CheckPickupTimeResult struct {
+	Status          bool            `json:"status"`
+	StartTm         string          `json:"startTm"` // 如 0800
+	EndTm           string          `json:"endTm"`   // 如 2200
+	ExceptionReason string          `json:"exceptionReason,omitempty"`
+	Raw             json.RawMessage `json:"-"`
+}
+
+func (c *Client) CheckPickupTime(ctx context.Context, req CheckPickupTimeRequest) (*CheckPickupTimeResult, error) {
+	addr := strings.TrimSpace(req.Address)
+	if addr == "" {
+		return nil, fmt.Errorf("address is required")
+	}
+	addrType := req.AddressType
+	if addrType == 0 {
+		addrType = 1
+	}
+	sendTime := strings.TrimSpace(req.SendTime)
+	if sendTime == "" {
+		sendTime = time.Now().Format("2006-01-02 15:04:05")
+	}
+	payload := map[string]interface{}{
+		"address":     addr,
+		"addressType": addrType,
+		"sendTime":    sendTime,
+		"sysCode":     "bsp",
+		"version":     "V1.1",
+	}
+	if code := strings.TrimSpace(req.CityCode); code != "" {
+		payload["cityCode"] = code
+	}
+
+	var apiResp apiEnvelope
+	if err := c.call(ctx, ServiceCheckPickupTime, payload, &apiResp); err != nil {
+		return nil, err
+	}
+	var wrap genericMsgData
+	if err := decodeResultData(apiResp, &wrap); err != nil {
+		return nil, err
+	}
+	if !wrap.Success {
+		return nil, fmt.Errorf("sf check pickup time: %s", firstNonEmpty(wrap.ErrorMsg, wrap.ErrorCode, "unknown error"))
+	}
+	out := &CheckPickupTimeResult{Raw: wrap.MsgData}
+	if len(wrap.MsgData) == 0 || string(wrap.MsgData) == "false" || string(wrap.MsgData) == "null" {
+		return out, nil
+	}
+	var win struct {
+		Status          bool   `json:"status"`
+		StartTm         string `json:"startTm"`
+		EndTm           string `json:"endTm"`
+		ExceptionReason string `json:"exceptionReason"`
+	}
+	if err := json.Unmarshal(wrap.MsgData, &win); err != nil {
+		return out, nil
+	}
+	out.Status = win.Status
+	out.StartTm = strings.TrimSpace(win.StartTm)
+	out.EndTm = strings.TrimSpace(win.EndTm)
+	out.ExceptionReason = strings.TrimSpace(win.ExceptionReason)
+	return out, nil
 }
 
 // PrintDocOptions 云打印 documents 扩展（自定义区备注等）。
