@@ -10,7 +10,12 @@ import {
   type OMSOrder,
   type ShipperProfile,
 } from '../api/shipping'
-import { omsOrderToSnapshot, remainingQtyByItem, saveSFOrderHandoff } from '../utils/sfOrderHandoff'
+import {
+  omsOrderToSnapshot,
+  remainingQtyByItem,
+  saveSFOrderHandoff,
+  shippedQtyByItem,
+} from '../utils/sfOrderHandoff'
 import { printShipmentByChannel } from '../utils/sfPrintLabel'
 import {
   getSavedPrinterIndex,
@@ -332,6 +337,21 @@ function formatGoodsLine(g: { productName?: string; skuSpecs?: string; quantity?
   if (!title) return ''
   const num = g.quantity && g.quantity > 0 ? g.quantity : 1
   return `${title} x${num}`
+}
+
+/** 部分发货订单：商品行附带已发标记（按运单明细汇总） */
+function goodsRowsWithShipMark(order: OMSOrder) {
+  const shippedMap = order.shipStatus === 'partial_shipped' ? shippedQtyByItem(order) : {}
+  return (order.items || []).map((g, idx) => {
+    const shipped = g.id ? shippedMap[g.id] || 0 : 0
+    const total = g.quantity || 0
+    return {
+      idx,
+      g,
+      shipped,
+      fullyShipped: shipped > 0 && total > 0 && shipped >= total,
+    }
+  })
 }
 
 const selectionGroup = computed(() => {
@@ -907,12 +927,31 @@ onMounted(async () => {
           </template>
         </el-table-column>
         <el-table-column prop="shopName" label="店铺" min-width="120" show-overflow-tooltip />
-        <el-table-column label="商品信息" min-width="260">
+        <el-table-column label="商品信息" min-width="280">
           <template #default="{ row }">
             <div v-if="row.items?.length" class="goods-list">
-              <div v-for="(g, idx) in row.items" :key="idx" class="goods-cell">
-                <img v-if="g.picUrl" :src="g.picUrl" class="goods-thumb" alt="" />
-                <div class="goods-text">{{ formatGoodsLine(g) || '-' }}</div>
+              <div
+                v-for="entry in goodsRowsWithShipMark(row)"
+                :key="entry.idx"
+                class="goods-cell"
+                :class="{ 'is-shipped': entry.fullyShipped }"
+              >
+                <img v-if="entry.g.picUrl" :src="entry.g.picUrl" class="goods-thumb" alt="" />
+                <div class="goods-text">
+                  <span>{{ formatGoodsLine(entry.g) || '-' }}</span>
+                  <el-tag
+                    v-if="entry.shipped > 0"
+                    size="small"
+                    :type="entry.fullyShipped ? 'info' : 'warning'"
+                    class="ship-tag"
+                  >
+                    {{
+                      entry.fullyShipped
+                        ? '已发货'
+                        : `已发 ${entry.shipped}/${entry.g.quantity || 0}`
+                    }}
+                  </el-tag>
+                </div>
               </div>
             </div>
             <span v-else>-</span>
@@ -1282,8 +1321,20 @@ onMounted(async () => {
 .batch-order { font-size: 13px; color: #606266; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .goods-list { display: flex; flex-direction: column; gap: 8px; }
 .goods-cell { display: flex; gap: 8px; align-items: flex-start; }
+.goods-cell.is-shipped { opacity: 0.55; }
+.goods-cell.is-shipped .goods-text > span { text-decoration: line-through; }
 .goods-thumb { width: 40px; height: 40px; object-fit: cover; border-radius: 4px; flex-shrink: 0; }
-.goods-text { font-size: 13px; line-height: 1.4; white-space: normal; word-break: break-all; }
+.goods-text {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 1.4;
+  white-space: normal;
+  word-break: break-all;
+}
+.ship-tag { flex-shrink: 0; }
 .print-mail { margin-bottom: 12px; }
 .print-actions { margin-top: 4px; display: flex; gap: 8px; }
 </style>
