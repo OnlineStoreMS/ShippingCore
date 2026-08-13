@@ -126,6 +126,7 @@ const form = reactive({
   pasteText: '',
   platform: '',
   shopId: '',
+  orderNo: '',
   sysTid: '',
   sourceTid: '',
 })
@@ -272,6 +273,7 @@ function applyHandoff(h: SFOrderHandoff) {
   const o = h.order
   form.platform = o.platform
   form.shopId = o.shopId
+  form.orderNo = o.orderNo || ''
   form.sysTid = o.sysTid
   form.sourceTid = o.sourceTid
   form.receiverName = o.receiverName
@@ -467,8 +469,11 @@ function recognizeReceiver() {
 }
 
 function buildOrderSnapshot(): OrderSnapshot {
-  const sysTid = form.sysTid.trim() || `SC-MANUAL-${Date.now()}`
-  const sourceTid = form.sourceTid.trim() || sysTid
+  const orderNo = form.orderNo.trim()
+  // 有订单中心单号时不要生成 SC-MANUAL 占位，保证与待发货 orderNo 一致
+  const sysTid =
+    form.sysTid.trim() || orderNo || form.sourceTid.trim() || `SC-MANUAL-${Date.now()}`
+  const sourceTid = form.sourceTid.trim() || orderNo || sysTid
   const goods = namedCargoLines.value.map((l) => ({
     orderItemId: l.orderItemId || 0,
     title: l.title || '',
@@ -480,6 +485,7 @@ function buildOrderSnapshot(): OrderSnapshot {
   return {
     platform: form.platform || 'manual',
     shopId: form.shopId || '',
+    orderNo: orderNo || (sourceTid.toUpperCase().startsWith('OC') ? sourceTid : ''),
     sysTid,
     sourceTid,
     receiverName: form.receiverName.trim(),

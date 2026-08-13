@@ -286,8 +286,10 @@ func (s *ShipmentService) CreateFromOrder(in *dto.CreateShipmentFromOrderDTO) (*
 		return nil, fmt.Errorf("%w: orderId required for ordercore source", ErrBadRequest)
 	}
 
+	orderNo := strings.TrimSpace(order.OrderNo)
 	sourceRef := firstNonEmptyTrim(
 		order.SysTid,
+		orderNo,
 		order.SourceTid,
 	)
 	if sourceRef == "" && orderCoreOrderID > 0 {
@@ -295,6 +297,14 @@ func (s *ShipmentService) CreateFromOrder(in *dto.CreateShipmentFromOrderDTO) (*
 	}
 	if sourceRef == "" {
 		return nil, fmt.Errorf("%w: sysTid/sourceTid/orderId required", ErrBadRequest)
+	}
+	if orderNo == "" {
+		// 兼容未传 orderNo：sourceTid 常为平台单号或手工单 OC…
+		if tid := strings.TrimSpace(order.SourceTid); strings.HasPrefix(strings.ToUpper(tid), "OC") {
+			orderNo = tid
+		} else if strings.HasPrefix(strings.ToUpper(sourceRef), "OC") {
+			orderNo = sourceRef
+		}
 	}
 
 	expressType := strings.TrimSpace(in.ExpressType)
@@ -314,6 +324,7 @@ func (s *ShipmentService) CreateFromOrder(in *dto.CreateShipmentFromOrderDTO) (*
 		SourceSystem:     sourceSystem,
 		SourceRef:        sourceRef,
 		SourceTid:        strings.TrimSpace(order.SourceTid),
+		OrderNo:          orderNo,
 		Platform:         strings.TrimSpace(order.Platform),
 		ShopID:           strings.TrimSpace(order.ShopID),
 		ShopName:         strings.TrimSpace(order.ShopName),
@@ -943,11 +954,25 @@ func (s *ShipmentService) ConfirmKdzsShip(ctx context.Context, token string, in 
 		})
 	}
 
+	orderNo := strings.TrimSpace(order.OrderNo)
+	sourceTid := strings.TrimSpace(order.SourceTid)
+	sourceRef := strings.TrimSpace(order.SysTid)
+	if orderNo == "" {
+		if strings.HasPrefix(strings.ToUpper(sourceTid), "OC") {
+			orderNo = sourceTid
+		} else if strings.HasPrefix(strings.ToUpper(sourceRef), "OC") {
+			orderNo = sourceRef
+		}
+	}
+	if sourceRef == "" {
+		sourceRef = firstNonEmptyTrim(orderNo, sourceTid)
+	}
 	shipment := model.Shipment{
 		TenantID:         s.tenantID,
 		SourceSystem:     model.SourceSystemOrderCore,
-		SourceRef:        strings.TrimSpace(order.SysTid),
-		SourceTid:        strings.TrimSpace(order.SourceTid),
+		SourceRef:        sourceRef,
+		SourceTid:        sourceTid,
+		OrderNo:          orderNo,
 		Platform:         strings.TrimSpace(order.Platform),
 		ShopID:           strings.TrimSpace(order.ShopID),
 		ShopName:         strings.TrimSpace(order.ShopName),

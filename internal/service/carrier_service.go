@@ -228,12 +228,19 @@ func shipmentOrderID(shipmentID uint64) string {
 	return fmt.Sprintf("SC%d", shipmentID)
 }
 
-// sfCustomerOrderID 丰桥客户订单号（面单「订单号」）：优先平台订单号如 OC202608110009。
+// sfCustomerOrderID 丰桥客户订单号（面单「订单号」）：优先订单中心 orderNo（OC…）。
 func sfCustomerOrderID(shipment *model.Shipment) string {
 	if shipment == nil {
 		return ""
 	}
-	if ref := strings.TrimSpace(shipment.SourceRef); ref != "" {
+	if no := strings.TrimSpace(shipment.OrderNo); no != "" {
+		return no
+	}
+	// 兼容旧数据：sourceTid / sourceRef 里若已是 OC 单号则沿用
+	if tid := strings.TrimSpace(shipment.SourceTid); strings.HasPrefix(strings.ToUpper(tid), "OC") {
+		return tid
+	}
+	if ref := strings.TrimSpace(shipment.SourceRef); ref != "" && !strings.HasPrefix(strings.ToUpper(ref), "SC-MANUAL") {
 		return ref
 	}
 	if tid := strings.TrimSpace(shipment.SourceTid); tid != "" {

@@ -135,6 +135,17 @@ function shopDisplay(row: Shipment) {
   return (row.shopName || row.manualSourceName || '').trim() || '-'
 }
 
+/** 与待发货「订单号」一致：优先 orderNo（OC…），兼容旧数据 */
+function orderNoDisplay(row: Shipment) {
+  const no = (row.orderNo || '').trim()
+  if (no) return no
+  const tid = (row.sourceTid || '').trim()
+  if (tid.toUpperCase().startsWith('OC')) return tid
+  const ref = (row.sourceRef || '').trim()
+  if (ref.toUpperCase().startsWith('OC')) return ref
+  return ref || tid || '-'
+}
+
 function receiverLines(row: Shipment) {
   const nameMobile = [row.receiverName, row.receiverMobile].filter(Boolean).join(' ')
   const addr = [row.receiverProvince, row.receiverCity, row.receiverCounty, row.receiverAddress]
@@ -419,7 +430,7 @@ onMounted(() => {
 
       <el-table :data="list" border stripe empty-text="暂无发货单">
         <el-table-column label="订单号" min-width="160" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.sourceRef || '-' }}</template>
+          <template #default="{ row }">{{ orderNoDisplay(row) }}</template>
         </el-table-column>
         <el-table-column label="订单类型" width="120" show-overflow-tooltip>
           <template #default="{ row }">{{ formatOrderSource(row) }}</template>
@@ -524,7 +535,7 @@ onMounted(() => {
             <el-tag :type="statusTag(detail.status).type" size="small">{{ statusTag(detail.status).label }}</el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="运单号">{{ detail.mailNo || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="订单号">{{ detail.sourceRef || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="订单号">{{ orderNoDisplay(detail) }}</el-descriptions-item>
           <el-descriptions-item label="订单类型">{{ formatOrderSource(detail) }}</el-descriptions-item>
           <el-descriptions-item label="平台">{{ labelPlatform(detail.platform) }}</el-descriptions-item>
           <el-descriptions-item label="平台单号">{{ detail.sourceTid || '-' }}</el-descriptions-item>

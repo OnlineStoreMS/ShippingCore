@@ -31,6 +31,7 @@ export function omsOrderToSnapshot(
     shopName,
     sourceChannel: order.sourceChannel || '',
     manualSourceName: manualSource,
+    orderNo: order.orderNo || '',
     sysTid: order.platformSysTid || '',
     sourceTid: order.platformOrderId || order.orderNo,
     receiverName: addr?.name || order.buyerName || '',

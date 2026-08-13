@@ -68,6 +68,8 @@ type Shipment struct {
 	SourceSystem     string `gorm:"size:64;not null" json:"sourceSystem"`
 	SourceRef        string `gorm:"size:128;index" json:"sourceRef"`
 	SourceTid        string `gorm:"size:128" json:"sourceTid"`
+	// OrderNo 订单中心订单号（与待发货 orderNo 一致，如 OC202608130007）
+	OrderNo          string `gorm:"size:128;index" json:"orderNo"`
 	Platform         string `gorm:"size:64" json:"platform"`
 	ShopID           string `gorm:"size:64" json:"shopId"`
 	ShopName         string `gorm:"size:128" json:"shopName"`

@@ -70,6 +70,8 @@ export interface OrderSnapshot {
   shopName?: string
   sourceChannel?: string
   manualSourceName?: string
+  /** 订单中心订单号，与待发货 orderNo 一致（如 OC202608130007） */
+  orderNo?: string
   sysTid: string
   sourceTid: string
   receiverName: string
@@ -127,6 +129,8 @@ export interface Shipment {
   sourceSystem: string
   sourceRef: string
   sourceTid: string
+  /** 订单中心订单号（与待发货一致） */
+  orderNo?: string
   platform: string
   shopId: string
   shopName?: string

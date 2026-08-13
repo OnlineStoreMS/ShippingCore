@@ -46,6 +46,7 @@ type OrderSnapshotDTO struct {
 	ShopName         string          `json:"shopName"`
 	SourceChannel    string          `json:"sourceChannel"`
 	ManualSourceName string          `json:"manualSourceName"`
+	OrderNo          string          `json:"orderNo"` // 订单中心订单号，如 OC202608130007
 	SysTid           string          `json:"sysTid"`
 	SourceTid        string          `json:"sourceTid"`
 	ReceiverName     string          `json:"receiverName"`
