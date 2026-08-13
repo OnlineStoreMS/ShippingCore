@@ -18,6 +18,12 @@ import {
   savePrinterSelection,
   type LocalPrinter,
 } from '../utils/sfPrintPlugin'
+import {
+  copyPngDataUrl,
+  copyText,
+  downloadDataUrl,
+  renderLabelPdfToPng,
+} from '../utils/labelPdfPreview'
 
 const router = useRouter()
 
@@ -26,6 +32,13 @@ const list = ref<Shipment[]>([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
+
+const labelVisible = ref(false)
+const labelLoading = ref(false)
+const labelPng = ref('')
+const labelPdfUrl = ref('')
+const labelTitle = ref('面单预览')
+const labelError = ref('')
 
 const filters = reactive({
   status: '',
@@ -230,6 +243,58 @@ async function openDetail(row: Shipment) {
   } catch (e) {
     ElMessage.error((e as Error).message || '加载详情失败')
   }
+}
+
+async function openLabelPreview(row: Shipment) {
+  const url = (row.labelPdfUrl || '').trim()
+  if (!url) {
+    ElMessage.warning('暂无面单存档，打印后会自动生成，请稍后刷新')
+    return
+  }
+  labelVisible.value = true
+  labelLoading.value = true
+  labelPng.value = ''
+  labelError.value = ''
+  labelPdfUrl.value = url
+  labelTitle.value = row.mailNo ? `面单 ${row.mailNo}` : '面单预览'
+  try {
+    labelPng.value = await renderLabelPdfToPng(url)
+  } catch (e) {
+    labelError.value = (e as Error).message || '面单渲染失败'
+  } finally {
+    labelLoading.value = false
+  }
+}
+
+function downloadLabelPng() {
+  if (!labelPng.value) return
+  const name = (labelTitle.value || 'label').replace(/\s+/g, '_')
+  downloadDataUrl(labelPng.value, `${name}.png`)
+}
+
+async function copyLabelLink() {
+  if (!labelPdfUrl.value) return
+  try {
+    await copyText(labelPdfUrl.value)
+    ElMessage.success('已复制面单链接')
+  } catch {
+    ElMessage.error('复制失败')
+  }
+}
+
+async function copyLabelImage() {
+  if (!labelPng.value) return
+  try {
+    await copyPngDataUrl(labelPng.value)
+    ElMessage.success('已复制面单图片')
+  } catch {
+    ElMessage.warning('当前环境不支持复制图片，请改用下载图片')
+  }
+}
+
+function openLabelPdf() {
+  if (!labelPdfUrl.value) return
+  window.open(labelPdfUrl.value, '_blank', 'noopener')
 }
 
 async function withAction(id: number, action: string, fn: () => Promise<Shipment>) {
@@ -480,9 +545,18 @@ onMounted(() => {
         <el-table-column label="打印时间" width="160">
           <template #default="{ row }">{{ fmtTime(row.printedAt) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="200" fixed="right">
+        <el-table-column label="操作" width="240" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="openDetail(row)">详情</el-button>
+            <el-button
+              v-if="row.labelPdfUrl"
+              link
+              type="primary"
+              size="small"
+              @click="openLabelPreview(row)"
+            >
+              面单
+            </el-button>
             <el-button
               v-if="canRetry(row)"
               link
@@ -528,6 +602,30 @@ onMounted(() => {
       </div>
     </el-card>
 
+    <el-dialog v-model="labelVisible" :title="labelTitle" width="520px" destroy-on-close>
+      <div v-loading="labelLoading" class="label-preview">
+        <el-image
+          v-if="labelPng"
+          :src="labelPng"
+          fit="contain"
+          class="label-img"
+          :preview-src-list="[labelPng]"
+          preview-teleported
+        />
+        <div v-else-if="labelError" class="label-error">
+          <p>{{ labelError }}</p>
+          <el-button v-if="labelPdfUrl" type="primary" link @click="openLabelPdf">改为打开 PDF</el-button>
+        </div>
+        <div v-else class="muted">加载中…</div>
+      </div>
+      <template #footer>
+        <el-button :disabled="!labelPng" @click="downloadLabelPng">下载图片</el-button>
+        <el-button :disabled="!labelPng" @click="copyLabelImage">复制图片</el-button>
+        <el-button :disabled="!labelPdfUrl" @click="copyLabelLink">复制链接</el-button>
+        <el-button :disabled="!labelPdfUrl" type="primary" @click="openLabelPdf">打开 PDF</el-button>
+      </template>
+    </el-dialog>
+
     <el-drawer v-model="detailVisible" title="发货单详情" size="480px">
       <template v-if="detail">
         <el-descriptions :column="1" border>
@@ -547,9 +645,12 @@ onMounted(() => {
           <el-descriptions-item label="托寄物">{{ detail.cargoName || '-' }}</el-descriptions-item>
           <el-descriptions-item label="运单备注">{{ detail.remark || '-' }}</el-descriptions-item>
           <el-descriptions-item label="月结">{{ detail.useMonthly ? '是' : '否' }}</el-descriptions-item>
-          <el-descriptions-item label="面单 PDF">
-            <el-link v-if="detail.labelPdfUrl" :href="detail.labelPdfUrl" target="_blank" type="primary">查看存档 PDF</el-link>
-            <span v-else class="muted">打单后自动存档</span>
+          <el-descriptions-item label="面单">
+            <template v-if="detail.labelPdfUrl">
+              <el-button link type="primary" @click="openLabelPreview(detail)">查看面单图片</el-button>
+              <el-link :href="detail.labelPdfUrl" target="_blank" type="primary" class="ml8">打开 PDF</el-link>
+            </template>
+            <span v-else class="muted">打单后自动存档，请稍后刷新</span>
           </el-descriptions-item>
           <el-descriptions-item v-if="detail.errorMessage" label="错误">
             <span class="error-text">{{ detail.errorMessage }}</span>
@@ -648,7 +749,24 @@ onMounted(() => {
 .block-title { font-weight: 600; margin-bottom: 8px; }
 .error-text { color: #f56c6c; }
 .muted { color: #909399; font-size: 12px; }
+.ml8 { margin-left: 8px; }
 .detail-actions { margin-top: 20px; }
+.label-preview {
+  min-height: 280px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.label-img {
+  width: 100%;
+  max-height: 60vh;
+  background: #f5f7fa;
+}
+.label-error {
+  text-align: center;
+  color: #f56c6c;
+  font-size: 13px;
+}
 .remark-imgs {
   display: flex;
   flex-wrap: wrap;
