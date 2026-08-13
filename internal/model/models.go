@@ -16,6 +16,10 @@ const (
 
 	SourceKdzs = "kdzs"
 
+	// ShipVia：发货通道（与订单来源 SourceChannel 不同）
+	ShipViaSF   = "sf"   // 自建物流/丰桥取号打印
+	ShipViaKdzs = "kdzs" // 推送快递助手或快递助手打单后确认发货
+
 	CarrierEnvSandbox = "sandbox"
 	CarrierEnvProd    = "prod"
 )
@@ -102,10 +106,13 @@ type Shipment struct {
 
 	OrderCoreOrderID uint64 `gorm:"index" json:"orderCoreOrderId,omitempty"`
 
-	MailNo       string `gorm:"size:64;index" json:"mailNo"`
-	SFOrderID    string `gorm:"size:128" json:"sfOrderId"`
-	LabelURL     string `gorm:"size:1024" json:"labelUrl"`                         // 顺丰临时面单链接（会过期）
-	LabelPdfURL  string `gorm:"size:1024" json:"labelPdfUrl,omitempty"`            // 发货中心永久存档 PDF
+	MailNo          string `gorm:"size:64;index" json:"mailNo"`
+	// ShipVia 发货通道：sf=丰桥；kdzs=快递助手（此类单不支持本系统取消运单/云打印）
+	ShipVia         string `gorm:"size:16;index" json:"shipVia,omitempty"`
+	ExpressCompany  string `gorm:"size:64" json:"expressCompany,omitempty"` // 快递公司名（快递助手/手工填单等）
+	SFOrderID       string `gorm:"size:128" json:"sfOrderId"`
+	LabelURL        string `gorm:"size:1024" json:"labelUrl"`              // 顺丰临时面单链接（会过期）
+	LabelPdfURL     string `gorm:"size:1024" json:"labelPdfUrl,omitempty"` // 发货中心永久存档 PDF
 	LabelToken   string `gorm:"size:512" json:"labelToken,omitempty"`              // 云打印 PDF 下载 token
 	LabelData    string `gorm:"type:text" json:"labelData,omitempty"`
 	Status       string     `gorm:"size:32;index;default:draft" json:"status"`

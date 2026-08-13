@@ -24,6 +24,7 @@ import {
   downloadDataUrl,
   renderLabelPdfToPng,
 } from '../utils/labelPdfPreview'
+import { isKdzsShipment, isSFManagedShipment } from '../utils/shipmentFlags'
 
 const router = useRouter()
 
@@ -247,13 +248,13 @@ function resetFilters() {
   search()
 }
 
-async function loadPromiseTm(id: number, mailNo?: string) {
+async function loadPromiseTm(ship: Shipment) {
   promiseLabel.value = ''
   promiseHint.value = ''
-  if (!mailNo?.trim()) return
+  if (!ship.mailNo?.trim() || !isSFManagedShipment(ship)) return
   promiseLoading.value = true
   try {
-    const res = await shippingApi.searchPromiseTm(id)
+    const res = await shippingApi.searchPromiseTm(ship.id)
     promiseLabel.value = res.promiseLabel || ''
     promiseHint.value = res.hint || ''
   } catch (e) {
@@ -267,7 +268,7 @@ async function openDetail(row: Shipment) {
   try {
     detail.value = await shippingApi.getShipment(row.id)
     detailVisible.value = true
-    void loadPromiseTm(detail.value.id, detail.value.mailNo)
+    void loadPromiseTm(detail.value)
   } catch (e) {
     ElMessage.error((e as Error).message || '加载详情失败')
   }
@@ -414,6 +415,10 @@ async function printRow(row: Shipment) {
 }
 
 async function cancelRow(row: Shipment) {
+  if (isKdzsShipment(row)) {
+    ElMessage.warning('快递助手发货单请在快递助手侧取消运单，本系统不支持取消')
+    return
+  }
   const tip = row.mailNo
     ? `确认取消顺丰快递单 ${row.mailNo}？取消后运单将作废，请确认包裹尚未揽收。`
     : `确认取消发货单 #${row.id}？`
@@ -426,11 +431,11 @@ async function retryWaybill(row: Shipment) {
 }
 
 function canPrint(row: Shipment) {
-  return row.mailNo && row.status !== 'cancelled'
+  return !!row.mailNo && row.status !== 'cancelled' && isSFManagedShipment(row) && !isKdzsShipment(row)
 }
 
 function canCancel(row: Shipment) {
-  return row.status !== 'cancelled'
+  return row.status !== 'cancelled' && !isKdzsShipment(row)
 }
 
 function canRetry(row: Shipment) {
@@ -677,9 +682,12 @@ onMounted(() => {
             <el-tag :type="statusTag(detail.status).type" size="small">{{ statusTag(detail.status).label }}</el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="运单号">{{ detail.mailNo || '-' }}</el-descriptions-item>
+          <el-descriptions-item v-if="detail.expressCompany || isKdzsShipment(detail)" label="发货方式">
+            {{ isKdzsShipment(detail) ? `快递助手${detail.expressCompany ? ` · ${detail.expressCompany}` : ''}` : detail.expressCompany }}
+          </el-descriptions-item>
           <el-descriptions-item label="发货时间">{{ shipTimeOf(detail) }}</el-descriptions-item>
           <el-descriptions-item label="打印时间">{{ fmtTime(detail.printedAt) }}</el-descriptions-item>
-          <el-descriptions-item v-if="detail.mailNo" label="预计派送">
+          <el-descriptions-item v-if="detail.mailNo && isSFManagedShipment(detail)" label="预计派送">
             <span v-if="promiseLoading" class="muted">查询中…</span>
             <span v-else-if="promiseLabel">{{ promiseLabel }}</span>
             <span v-else class="muted">{{ promiseHint || '-' }}</span>
@@ -696,7 +704,7 @@ onMounted(() => {
           <el-descriptions-item label="托寄物">{{ detail.cargoName || '-' }}</el-descriptions-item>
           <el-descriptions-item label="运单备注">{{ detail.remark || '-' }}</el-descriptions-item>
           <el-descriptions-item label="月结">{{ detail.useMonthly ? '是' : '否' }}</el-descriptions-item>
-          <el-descriptions-item label="面单">
+          <el-descriptions-item v-if="isSFManagedShipment(detail) || detail.labelPdfUrl" label="面单">
             <template v-if="detail.labelPdfUrl">
               <el-button link type="primary" @click="openLabelPreview(detail)">查看面单图片</el-button>
               <el-link :href="detail.labelPdfUrl" target="_blank" type="primary" class="ml8">打开 PDF</el-link>

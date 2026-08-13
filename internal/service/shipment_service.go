@@ -166,6 +166,37 @@ func (s *ShipmentService) rewriteShipmentList(list []model.Shipment) {
 	}
 }
 
+// isKdzsShipment 快递助手推送/打单确认的发货单（本系统取消运单、云打印、面单存档均无效）。
+func isKdzsShipment(shipment *model.Shipment) bool {
+	if shipment == nil {
+		return false
+	}
+	via := strings.ToLower(strings.TrimSpace(shipment.ShipVia))
+	if via == model.ShipViaKdzs {
+		return true
+	}
+	if via == model.ShipViaSF {
+		return false
+	}
+	// 有运单号但从未丰桥取号：快递助手/手工填单（勿因误绑 carrier_account_id 判成顺丰）
+	return strings.TrimSpace(shipment.MailNo) != "" && strings.TrimSpace(shipment.SFOrderID) == ""
+}
+
+// isSFManagedShipment 顺丰取号或已关联丰桥物流账号的发货单（支持预计派送/云打印/面单存档）。
+func isSFManagedShipment(shipment *model.Shipment) bool {
+	if shipment == nil || isKdzsShipment(shipment) {
+		return false
+	}
+	via := strings.ToLower(strings.TrimSpace(shipment.ShipVia))
+	if via == model.ShipViaSF {
+		return true
+	}
+	if strings.TrimSpace(shipment.SFOrderID) != "" {
+		return true
+	}
+	return shipment.CarrierAccountID > 0
+}
+
 // SearchPromiseTm 出单后查预计派送时间（EXP_RECE_SEARCH_PROMITM）。
 func (s *ShipmentService) SearchPromiseTm(ctx context.Context, id uint64) (*dto.SearchPromiseTmResult, error) {
 	shipment, err := s.Get(id)
@@ -175,6 +206,12 @@ func (s *ShipmentService) SearchPromiseTm(ctx context.Context, id uint64) (*dto.
 	mailNo := strings.TrimSpace(shipment.MailNo)
 	if mailNo == "" {
 		return nil, fmt.Errorf("%w: 无运单号，无法查询预计派送时间", ErrBadRequest)
+	}
+	if !isSFManagedShipment(shipment) {
+		return &dto.SearchPromiseTmResult{
+			MailNo: mailNo,
+			Hint:   "非顺丰运单无需查询预计派送",
+		}, nil
 	}
 	if shipment.CarrierAccountID == 0 {
 		return nil, fmt.Errorf("%w: 发货单未关联物流账号", ErrBadRequest)
@@ -480,6 +517,7 @@ func (s *ShipmentService) CreateFromOrder(in *dto.CreateShipmentFromOrderDTO) (*
 		OrderCoreOrderID: orderCoreOrderID,
 		CarrierAccountID: carrier.ID,
 		ShipperProfileID: shipper.ID,
+		ShipVia:          model.ShipViaSF,
 		ReceiverName:     strings.TrimSpace(order.ReceiverName),
 		ReceiverMobile:   strings.TrimSpace(order.ReceiverMobile),
 		ReceiverProvince: strings.TrimSpace(order.ReceiverProvince),
@@ -687,6 +725,10 @@ func (s *ShipmentService) PrintWithCarrier(ctx context.Context, id, carrierAccou
 	}
 	if shipment.Status == model.ShipmentStatusCancelled {
 		return nil, ErrInvalidStatus
+	}
+	// 快递助手推送/打单：云打印与面单存档无效
+	if isKdzsShipment(shipment) || !isSFManagedShipment(shipment) {
+		return nil, fmt.Errorf("%w: 快递助手发货单不支持本系统打印与面单存档", ErrBadRequest)
 	}
 
 	carrier, err := s.resolvePrintCarrier(shipment, carrierAccountID)
@@ -961,6 +1003,9 @@ func (s *ShipmentService) FetchPrintPluginData(ctx context.Context, id uint64, o
 	if shipment.MailNo == "" {
 		return nil, fmt.Errorf("%w: waybill not created", ErrBadRequest)
 	}
+	if isKdzsShipment(shipment) || !isSFManagedShipment(shipment) {
+		return nil, fmt.Errorf("%w: 快递助手发货单不支持本系统打印与面单存档", ErrBadRequest)
+	}
 	carrier, err := s.resolvePrintCarrier(shipment, carrierAccountID)
 	if err != nil {
 		return nil, err
@@ -1056,6 +1101,9 @@ func (s *ShipmentService) FetchLabelPDF(ctx context.Context, id, carrierAccountI
 	if shipment.MailNo == "" {
 		return nil, "", fmt.Errorf("%w: waybill not created", ErrBadRequest)
 	}
+	if isKdzsShipment(shipment) || !isSFManagedShipment(shipment) {
+		return nil, "", fmt.Errorf("%w: 快递助手发货单不支持本系统打印与面单存档", ErrBadRequest)
+	}
 	carrier, err := s.resolvePrintCarrier(shipment, carrierAccountID)
 	if err != nil {
 		return nil, "", err
@@ -1110,6 +1158,9 @@ func (s *ShipmentService) Cancel(ctx context.Context, token string, id uint64) (
 	if shipment.Status == model.ShipmentStatusCancelled {
 		_ = s.unshipOrderCore(ctx, token, shipment)
 		return shipment, nil
+	}
+	if isKdzsShipment(shipment) {
+		return nil, fmt.Errorf("%w: 快递助手发货单请在快递助手侧取消运单，本系统不支持取消/打印", ErrBadRequest)
 	}
 	mailNo := strings.TrimSpace(shipment.MailNo)
 	// 草稿未向顺丰下单：仅作废本地发货单
@@ -1265,6 +1316,8 @@ func (s *ShipmentService) ConfirmKdzsShip(ctx context.Context, token string, in 
 		ReceiverCounty:   strings.TrimSpace(order.ReceiverCounty),
 		ReceiverAddress:  strings.TrimSpace(order.ReceiverAddress),
 		MailNo:           strings.TrimSpace(in.ExpressNo),
+		ShipVia:          model.ShipViaKdzs,
+		ExpressCompany:   expressCompany,
 		Status:           model.ShipmentStatusPrinted,
 		ShippedAt:        &now,
 		PrintedAt:        &now,

@@ -158,6 +158,10 @@ export interface Shipment {
   custId: string
   expressType: string
   mailNo: string
+  /** 发货通道：sf=丰桥；kdzs=快递助手 */
+  shipVia?: 'sf' | 'kdzs' | string
+  /** 快递公司（快递助手等非顺丰填单） */
+  expressCompany?: string
   orderCoreOrderId?: number
   sfOrderId: string
   /** 顺丰临时面单链接（会过期，详情勿用） */
