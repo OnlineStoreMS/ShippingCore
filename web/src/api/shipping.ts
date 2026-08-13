@@ -317,6 +317,16 @@ export interface OMSOrderItem {
   picUrl?: string
 }
 
+export interface OMSOrderShipmentItem {
+  orderItemId?: number
+  qty?: number
+}
+
+export interface OMSOrderShipment {
+  id?: number
+  items?: OMSOrderShipmentItem[]
+}
+
 export interface OMSOrderAddress {
   name?: string
   phone?: string
@@ -345,6 +355,7 @@ export interface OMSOrder {
   orderedAt?: string
   items?: OMSOrderItem[]
   address?: OMSOrderAddress
+  shipments?: OMSOrderShipment[]
 }
 
 export interface OMSOrderListResponse {

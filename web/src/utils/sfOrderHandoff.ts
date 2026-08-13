@@ -8,15 +8,57 @@ export interface SFOrderHandoff {
   order: OrderSnapshot
 }
 
-/** itemIndexes：按订单明细下标勾选发货；不传则全部商品 */
+export interface OMSOrderShipmentItem {
+  orderItemId?: number
+  qty?: number
+}
+
+export interface OMSOrderShipment {
+  id?: number
+  items?: OMSOrderShipmentItem[]
+}
+
+/** 订单行已发数量（有明细运单时按明细；无明细且整单已发完时视为全部已发） */
+export function shippedQtyByItem(order: OMSOrder & { shipments?: OMSOrderShipment[] }): Record<number, number> {
+  const map: Record<number, number> = {}
+  let hasItemRows = false
+  for (const sh of order.shipments || []) {
+    if (sh.items?.length) {
+      hasItemRows = true
+      for (const it of sh.items) {
+        if (!it.orderItemId || !(it.qty && it.qty > 0)) continue
+        map[it.orderItemId] = (map[it.orderItemId] || 0) + it.qty
+      }
+    }
+  }
+  if (!hasItemRows && order.shipStatus === 'shipped') {
+    for (const it of order.items || []) {
+      if (it.id) map[it.id] = it.quantity || 0
+    }
+  }
+  return map
+}
+
+export function remainingQtyByItem(order: OMSOrder & { shipments?: OMSOrderShipment[] }): Record<number, number> {
+  const shipped = shippedQtyByItem(order)
+  const out: Record<number, number> = {}
+  for (const it of order.items || []) {
+    if (!it.id) continue
+    out[it.id] = Math.max(0, (it.quantity || 0) - (shipped[it.id] || 0))
+  }
+  return out
+}
+
+/** itemIndexes：按订单明细下标勾选发货；不传则全部可发商品 */
 export function omsOrderToSnapshot(
-  order: OMSOrder,
-  opts?: { itemIndexes?: number[] },
+  order: OMSOrder & { shipments?: OMSOrderShipment[] },
+  opts?: { itemIndexes?: number[]; qtyByItemId?: Record<number, number> },
 ): OrderSnapshot {
   const addr = order.address
   const manualSource = (order.manualSourceName || '').trim()
   const shopName = (order.shopName || '').trim() || manualSource
   const all = order.items || []
+  const remaining = opts?.qtyByItemId || remainingQtyByItem(order)
   const indexes = opts?.itemIndexes
   const picked =
     indexes && indexes.length
@@ -24,7 +66,11 @@ export function omsOrderToSnapshot(
           .filter((i) => i >= 0 && i < all.length)
           .map((i) => all[i])
           .filter(Boolean)
-      : all
+      : all.filter((g) => {
+          if (!g.id) return true
+          const left = remaining[g.id]
+          return left == null || left > 0
+        })
   return {
     platform: order.platform || '',
     shopId: order.shopId || '',
@@ -40,19 +86,30 @@ export function omsOrderToSnapshot(
     receiverCity: addr?.city || '',
     receiverCounty: addr?.district || '',
     receiverAddress: addr?.fullText || addr?.address || '',
-    goods: picked.map((g) => {
-      const spec = (g.skuSpecs || '').trim()
-      const product = (g.productName || '').trim()
-      return {
-        orderItemId: g.id || 0,
-        title: product,
-        // 发货/下顺丰单用规格名称；无规格时才落商品名到 skuName 兜底
-        skuName: spec || product,
-        num: g.quantity && g.quantity > 0 ? g.quantity : 1,
-        outerId: '',
-        price: 0,
-      }
-    }),
+    goods: picked
+      .map((g) => {
+        const spec = (g.skuSpecs || '').trim()
+        const product = (g.productName || '').trim()
+        const id = g.id || 0
+        const left = id ? remaining[id] : undefined
+        if (id && left != null && left <= 0) return null
+        const num =
+          left != null && left > 0
+            ? left
+            : g.quantity && g.quantity > 0
+              ? g.quantity
+              : 1
+        return {
+          orderItemId: id,
+          title: product,
+          // 发货/下顺丰单用规格名称；无规格时才落商品名到 skuName 兜底
+          skuName: spec || product,
+          num,
+          outerId: '',
+          price: 0,
+        }
+      })
+      .filter((g): g is NonNullable<typeof g> => !!g),
   }
 }
 

@@ -10,7 +10,7 @@ import {
   type OMSOrder,
   type ShipperProfile,
 } from '../api/shipping'
-import { omsOrderToSnapshot, saveSFOrderHandoff } from '../utils/sfOrderHandoff'
+import { omsOrderToSnapshot, remainingQtyByItem, saveSFOrderHandoff } from '../utils/sfOrderHandoff'
 import { printShipmentByChannel } from '../utils/sfPrintLabel'
 import {
   getSavedPrinterIndex,
@@ -359,11 +359,18 @@ const selectedTemplate = computed(() =>
 
 const isBatchShip = computed(() => shipTargets.value.length > 1)
 
-/** 单笔打单时展示的发货商品行 */
+/** 单笔打单：仅展示仍有剩余可发数量的商品行（下标对齐订单 items） */
 const shipItemRows = computed(() => {
   if (isBatchShip.value) return []
   const order = shipTargets.value[0]
-  return order?.items || []
+  if (!order?.items?.length) return []
+  const remaining = remainingQtyByItem(order)
+  return order.items
+    .map((item, index) => {
+      const left = item.id ? remaining[item.id] : item.quantity || 0
+      return { index, item, remaining: left }
+    })
+    .filter((r) => r.remaining > 0)
 })
 
 const shipItemAllSelected = computed(
@@ -456,20 +463,26 @@ function onSelectionChange(rows: OMSOrder[]) {
 }
 
 function initShipItemSelection(order: OMSOrder) {
-  const items = order.items || []
-  selectedShipItemIndexes.value = items.map((_, i) => i)
+  const remaining = remainingQtyByItem(order)
+  selectedShipItemIndexes.value = (order.items || [])
+    .map((item, i) => ({ i, left: item.id ? remaining[item.id] : item.quantity || 0 }))
+    .filter((r) => r.left > 0)
+    .map((r) => r.i)
 }
 
 function toggleShipItemAll(checked: boolean) {
-  selectedShipItemIndexes.value = checked ? shipItemRows.value.map((_, i) => i) : []
+  selectedShipItemIndexes.value = checked ? shipItemRows.value.map((r) => r.index) : []
 }
 
 function snapshotForShip(order: OMSOrder) {
-  // 批量：整单商品；单笔：仅勾选行
+  // 批量：整单可发商品；单笔：仅勾选行，数量按剩余可发
   if (isBatchShip.value || !shipItemRows.value.length) {
     return omsOrderToSnapshot(order)
   }
-  return omsOrderToSnapshot(order, { itemIndexes: [...selectedShipItemIndexes.value] })
+  return omsOrderToSnapshot(order, {
+    itemIndexes: [...selectedShipItemIndexes.value],
+    qtyByItemId: remainingQtyByItem(order),
+  })
 }
 
 function ensureShipItemsSelected(): boolean {
@@ -486,7 +499,12 @@ function goSFOrder(order: OMSOrder, itemIndexes?: number[]) {
   saveSFOrderHandoff({
     orderId: order.id,
     sourceSystem: 'ordercore',
-    order: omsOrderToSnapshot(order, itemIndexes?.length ? { itemIndexes } : undefined),
+    order: omsOrderToSnapshot(
+      order,
+      itemIndexes?.length
+        ? { itemIndexes, qtyByItemId: remainingQtyByItem(order) }
+        : { qtyByItemId: remainingQtyByItem(order) },
+    ),
   })
   router.push('/sf-order')
 }
@@ -955,14 +973,20 @@ onMounted(async () => {
           </div>
           <el-checkbox-group v-model="selectedShipItemIndexes" class="ship-items-list">
             <label
-              v-for="(g, idx) in shipItemRows"
-              :key="idx"
+              v-for="row in shipItemRows"
+              :key="row.index"
               class="ship-item-row"
             >
-              <el-checkbox :value="idx" />
-              <img v-if="g.picUrl" :src="g.picUrl" class="goods-thumb" alt="" />
+              <el-checkbox :value="row.index" />
+              <img v-if="row.item.picUrl" :src="row.item.picUrl" class="goods-thumb" alt="" />
               <div class="ship-item-text">
-                <div>{{ formatGoodsLine(g) || '-' }}</div>
+                <div>{{ formatGoodsLine(row.item) || '-' }}</div>
+                <div class="muted" style="font-size: 12px; margin-top: 2px">
+                  待发 ×{{ row.remaining }}
+                  <span v-if="(row.item.quantity || 0) > row.remaining">
+                    · 共 {{ row.item.quantity }}
+                  </span>
+                </div>
               </div>
             </label>
           </el-checkbox-group>
