@@ -814,7 +814,8 @@ func (s *ShipmentService) applyCloudPrint(ctx context.Context, client *sf.Client
 		shipment.LabelData = string(parsed.ObjJSON)
 		markShipmentPrinted(shipment)
 		// 插件通道刚出单后立刻拉 PDF 常被丰桥返回空结果；异步重试存档，不挡出单/打印
-		s.scheduleArchiveLabelPDF(shipment.ID, shipment.CarrierAccountID, shipment.MailNo, tpl, "")
+		// force=true：再次打印也强制覆盖存档 PDF
+		s.scheduleArchiveLabelPDF(shipment.ID, shipment.CarrierAccountID, shipment.MailNo, tpl, "", true)
 		return nil
 	}
 
@@ -834,14 +835,15 @@ func (s *ShipmentService) applyCloudPrint(ctx context.Context, client *sf.Client
 		if err != nil {
 			log.Printf("archive label pdf immediate %s: %v", shipment.MailNo, err)
 		}
-		s.scheduleArchiveLabelPDF(shipment.ID, shipment.CarrierAccountID, shipment.MailNo, tpl, "")
+		s.scheduleArchiveLabelPDF(shipment.ID, shipment.CarrierAccountID, shipment.MailNo, tpl, "", true)
 	}
 	return nil
 }
 
 // scheduleArchiveLabelPDF 后台重试拉取云打印 PDF 并写入 label_pdf_url。
+// force：为 true 时即使已有存档也重新拉取覆盖（再次打印用）。
 // 首次下单/插件打印后立刻调 COM_RECE_CLOUD_PRINT_WAYBILLS 常得到空 apiResultData，需稍后再试。
-func (s *ShipmentService) scheduleArchiveLabelPDF(shipmentID, carrierAccountID uint64, mailNo, tpl, custom string) {
+func (s *ShipmentService) scheduleArchiveLabelPDF(shipmentID, carrierAccountID uint64, mailNo, tpl, custom string, force bool) {
 	if s.store == nil || shipmentID == 0 || strings.TrimSpace(mailNo) == "" {
 		return
 	}
@@ -862,7 +864,7 @@ func (s *ShipmentService) scheduleArchiveLabelPDF(shipmentID, carrierAccountID u
 				log.Printf("archive label pdf load %d: %v", shipmentID, err)
 				return
 			}
-			if strings.TrimSpace(existing.LabelPdfURL) != "" {
+			if !force && strings.TrimSpace(existing.LabelPdfURL) != "" {
 				return
 			}
 			carrier, err := s.carrier.GetRaw(carrierAccountID)
@@ -884,7 +886,7 @@ func (s *ShipmentService) scheduleArchiveLabelPDF(shipmentID, carrierAccountID u
 				log.Printf("archive label pdf save %s: %v", mailNo, err)
 				return
 			}
-			log.Printf("archive label pdf ok %s -> %s", mailNo, url)
+			log.Printf("archive label pdf ok %s -> %s (force=%v)", mailNo, url, force)
 			return
 		}
 		log.Printf("archive label pdf gave up %s after %d attempts", mailNo, len(delays))
@@ -1010,7 +1012,7 @@ func (s *ShipmentService) FetchPrintPluginData(ctx context.Context, id uint64, o
 		shipment.LabelData = string(parsed.ObjJSON)
 		markShipmentPrinted(shipment)
 		_ = s.db().Save(shipment).Error
-		s.scheduleArchiveLabelPDF(shipment.ID, carrier.ID, shipment.MailNo, tpl, "")
+		s.scheduleArchiveLabelPDF(shipment.ID, carrier.ID, shipment.MailNo, tpl, "", true)
 
 		out["requestId"] = firstNonEmptyTrim(parsed.RequestID, requestID)
 		out["fileType"] = parsed.FileType
@@ -1028,7 +1030,7 @@ func (s *ShipmentService) FetchPrintPluginData(ctx context.Context, id uint64, o
 		shipment.LabelURL = "sf-plugin://" + shipment.MailNo
 		markShipmentPrinted(shipment)
 		_ = s.db().Save(shipment).Error
-		s.scheduleArchiveLabelPDF(shipment.ID, carrier.ID, shipment.MailNo, tpl, "")
+		s.scheduleArchiveLabelPDF(shipment.ID, carrier.ID, shipment.MailNo, tpl, "", true)
 		if err != nil {
 			out["parsedDataError"] = err.Error()
 		}
