@@ -22,6 +22,7 @@ type MinIOStorage struct {
 	bucket     string
 	baseURL    string
 	rootPrefix string
+	resolver   *PublicURLResolver
 }
 
 func NewMinIO(cfg *config.StorageConfig) (*MinIOStorage, error) {
@@ -84,6 +85,7 @@ func NewMinIO(cfg *config.StorageConfig) (*MinIOStorage, error) {
 		bucket:     m.Bucket,
 		baseURL:    baseURL,
 		rootPrefix: prefix,
+		resolver:   NewPublicURLResolver(cfg),
 	}, nil
 }
 
@@ -156,6 +158,10 @@ func (s *MinIOStorage) UploadBytes(data []byte, filename, subdir, contentType st
 		return "", err
 	}
 	return s.baseURL + "/" + objectKey, nil
+}
+
+func (s *MinIOStorage) ResolvePublicURL(stored string) string {
+	return s.resolver.Resolve(stored)
 }
 
 func safeFilename(name string) string {

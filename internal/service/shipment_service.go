@@ -137,6 +137,7 @@ func (s *ShipmentService) List(q ShipmentListQuery) ([]model.Shipment, int64, er
 	if err := dbq.Preload("Items").Order("id DESC").Offset(offset).Limit(pageSize).Find(&list).Error; err != nil {
 		return nil, 0, err
 	}
+	s.rewriteShipmentList(list)
 	return list, total, nil
 }
 
@@ -148,7 +149,21 @@ func (s *ShipmentService) Get(id uint64) (*model.Shipment, error) {
 		}
 		return nil, err
 	}
+	s.rewriteShipmentURLs(&item)
 	return &item, nil
+}
+
+func (s *ShipmentService) rewriteShipmentURLs(item *model.Shipment) {
+	if item == nil || s.store == nil {
+		return
+	}
+	item.LabelPdfURL = s.store.ResolvePublicURL(item.LabelPdfURL)
+}
+
+func (s *ShipmentService) rewriteShipmentList(list []model.Shipment) {
+	for i := range list {
+		s.rewriteShipmentURLs(&list[i])
+	}
 }
 
 // SearchPromiseTm 出单后查预计派送时间（EXP_RECE_SEARCH_PROMITM）。
