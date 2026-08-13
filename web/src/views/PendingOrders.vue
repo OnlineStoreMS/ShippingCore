@@ -339,6 +339,17 @@ function formatGoodsLine(g: { productName?: string; skuSpecs?: string; quantity?
   return `${title} x${num}`
 }
 
+/** 付款时间：YYYY-MM-DD HH:mm:ss */
+function formatPayTime(v?: string) {
+  if (!v) return '-'
+  const d = new Date(v)
+  if (Number.isNaN(d.getTime())) {
+    return String(v).replace('T', ' ').replace(/\.\d+/, '').replace(/[Zz]|[+-]\d{2}:?\d{2}$/, '').trim().slice(0, 19) || '-'
+  }
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
 /** 部分发货订单：商品行附带已发标记（按运单明细汇总） */
 function goodsRowsWithShipMark(order: OMSOrder) {
   const shippedMap = order.shipStatus === 'partial_shipped' ? shippedQtyByItem(order) : {}
@@ -964,7 +975,9 @@ onMounted(async () => {
             <div class="muted">{{ row.address?.fullText || row.address?.address }}</div>
           </template>
         </el-table-column>
-        <el-table-column prop="payTime" label="付款时间" width="170" />
+        <el-table-column label="付款时间" width="170">
+          <template #default="{ row }">{{ formatPayTime(row.payTime || row.orderedAt) }}</template>
+        </el-table-column>
         <el-table-column label="操作" width="120" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="openShipDialogOms(row)">打单发货</el-button>
