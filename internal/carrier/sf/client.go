@@ -516,11 +516,11 @@ func toFloat64(v interface{}) float64 {
 }
 
 // SearchPromitmRequest 预计派送时间查询（EXP_RECE_SEARCH_PROMITM）。
-// checkType=1 时 checkNos 一般为手机号后四位；checkType=2 可为完整手机号等。
+// checkType=1：电话号码校验，checkNos 传电话；checkType=2：月结卡号校验，checkNos 传月结卡号。
 type SearchPromitmRequest struct {
 	SearchNo  string   // 运单号
-	CheckType int      // 1=手机后四位等
-	CheckNos  []string // 校验号列表
+	CheckType int      // 1=电话号码 2=月结卡号
+	CheckNos  []string // 校验值列表
 }
 
 type SearchPromitmResult struct {

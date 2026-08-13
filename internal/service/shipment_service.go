@@ -172,35 +172,50 @@ func (s *ShipmentService) SearchPromiseTm(ctx context.Context, id uint64) (*dto.
 		return nil, fmt.Errorf("%w: 物流账号未配置顾客编码/校验码", ErrBadRequest)
 	}
 
-	mobileDigits := digitsOnly(shipment.ReceiverMobile)
-	if len(mobileDigits) < 4 {
-		return nil, fmt.Errorf("%w: 收件手机号不足，无法校验查询", ErrBadRequest)
+	recvDigits := digitsOnly(shipment.ReceiverMobile)
+	recv4 := ""
+	if len(recvDigits) >= 4 {
+		recv4 = recvDigits[len(recvDigits)-4:]
 	}
-	last4 := mobileDigits[len(mobileDigits)-4:]
-
 	client := newSFClient(carrier)
-	// checkType=1：手机号后四位（丰桥常用）
-	res, err := client.SearchPromitm(ctx, sf.SearchPromitmRequest{
-		SearchNo:  mailNo,
-		CheckType: 1,
-		CheckNos:  []string{last4},
-	})
-	if err != nil {
-		// 部分账号要求完整手机号（checkType=2）
-		if strings.Contains(err.Error(), "8013") || strings.Contains(err.Error(), "校验") || strings.Contains(err.Error(), "手机") {
-			if res2, err2 := client.SearchPromitm(ctx, sf.SearchPromitmRequest{
-				SearchNo:  mailNo,
-				CheckType: 2,
-				CheckNos:  []string{mobileDigits},
-			}); err2 == nil {
-				res, err = res2, nil
-			}
-		}
+	custID := strings.TrimSpace(carrier.CustID)
+	// 丰桥官方：checkType=1 电话号码校验；checkType=2 月结卡号校验。
+	// 官方示例：checkType=2, checkNos=[月结卡号]
+	tryReqs := make([]sf.SearchPromitmRequest, 0, 4)
+	if custID != "" {
+		tryReqs = append(tryReqs, sf.SearchPromitmRequest{SearchNo: mailNo, CheckType: 2, CheckNos: []string{custID}})
 	}
-	if err != nil {
-		hint := err.Error()
-		if strings.Contains(hint, "无对应服务权限") || strings.Contains(hint, "A1004") {
-			hint = "请在丰桥开通「预计派送时间查询」(EXP_RECE_SEARCH_PROMITM)"
+	if custID != "" && recvDigits != "" {
+		// 部分对接示例为「月结卡+手机」，官方页示例仅月结卡；作兼容回退
+		tryReqs = append(tryReqs, sf.SearchPromitmRequest{SearchNo: mailNo, CheckType: 2, CheckNos: []string{custID, recvDigits}})
+	}
+	if recv4 != "" {
+		tryReqs = append(tryReqs, sf.SearchPromitmRequest{SearchNo: mailNo, CheckType: 1, CheckNos: []string{recv4}})
+	}
+	if recvDigits != "" && recvDigits != recv4 {
+		tryReqs = append(tryReqs, sf.SearchPromitmRequest{SearchNo: mailNo, CheckType: 1, CheckNos: []string{recvDigits}})
+	}
+	if len(tryReqs) == 0 {
+		return nil, fmt.Errorf("%w: 无月结卡号且收件手机不足，无法校验查询", ErrBadRequest)
+	}
+
+	var (
+		res    *sf.SearchPromitmResult
+		lastErr error
+	)
+	for _, req := range tryReqs {
+		r, e := client.SearchPromitm(ctx, req)
+		if e == nil {
+			res = r
+			lastErr = nil
+			break
+		}
+		lastErr = e
+	}
+	if lastErr != nil || res == nil {
+		hint := "暂无预计派送时间"
+		if lastErr != nil {
+			hint = friendlyPromiseTmHint(lastErr.Error())
 		}
 		return &dto.SearchPromiseTmResult{
 			MailNo: mailNo,
@@ -235,6 +250,24 @@ func digitsOnly(s string) string {
 		}
 	}
 	return b.String()
+}
+
+func friendlyPromiseTmHint(raw string) string {
+	msg := strings.TrimSpace(raw)
+	switch {
+	case strings.Contains(msg, "无对应服务权限"), strings.Contains(msg, "A1004"):
+		return "请在丰桥开通「预计派送时间查询」(EXP_RECE_SEARCH_PROMITM)"
+	case strings.Contains(msg, "查询清单结果为空"), strings.Contains(msg, "结果为空"):
+		// 刚下单、未揽收时常见；接口已通但顺丰侧尚无承诺时效
+		return "暂无预计派送时间（通常揽收或产生路由后可查）"
+	case strings.Contains(msg, "运单号不合法"):
+		return "运单号无效或尚未生效，请稍后重试"
+	default:
+		if msg == "" {
+			return "暂无预计派送时间"
+		}
+		return msg
+	}
 }
 
 // DeleteByOrderCore 按订单中心销售单删除发货运单（手工单删除级联）。

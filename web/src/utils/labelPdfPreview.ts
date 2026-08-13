@@ -1,12 +1,32 @@
 import * as pdfjs from 'pdfjs-dist'
-import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 
-pdfjs.GlobalWorkerOptions.workerSrc = pdfWorker
+let workerReady: Promise<void> | null = null
+
+/** 用 blob URL 挂 worker，避免 nginx 把 .mjs 标成 octet-stream 导致动态 import 失败 */
+function ensurePdfWorker() {
+  if (!workerReady) {
+    workerReady = (async () => {
+      try {
+        const res = await fetch(pdfWorkerUrl)
+        if (!res.ok) throw new Error(`worker HTTP ${res.status}`)
+        const buf = await res.arrayBuffer()
+        const blob = new Blob([buf], { type: 'application/javascript' })
+        pdfjs.GlobalWorkerOptions.workerSrc = URL.createObjectURL(blob)
+      } catch {
+        pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl
+      }
+    })()
+  }
+  return workerReady
+}
 
 /** 将面单 PDF（URL）渲染为 PNG data URL（首页） */
 export async function renderLabelPdfToPng(pdfUrl: string, scale = 2): Promise<string> {
   const url = (pdfUrl || '').trim()
   if (!url) throw new Error('无面单存档')
+
+  await ensurePdfWorker()
 
   const res = await fetch(url, { mode: 'cors' })
   if (!res.ok) throw new Error(`拉取面单失败 HTTP ${res.status}`)
