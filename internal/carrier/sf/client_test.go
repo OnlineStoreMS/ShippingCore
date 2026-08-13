@@ -114,6 +114,17 @@ func TestBuildPrintDocumentRemark(t *testing.T) {
 	}
 }
 
+func TestBuildPrintDocumentLogo(t *testing.T) {
+	docOff := buildPrintDocument("SF1", &PrintDocOptions{PrintLogo: false})
+	if _, ok := docOff["isPrintLogo"]; ok {
+		t.Fatalf("expected no isPrintLogo when off: %#v", docOff)
+	}
+	docOn := buildPrintDocument("SF1", &PrintDocOptions{PrintLogo: true})
+	if docOn["isPrintLogo"] != "true" {
+		t.Fatalf("expected isPrintLogo=true: %#v", docOn)
+	}
+}
+
 func TestOAuthURLByEnv(t *testing.T) {
 	sbox := NewClient("P", "S", "sandbox")
 	if sbox.OAuthURL() != SandboxOAuthURL {

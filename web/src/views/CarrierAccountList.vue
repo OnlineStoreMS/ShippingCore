@@ -67,6 +67,7 @@ function emptyForm(): CarrierAccount {
     customTemplateCode: '',
     signMode: 'simple',
     printChannel: 'pdf',
+    printLogo: false,
     env: 'sandbox',
     enabled: true,
     remark: '',
@@ -110,6 +111,7 @@ function openEdit(row: CarrierAccount) {
     checkword: '',
     signMode: row.signMode || 'simple',
     printChannel: row.printChannel || 'pdf',
+    printLogo: !!row.printLogo,
   }
   visible.value = true
 }
@@ -228,6 +230,12 @@ onMounted(load)
         <el-table-column label="打印通道" width="100">
           <template #default="{ row }">{{ printChannelLabel(row.printChannel) }}</template>
         </el-table-column>
+        <el-table-column label="Logo" width="72" align="center">
+          <template #default="{ row }">
+            <el-tag v-if="row.printLogo" type="success" size="small">打印</el-tag>
+            <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
         <el-table-column label="环境" width="80">
           <template #default="{ row }">{{ envLabel(row.env) }}</template>
         </el-table-column>
@@ -332,6 +340,12 @@ onMounted(load)
               </el-radio-group>
               <div class="hint">{{ printChannelOptions.find((o) => o.value === form.printChannel)?.hint }}</div>
             </el-form-item>
+            <el-form-item label="打印 Logo">
+              <el-switch v-model="form.printLogo" />
+              <div class="hint">
+                开启后云打印传 isPrintLogo=true，在面单左上角打印顺丰 Logo；热敏纸已预印 Logo 时请关闭。
+              </div>
+            </el-form-item>
             <el-form-item label="环境">
               <el-radio-group v-model="form.env">
                 <el-radio v-for="opt in envOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</el-radio>
@@ -360,4 +374,5 @@ onMounted(load)
 .toolbar { display: flex; gap: 8px; margin-bottom: 16px; }
 .pager { margin-top: 16px; display: flex; justify-content: flex-end; }
 .hint { margin-top: 4px; font-size: 12px; color: var(--el-text-color-secondary); line-height: 1.4; }
+.muted { color: var(--el-text-color-placeholder); }
 </style>

@@ -596,6 +596,8 @@ func firstMapStr(m map[string]interface{}, keys ...string) string {
 type PrintDocOptions struct {
 	Remark             string // 映射模板自定义区「备注」
 	CustomTemplateCode string // 已发布的自定义模板编码（与标准 templateCode 规格一致）
+	// PrintLogo 热敏纸无预印 Logo 时传 isPrintLogo=true；预印纸不传
+	PrintLogo bool
 }
 
 func buildPrintDocument(mailNo string, opt *PrintDocOptions) map[string]interface{} {
@@ -604,6 +606,10 @@ func buildPrintDocument(mailNo string, opt *PrintDocOptions) map[string]interfac
 	}
 	if opt == nil {
 		return doc
+	}
+	if opt.PrintLogo {
+		// 丰桥文档为 String；true=热敏纸无预印需打印 Logo
+		doc["isPrintLogo"] = "true"
 	}
 	if r := strings.TrimSpace(opt.Remark); r != "" {
 		// 自定义区「变量字段」字段名须与下列 key 之一一致（推荐 remark）

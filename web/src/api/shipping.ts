@@ -17,6 +17,8 @@ export interface CarrierAccount {
   signMode: string
   /** 云打印通道：pdf=转PDF接口；plugin=打印插件接口 PARSEDDATA */
   printChannel: string
+  /** 热敏纸无预印 Logo 时开启，打面单左上角顺丰 Logo */
+  printLogo?: boolean
   env: string
   enabled: boolean
   remark: string

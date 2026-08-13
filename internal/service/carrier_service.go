@@ -152,6 +152,7 @@ func (s *CarrierService) Update(id uint64, in *dto.CarrierAccountDTO) (*model.Ca
 	if in.PrintChannel != "" {
 		item.PrintChannel = normalizePrintChannel(in.PrintChannel)
 	}
+	item.PrintLogo = in.PrintLogo
 	if in.Env != "" {
 		item.Env = in.Env
 	}
@@ -205,6 +206,7 @@ func dtoToCarrierAccount(in *dto.CarrierAccountDTO) model.CarrierAccount {
 		CustomTemplateCode: strings.TrimSpace(in.CustomTemplateCode),
 		SignMode:           sf.NormalizeSignMode(in.SignMode),
 		PrintChannel:       normalizePrintChannel(in.PrintChannel),
+		PrintLogo:          in.PrintLogo,
 		Env:                in.Env,
 		Enabled:            in.Enabled,
 		Remark:             in.Remark,

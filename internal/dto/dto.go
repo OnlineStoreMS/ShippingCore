@@ -13,6 +13,7 @@ type CarrierAccountDTO struct {
 	CustomTemplateCode string `json:"customTemplateCode,omitempty"`
 	SignMode           string `json:"signMode"`     // standard|simple|sm3
 	PrintChannel       string `json:"printChannel"` // pdf|plugin
+	PrintLogo          bool   `json:"printLogo"`   // 热敏纸无预印 Logo 时打印顺丰 Logo
 	Env          string `json:"env"`
 	Enabled      bool   `json:"enabled"`
 	Remark       string `json:"remark"`

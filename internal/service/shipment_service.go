@@ -699,9 +699,12 @@ func truncateRunes(s string, max int) string {
 	return string(rs[:max])
 }
 
-func (s *ShipmentService) printDocOpt(_ *model.Shipment, _ *model.CarrierAccount) *sf.PrintDocOptions {
-	// 仅使用标准模板；不传自定义区 / remark（托寄物走 cargoDetails）
-	return &sf.PrintDocOptions{}
+func (s *ShipmentService) printDocOpt(_ *model.Shipment, carrier *model.CarrierAccount) *sf.PrintDocOptions {
+	opt := &sf.PrintDocOptions{}
+	if carrier != nil {
+		opt.PrintLogo = carrier.PrintLogo
+	}
+	return opt
 }
 
 // resolveSFPrintTemplates 仅返回标准模板；自定义区暂不使用。
@@ -928,6 +931,9 @@ func (s *ShipmentService) FetchPrintPluginData(ctx context.Context, id uint64, o
 	_ = overrideCustom // 自定义模板已停用，忽略
 	opt := s.printDocOpt(shipment, carrier)
 	doc := map[string]interface{}{"masterWaybillNo": shipment.MailNo}
+	if carrier.PrintLogo {
+		doc["isPrintLogo"] = "true"
+	}
 	sdkData := map[string]interface{}{
 		"requestID":    requestID,
 		"accessToken":  accessToken,

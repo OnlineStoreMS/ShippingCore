@@ -34,12 +34,14 @@ type CarrierAccount struct {
 	CustomTemplateCode string `gorm:"size:128" json:"customTemplateCode,omitempty"` // 自定义区模板，如 fm_76130_standard_custom_…
 	SignMode           string `gorm:"size:16;default:simple" json:"signMode"`       // standard|simple|sm3，须与丰桥应用一致
 	// PrintChannel 云打印通道：pdf=COM_RECE_CLOUD_PRINT_WAYBILLS；plugin=COM_RECE_CLOUD_PRINT_PARSEDDATA
-	PrintChannel string    `gorm:"size:16;default:pdf" json:"printChannel"`
-	Env          string    `gorm:"size:16;default:sandbox" json:"env"`
-	Enabled      bool      `gorm:"default:true" json:"enabled"`
-	Remark       string    `gorm:"size:512" json:"remark"`
-	CreatedAt    time.Time `json:"createdAt"`
-	UpdatedAt    time.Time `json:"updatedAt"`
+	PrintChannel string `gorm:"size:16;default:pdf" json:"printChannel"`
+	// PrintLogo 热敏纸无预印顺丰 Logo 时开启，云打印 documents.isPrintLogo=true
+	PrintLogo bool      `gorm:"default:false" json:"printLogo"`
+	Env       string    `gorm:"size:16;default:sandbox" json:"env"`
+	Enabled   bool      `gorm:"default:true" json:"enabled"`
+	Remark    string    `gorm:"size:512" json:"remark"`
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
 func (CarrierAccount) TableName() string { return "carrier_accounts" }
