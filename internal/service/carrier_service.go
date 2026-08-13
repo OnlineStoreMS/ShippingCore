@@ -230,23 +230,31 @@ func shipmentOrderID(shipmentID uint64) string {
 	return fmt.Sprintf("SC%d", shipmentID)
 }
 
-// sfCustomerOrderID 丰桥客户订单号（面单「订单号」）：优先订单中心 orderNo（OC…）。
-func sfCustomerOrderID(shipment *model.Shipment) string {
+// sfCustomerOrderBase 业务侧订单号（面单可读前缀），不含重试序号。
+func sfCustomerOrderBase(shipment *model.Shipment) string {
 	if shipment == nil {
 		return ""
 	}
 	if no := strings.TrimSpace(shipment.OrderNo); no != "" {
 		return no
 	}
-	// 兼容旧数据：sourceTid / sourceRef 里若已是 OC 单号则沿用
 	if tid := strings.TrimSpace(shipment.SourceTid); strings.HasPrefix(strings.ToUpper(tid), "OC") {
 		return tid
 	}
 	if ref := strings.TrimSpace(shipment.SourceRef); ref != "" && !strings.HasPrefix(strings.ToUpper(ref), "SC-MANUAL") {
 		return ref
 	}
-	if tid := strings.TrimSpace(shipment.SourceTid); tid != "" {
-		return tid
+	return strings.TrimSpace(shipment.SourceTid)
+}
+
+// formatSFCustomerOrderID 首次用业务单号，第 2/3 次为 {单号}-2 / {单号}-3。
+func formatSFCustomerOrderID(base string, seq int) string {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		return ""
 	}
-	return shipmentOrderID(shipment.ID)
+	if seq <= 1 {
+		return base
+	}
+	return fmt.Sprintf("%s-%d", base, seq)
 }

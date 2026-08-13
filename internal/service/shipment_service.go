@@ -553,7 +553,7 @@ func (s *ShipmentService) CreateWaybill(ctx context.Context, token string, id ui
 
 	client := newSFClient(carrier)
 	// 面单「订单号」用平台订单号（如 OC202608110009），无则回退 SC{发货单id}
-	orderID := sfCustomerOrderID(shipment)
+	orderID := s.resolveSFCustomerOrderID(shipment)
 	result, err := client.CreateOrder(ctx, sf.CreateOrderRequest{
 		OrderID:      orderID,
 		UseMonthly:   shipment.UseMonthly,
@@ -631,6 +631,45 @@ func firstNonEmptyTrim(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// resolveSFCustomerOrderID 丰桥客户订单号：首次业务单号，取消后再下为 -2、-3…
+func (s *ShipmentService) resolveSFCustomerOrderID(shipment *model.Shipment) string {
+	if shipment == nil {
+		return ""
+	}
+	base := sfCustomerOrderBase(shipment)
+	if base == "" {
+		return shipmentOrderID(shipment.ID)
+	}
+	seq := s.nextSFOrderSeq(shipment)
+	return formatSFCustomerOrderID(base, seq)
+}
+
+// nextSFOrderSeq 同业务单下，已取过号（含已取消）的次数 + 1。
+func (s *ShipmentService) nextSFOrderSeq(shipment *model.Shipment) int {
+	if shipment == nil {
+		return 1
+	}
+	dbq := s.db().Model(&model.Shipment{}).Where("tenant_id = ?", s.tenantID)
+	if shipment.ID > 0 {
+		dbq = dbq.Where("id <> ?", shipment.ID)
+	}
+	switch {
+	case shipment.OrderCoreOrderID > 0:
+		dbq = dbq.Where("order_core_order_id = ?", shipment.OrderCoreOrderID)
+	case strings.TrimSpace(shipment.OrderNo) != "":
+		dbq = dbq.Where("order_no = ?", strings.TrimSpace(shipment.OrderNo))
+	default:
+		return 1
+	}
+	// 仅统计曾向顺丰取号/留下客户订单号的发货单
+	dbq = dbq.Where("(COALESCE(mail_no, '') <> '' OR COALESCE(sf_order_id, '') <> '')")
+	var n int64
+	if err := dbq.Count(&n).Error; err != nil {
+		return 1
+	}
+	return int(n) + 1
 }
 
 func (s *ShipmentService) Print(ctx context.Context, id uint64) (*model.Shipment, error) {
@@ -1081,7 +1120,8 @@ func (s *ShipmentService) Cancel(ctx context.Context, token string, id uint64) (
 			return nil, fmt.Errorf("%w: 物流账号无效，无法取消顺丰单", ErrBadRequest)
 		}
 		client := newSFClient(carrier)
-		sfOrderID := firstNonEmptyTrim(shipment.SFOrderID, sfCustomerOrderID(shipment))
+		// 取消必须用下单时写入的 sfOrderId；勿按当前序号重算（会变成 -2 导致取消失败）
+		sfOrderID := firstNonEmptyTrim(shipment.SFOrderID, sfCustomerOrderBase(shipment), shipmentOrderID(shipment.ID))
 		if err := client.CancelOrder(ctx, sfOrderID, mailNo, 2); err != nil {
 			return nil, fmt.Errorf("取消顺丰快递单失败: %w", err)
 		}
