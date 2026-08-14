@@ -1261,6 +1261,15 @@ func (s *ShipmentService) ConfirmKdzsShip(ctx context.Context, token string, in 
 	if expressCompany == "" {
 		expressCompany = "快递"
 	}
+	expressNo := strings.TrimSpace(in.ExpressNo)
+
+	// 幂等：同订单同运单号已有未取消发货单时复用，避免网关失败/重试产生重复单
+	if existing, ok := s.findActiveKdzsShipment(in.OrderID, expressNo); ok {
+		if err := s.shipOrderCore(ctx, token, in.OrderID, firstNonEmptyTrim(expressCompany, existing.ExpressCompany), expressNo, existing.Items); err != nil {
+			return nil, fmt.Errorf("发货单已存在，回写订单中心失败: %w", err)
+		}
+		return s.Get(existing.ID)
+	}
 
 	order := in.Order
 	cargoName := "商品"
@@ -1315,7 +1324,7 @@ func (s *ShipmentService) ConfirmKdzsShip(ctx context.Context, token string, in 
 		ReceiverCity:     strings.TrimSpace(order.ReceiverCity),
 		ReceiverCounty:   strings.TrimSpace(order.ReceiverCounty),
 		ReceiverAddress:  strings.TrimSpace(order.ReceiverAddress),
-		MailNo:           strings.TrimSpace(in.ExpressNo),
+		MailNo:           expressNo,
 		ShipVia:          model.ShipViaKdzs,
 		ExpressCompany:   expressCompany,
 		Status:           model.ShipmentStatusPrinted,
@@ -1329,10 +1338,28 @@ func (s *ShipmentService) ConfirmKdzsShip(ctx context.Context, token string, in 
 		return nil, err
 	}
 
-	if err := s.shipOrderCore(ctx, token, in.OrderID, expressCompany, in.ExpressNo, items); err != nil {
-		return nil, err
+	if err := s.shipOrderCore(ctx, token, in.OrderID, expressCompany, expressNo, items); err != nil {
+		return nil, fmt.Errorf("发货单已创建(#%d)，回写订单中心失败: %w", shipment.ID, err)
 	}
 	return s.Get(shipment.ID)
+}
+
+func (s *ShipmentService) findActiveKdzsShipment(orderCoreOrderID uint64, expressNo string) (*model.Shipment, bool) {
+	if orderCoreOrderID == 0 || strings.TrimSpace(expressNo) == "" {
+		return nil, false
+	}
+	var list []model.Shipment
+	err := s.db().
+		Where("tenant_id = ? AND order_core_order_id = ? AND mail_no = ? AND status <> ?",
+			s.tenantID, orderCoreOrderID, strings.TrimSpace(expressNo), model.ShipmentStatusCancelled).
+		Order("id ASC").
+		Limit(1).
+		Preload("Items").
+		Find(&list).Error
+	if err != nil || len(list) == 0 {
+		return nil, false
+	}
+	return &list[0], true
 }
 
 func (s *ShipmentService) shipOrderCore(ctx context.Context, token string, orderID uint64, expressCompany, expressNo string, shipmentItems []model.ShipmentItem) error {

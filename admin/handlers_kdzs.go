@@ -3,6 +3,7 @@ package admin
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"shippingcore/internal/dto"
 	"shippingcore/internal/integrations/ordercore"
@@ -198,7 +199,12 @@ func (h *Handlers) ConfirmKdzsShip(c *gin.Context) {
 	}
 	data, err := h.shipment(c).ConfirmKdzsShip(c.Request.Context(), authcontext.BearerToken(c), &in)
 	if err != nil {
-		response.Fail(c, http.StatusBadGateway, err.Error())
+		status := http.StatusBadGateway
+		msg := err.Error()
+		if err == service.ErrBadRequest || strings.Contains(msg, "回写订单中心失败") || strings.Contains(msg, "请求参数") {
+			status = http.StatusBadRequest
+		}
+		response.Fail(c, status, msg)
 		return
 	}
 	response.OK(c, data)

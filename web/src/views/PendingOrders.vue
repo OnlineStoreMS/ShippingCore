@@ -822,6 +822,7 @@ const primaryShipLabel = computed(() => {
 })
 
 async function submitKdzsConfirm() {
+  if (loading.ship) return
   if (!ensureShipItemsSelected()) return
   const rows = kdzsExpressRows.value
   if (!rows.length) return

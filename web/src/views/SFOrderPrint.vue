@@ -144,6 +144,9 @@ const form = reactive({
   pasteText: '',
   platform: '',
   shopId: '',
+  shopName: '',
+  sourceChannel: '',
+  manualSourceName: '',
   orderNo: '',
   sysTid: '',
   sourceTid: '',
@@ -306,6 +309,9 @@ function applyHandoff(h: SFOrderHandoff) {
   const o = h.order
   form.platform = o.platform
   form.shopId = o.shopId
+  form.shopName = o.shopName || ''
+  form.sourceChannel = o.sourceChannel || ''
+  form.manualSourceName = o.manualSourceName || ''
   form.orderNo = o.orderNo || ''
   form.sysTid = o.sysTid
   form.sourceTid = o.sourceTid
@@ -709,6 +715,9 @@ function buildOrderSnapshot(): OrderSnapshot {
   return {
     platform: form.platform || 'manual',
     shopId: form.shopId || '',
+    shopName: form.shopName || '',
+    sourceChannel: form.sourceChannel || '',
+    manualSourceName: form.manualSourceName || '',
     orderNo: orderNo || (sourceTid.toUpperCase().startsWith('OC') ? sourceTid : ''),
     sysTid,
     sourceTid,
