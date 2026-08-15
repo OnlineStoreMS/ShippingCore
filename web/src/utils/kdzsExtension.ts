@@ -13,6 +13,9 @@ export interface KdzsHandoffOrder {
   platformOrderId?: string
   sysTid?: string
   tid?: string
+  /** 付款/下单时间，用于快递助手「下单时间」筛选 */
+  payTime?: string
+  orderedAt?: string
   goods?: KdzsHandoffGoods[]
 }
 
@@ -23,6 +26,9 @@ export interface KdzsHandoffPayload {
   templateName: string
   templateId?: string
   orders: KdzsHandoffOrder[]
+  /** 快递助手下单时间筛选：YYYY-MM-DD HH:mm:ss */
+  orderTimeFrom?: string
+  orderTimeTo?: string
   /** 固定 false：打印由人工 */
   autoPrint: false
 }

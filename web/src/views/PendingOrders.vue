@@ -355,6 +355,26 @@ function formatPayTime(v?: string) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 
+/** 快递助手下单时间筛选：按任务订单付款/下单日聚合为当日 00:00:00 ~ 23:59:59 */
+function buildKdzsOrderTimeRange(orders: OMSOrder[]): { from: string; to: string } | null {
+  const times: number[] = []
+  for (const o of orders) {
+    const raw = o.payTime || o.orderedAt
+    if (!raw) continue
+    const d = new Date(raw)
+    if (!Number.isNaN(d.getTime())) times.push(d.getTime())
+  }
+  if (!times.length) return null
+  const min = new Date(Math.min(...times))
+  const max = new Date(Math.max(...times))
+  const p = (n: number) => String(n).padStart(2, '0')
+  const ymd = (d: Date) => `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+  return {
+    from: `${ymd(min)} 00:00:00`,
+    to: `${ymd(max)} 23:59:59`,
+  }
+}
+
 /** 部分发货订单：商品行附带已发标记（按运单明细汇总） */
 function goodsRowsWithShipMark(order: OMSOrder) {
   const shippedMap = order.shipStatus === 'partial_shipped' ? shippedQtyByItem(order) : {}
@@ -685,6 +705,8 @@ async function openKdzsBatchPrint() {
         platformOrderId: o.platformOrderId || '',
         sysTid: o.platformSysTid || '',
         tid: o.platformOrderId || '',
+        payTime: o.payTime || '',
+        orderedAt: o.orderedAt || '',
         goods: (snap.goods || []).map((g) => ({
           title: g.title,
           skuName: g.skuName,
@@ -693,6 +715,7 @@ async function openKdzsBatchPrint() {
         })),
       }
     })
+    const timeRange = buildKdzsOrderTimeRange(shipTargets.value)
     const payload: KdzsHandoffPayload = {
       v: 1,
       createdAt: Date.now(),
@@ -700,6 +723,8 @@ async function openKdzsBatchPrint() {
       templateName: tpl?.templateName || '',
       templateId: tpl?.templateId,
       orders: handoffOrders,
+      orderTimeFrom: timeRange?.from,
+      orderTimeTo: timeRange?.to,
       autoPrint: false,
     }
     const session = await shippingApi.createKdzsHelperHandoff(
