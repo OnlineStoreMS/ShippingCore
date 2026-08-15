@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "OSMS 快递助手打单助手",
-  "version": "1.0.8",
+  "version": "1.0.7",
   "description": "从发货中心带入订单/模板/商品勾选到快递助手批打页；打印由人工点击。",
   "permissions": ["storage", "tabs"],
   "host_permissions": [
