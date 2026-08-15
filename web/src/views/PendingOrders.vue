@@ -23,6 +23,11 @@ import {
   savePrinterSelection,
   type LocalPrinter,
 } from '../utils/sfPrintPlugin'
+import {
+  isKdzsHelperInstalled,
+  sendKdzsHelperHandoff,
+  type KdzsHandoffOrder,
+} from '../utils/kdzsExtension'
 
 const TEMPLATE_MEMORY_KEY = 'shippingcore.sf.printTemplateKey'
 
@@ -51,6 +56,7 @@ const allTemplates = ref<ExpressTemplate[]>([])
 const selectedOrders = ref<OMSOrder[]>([])
 const shipDialogVisible = ref(false)
 const confirmKdzsVisible = ref(false)
+const kdzsHelperReady = ref(false)
 const shipTargets = ref<OMSOrder[]>([])
 const printMode = ref<PrintMode>('kdzs')
 /** 顺丰：标准寄件页 / 快速下单后选模板打印机 */
@@ -663,6 +669,7 @@ function onPrintModeChange() {
 async function openKdzsBatchPrint() {
   const order = shipTargets.value[0]
   if (!order) return
+  if (!ensureShipItemsSelected()) return
   if (!selectedTemplateId.value) {
     ElMessage.warning('请选择快递模板')
     return
@@ -670,6 +677,33 @@ async function openKdzsBatchPrint() {
   loading.ship = true
   try {
     const platform = orderPlatformCode(order)
+    const tpl = selectedTemplate.value
+    const handoffOrders: KdzsHandoffOrder[] = shipTargets.value.map((o) => {
+      const snap = snapshotForShip(o)
+      return {
+        orderNo: o.orderNo || '',
+        platformSysTid: o.platformSysTid || '',
+        platformOrderId: o.platformOrderId || '',
+        sysTid: o.platformSysTid || '',
+        tid: o.platformOrderId || '',
+        goods: (snap.goods || []).map((g) => ({
+          title: g.title,
+          skuName: g.skuName,
+          outerId: g.outerId,
+          num: g.num,
+        })),
+      }
+    })
+    const helperOk = await sendKdzsHelperHandoff({
+      v: 1,
+      createdAt: Date.now(),
+      platform,
+      templateName: tpl?.templateName || '',
+      templateId: tpl?.templateId,
+      orders: handoffOrders,
+      autoPrint: false,
+    })
+
     const data = await shippingApi.getBatchPrintURL(platform)
     const url = data?.url
     if (!url) throw new Error('未获取到打单地址')
@@ -678,12 +712,13 @@ async function openKdzsBatchPrint() {
       ElMessage.warning('浏览器拦截了新窗口，请允许弹窗后重试')
       return
     }
-    const tip = selectedTemplate.value?.templateName
-      ? `已打开快递助手，请选择模板「${selectedTemplate.value.templateName}」后打印。完成后点击「确认已打单发货」回填运单号。`
-      : '已打开快递助手打单页，完成后请点击「确认已打单发货」回填运单号。'
+    const tip = helperOk
+      ? `已打开快递助手，并交给浏览器插件自动选单/选模板「${tpl?.templateName || ''}」（请人工点打印）。完成后回填运单号。`
+      : tpl?.templateName
+        ? `已打开快递助手，请选择模板「${tpl.templateName}」后打印。未检测到打单助手插件时可安装：ShippingCore/extensions/kdzs-print-helper`
+        : '已打开快递助手打单页，完成后请点击「确认已打单发货」回填运单号。'
     ElMessage.success(tip)
     confirmKdzsVisible.value = true
-    // 打开确认框后尝试从快递助手同步单号（打印完成后再点「同步单号」也可）
     void syncWaybillsFromKdzs()
   } catch (e) {
     ElMessage.error((e as Error).message || '打开快递助手失败')
@@ -867,6 +902,13 @@ function closeShipDialog() {
 }
 
 onMounted(async () => {
+  const syncHelper = () => {
+    kdzsHelperReady.value = isKdzsHelperInstalled()
+  }
+  syncHelper()
+  window.setTimeout(syncHelper, 400)
+  window.setTimeout(syncHelper, 1500)
+
   await loadOptions()
   const hasDeepLink =
     !!route.query.orderId ||
@@ -1079,7 +1121,9 @@ onMounted(async () => {
               type="info"
               :closable="false"
               :title="selectedTemplate
-                ? `将打开快递助手打单页，请在助手中选择模板「${selectedTemplate.templateName}」并完成打印，然后回填运单号发货。`
+                ? (kdzsHelperReady
+                  ? `将打开快递助手：插件自动选单并尝试选模板「${selectedTemplate.templateName}」；请人工点打印，再回填运单号。`
+                  : `将打开快递助手打单页。建议安装浏览器插件自动选单（extensions/kdzs-print-helper）；请选择模板「${selectedTemplate.templateName}」并人工打印后回填运单号。`)
                 : '请先选择快递模板'"
             />
           </template>

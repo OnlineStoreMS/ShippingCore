@@ -183,9 +183,9 @@ export function goodsCargoName(goods: OrderGoods[]): string {
   return first ? goodsShipName(first) : '商品'
 }
 
-export function goodsParcelQty(goods: OrderGoods[]): number {
-  const sum = goods.reduce((acc, g) => acc + (g.num > 0 ? g.num : 0), 0)
-  return sum > 0 ? sum : 1
+export function goodsParcelQty(_goods: OrderGoods[]): number {
+  // 多商品默认同装一包；顺丰 >1 才是子母件
+  return 1
 }
 
 /** 简单粘贴识别：姓名 手机 地址 */

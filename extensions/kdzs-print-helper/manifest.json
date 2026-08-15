@@ -1,0 +1,56 @@
+{
+  "manifest_version": 3,
+  "name": "OSMS 快递助手打单助手",
+  "version": "1.0.0",
+  "description": "从发货中心带入订单/模板/商品勾选到快递助手批打页；打印由人工点击。",
+  "permissions": ["storage", "tabs"],
+  "host_permissions": [
+    "https://*.kdzs.com/*",
+    "http://*.kdzs.com/*",
+    "https://osms.zfcycle.com/*",
+    "http://localhost:5181/*",
+    "http://127.0.0.1:5181/*",
+    "http://192.168.3.41:5181/*",
+    "http://192.168.3.41:8080/*",
+    "http://192.168.3.41:8443/*",
+    "https://192.168.3.41:8443/*"
+  ],
+  "background": {
+    "service_worker": "background/service-worker.js"
+  },
+  "action": {
+    "default_title": "OSMS 快递助手打单助手",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://osms.zfcycle.com/*",
+        "http://localhost:5181/*",
+        "http://127.0.0.1:5181/*",
+        "http://192.168.3.41:5181/*",
+        "http://192.168.3.41:8080/*",
+        "http://192.168.3.41:8443/*",
+        "https://192.168.3.41:8443/*"
+      ],
+      "js": ["content/shipping-bridge.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["https://*.kdzs.com/*", "http://*.kdzs.com/*"],
+      "js": ["content/kdzs-automate.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ]
+}

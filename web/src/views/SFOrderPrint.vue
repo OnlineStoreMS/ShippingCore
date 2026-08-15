@@ -128,6 +128,8 @@ const form = reactive({
   payMode: 'monthly' as PayMode,
   expressType: loadSavedExpressType(),
   fillMode: 'unit' as FillMode,
+  /** 顺丰下单总包裹数（>1 为子母件）；多商品默认同装一包=1，不按商品行累加 */
+  totalParcelQty: 1,
   cargoLines: [emptyCargoLine('文件')] as CargoLine[],
   pickupMode: 'self' as 'self' | 'appoint',
   /** 级联值：[dayOffset, slotKey]，如 [0, '09:00'] */
@@ -236,18 +238,18 @@ function lineContribCount(line: CargoLine): number {
 /** 表头合计：有物品名的行参与汇总（空行不计入，避免点「+」就抬高合计） */
 const cargoTotals = computed(() => {
   const lines = namedCargoLines.value.length ? namedCargoLines.value : form.cargoLines
-  let parcelQty = 0
   let weight = 0
   let volume = 0
   let itemCount = 0
   for (const line of lines) {
-    parcelQty += line.parcelQty > 0 ? line.parcelQty : 0
     weight += lineContribWeight(line)
     volume += lineContribVolume(line)
     itemCount += lineContribCount(line)
   }
+  const totalParcel = Number(form.totalParcelQty)
   return {
-    parcelQty: parcelQty || 1,
+    // 顺丰 parcelQty：用总包裹数，默认 1；勿按多商品行累加（否则会误成子母件）
+    parcelQty: totalParcel > 0 ? totalParcel : 1,
     weight: Math.round(weight * 1000) / 1000,
     volume: Math.round(volume * 1_000_000) / 1_000_000,
     itemCount: itemCount || 0,
@@ -338,6 +340,7 @@ function applyHandoff(h: SFOrderHandoff) {
     .filter((x): x is CargoLine => !!x)
   form.cargoLines = lines.length ? lines : [emptyCargoLine('文件')]
   form.fillMode = 'unit'
+  form.totalParcelQty = 1
 }
 
 async function uploadRemarkImage(options: UploadRequestOptions) {
@@ -751,10 +754,11 @@ function validate(): string | null {
     }
   }
   for (const [i, line] of namedCargoLines.value.entries()) {
-    if (!(line.parcelQty > 0)) return `第 ${i + 1} 行请填写包裹数`
+    if (!(line.parcelQty > 0)) return `第 ${i + 1} 行请填写行包裹数（用于重量/件数换算）`
     if (!(line.weight > 0)) return `第 ${i + 1} 行请填写重量`
     if (!(line.itemCount > 0)) return `第 ${i + 1} 行请填写物品数`
   }
+  if (!(form.totalParcelQty > 0)) return '请填写总包裹数（顺丰下单用，默认 1；大于 1 为子母件）'
   if (!(cargoTotals.value.weight > 0)) return '请填写包裹重量'
   if (!(cargoTotals.value.itemCount > 0)) return '请填写物品件数'
   if (!form.expressType) return '请选择物流产品'
@@ -1019,12 +1023,33 @@ onMounted(async () => {
         · 两种模式均可添加多个物品行，表头显示全部行合计
       </p>
 
+      <div class="sf-parcel-bar">
+        <span class="cell-label required">总包裹数（顺丰）</span>
+        <el-input-number
+          v-model="form.totalParcelQty"
+          :min="1"
+          :max="99"
+          controls-position="right"
+        />
+        <el-tooltip
+          content="传给顺丰的包裹数。多商品默认 1（一票一件）；大于 1 才会打成子母件。"
+          placement="top"
+        >
+          <el-icon class="tip-ico"><InfoFilled /></el-icon>
+        </el-tooltip>
+        <span class="muted parcel-hint">当前下单：{{ cargoTotals.parcelQty }} 包</span>
+      </div>
+
       <div class="cargo-table-wrap">
         <div class="cargo-table-hd">
           <div class="col-name cell-label required">物品</div>
           <div class="col-parcel cell-label required">
-            包裹数
-            <el-tooltip content="包裹总数量=母件数量+子件数量。一单需要几个包裹，填写对应数量即可" placement="top">
+            行包裹
+            <span class="cell-sub">（换算用）</span>
+            <el-tooltip
+              content="仅用于本行重量/件数按「单件」模式换算，不会直接作为顺丰子母件数。顺丰总包裹数见上方。"
+              placement="top"
+            >
               <el-icon class="tip-ico"><InfoFilled /></el-icon>
             </el-tooltip>
           </div>
@@ -1566,6 +1591,21 @@ onMounted(async () => {
   font-size: 12px;
   color: #909399;
   line-height: 1.4;
+}
+.sf-parcel-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 12px;
+  flex-wrap: wrap;
+}
+.sf-parcel-bar .parcel-hint {
+  font-size: 12px;
+  color: #909399;
+}
+.sf-parcel-bar .tip-ico {
+  color: #909399;
+  cursor: help;
 }
 .lib-link { font-size: 13px; }
 .item-lib {

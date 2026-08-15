@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>OSMS 快递助手打单助手</title>
+    <style>
+      body {
+        margin: 0;
+        min-width: 280px;
+        font: 13px/1.45 system-ui, sans-serif;
+        color: #0f172a;
+        background: #f8fafc;
+      }
+      main { padding: 12px 14px 16px; }
+      h1 { font-size: 14px; margin: 0 0 8px; }
+      .ok { color: #15803d; }
+      .warn { color: #b45309; }
+      pre {
+        background: #e2e8f0;
+        border-radius: 8px;
+        padding: 8px;
+        white-space: pre-wrap;
+        font-size: 11px;
+        max-height: 160px;
+        overflow: auto;
+      }
+      ol { margin: 8px 0 0; padding-left: 18px; }
+      button {
+        margin-top: 8px;
+        border: 0;
+        background: #2563eb;
+        color: #fff;
+        border-radius: 8px;
+        padding: 6px 10px;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>OSMS 快递助手打单助手</h1>
+      <div id="status" class="warn">读取中…</div>
+      <pre id="task">无任务</pre>
+      <ol>
+        <li>发货中心选好模板与商品，点「打开快递助手」</li>
+        <li>插件自动勾选订单 / 点选择发货 / 尝试选模板</li>
+        <li>人工确认后点击打印</li>
+        <li>回发货中心同步单号并确认发货</li>
+      </ol>
+      <button type="button" id="clear">清除当前任务</button>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>
