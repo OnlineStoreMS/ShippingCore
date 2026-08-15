@@ -564,6 +564,11 @@ export const shippingApi = {
     client
       .get('/kdzs/batch-print-url', { params: { platform } })
       .then((r) => unwrap<{ url: string; platform: string }>(r)),
+  /** 创建打单助手云端任务，返回短时 token（扩展凭此拉取） */
+  createKdzsHelperHandoff: (payload: Record<string, unknown>) =>
+    client
+      .post('/kdzs/helper-handoff-sessions', { payload })
+      .then((r) => unwrap<{ token: string; expireAt: string }>(r)),
   queryPrintWaybills: (body: {
     platform: string
     items: { sysTid?: string; tid?: string }[]

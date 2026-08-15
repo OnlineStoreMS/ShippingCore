@@ -1,12 +1,14 @@
 {
   "manifest_version": 3,
   "name": "OSMS 快递助手打单助手",
-  "version": "1.0.0",
+  "version": "1.0.3",
   "description": "从发货中心带入订单/模板/商品勾选到快递助手批打页；打印由人工点击。",
   "permissions": ["storage", "tabs"],
   "host_permissions": [
     "https://*.kdzs.com/*",
     "http://*.kdzs.com/*",
+    "https://*.zfcycle.com/*",
+    "http://*.zfcycle.com/*",
     "https://osms.zfcycle.com/*",
     "http://localhost:5181/*",
     "http://127.0.0.1:5181/*",
@@ -35,6 +37,8 @@
   "content_scripts": [
     {
       "matches": [
+        "https://*.zfcycle.com/*",
+        "http://*.zfcycle.com/*",
         "https://osms.zfcycle.com/*",
         "http://localhost:5181/*",
         "http://127.0.0.1:5181/*",
@@ -44,7 +48,8 @@
         "https://192.168.3.41:8443/*"
       ],
       "js": ["content/shipping-bridge.js"],
-      "run_at": "document_start"
+      "run_at": "document_start",
+      "all_frames": true
     },
     {
       "matches": ["https://*.kdzs.com/*", "http://*.kdzs.com/*"],

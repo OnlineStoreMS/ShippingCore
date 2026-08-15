@@ -24,9 +24,9 @@ import {
   type LocalPrinter,
 } from '../utils/sfPrintPlugin'
 import {
-  isKdzsHelperInstalled,
-  sendKdzsHelperHandoff,
+  openKdzsWithCloudToken,
   type KdzsHandoffOrder,
+  type KdzsHandoffPayload,
 } from '../utils/kdzsExtension'
 
 const TEMPLATE_MEMORY_KEY = 'shippingcore.sf.printTemplateKey'
@@ -56,7 +56,6 @@ const allTemplates = ref<ExpressTemplate[]>([])
 const selectedOrders = ref<OMSOrder[]>([])
 const shipDialogVisible = ref(false)
 const confirmKdzsVisible = ref(false)
-const kdzsHelperReady = ref(false)
 const shipTargets = ref<OMSOrder[]>([])
 const printMode = ref<PrintMode>('kdzs')
 /** 顺丰：标准寄件页 / 快速下单后选模板打印机 */
@@ -694,7 +693,7 @@ async function openKdzsBatchPrint() {
         })),
       }
     })
-    const helperOk = await sendKdzsHelperHandoff({
+    const payload: KdzsHandoffPayload = {
       v: 1,
       createdAt: Date.now(),
       platform,
@@ -702,22 +701,23 @@ async function openKdzsBatchPrint() {
       templateId: tpl?.templateId,
       orders: handoffOrders,
       autoPrint: false,
-    })
+    }
+    const session = await shippingApi.createKdzsHelperHandoff(
+      payload as unknown as Record<string, unknown>,
+    )
+    if (!session?.token) throw new Error('创建打单任务失败')
 
     const data = await shippingApi.getBatchPrintURL(platform)
-    const url = data?.url
-    if (!url) throw new Error('未获取到打单地址')
-    const win = window.open(url, '_blank')
+    const rawUrl = data?.url
+    if (!rawUrl) throw new Error('未获取到打单地址')
+    const win = openKdzsWithCloudToken(rawUrl, session.token)
     if (!win) {
       ElMessage.warning('浏览器拦截了新窗口，请允许弹窗后重试')
       return
     }
-    const tip = helperOk
-      ? `已打开快递助手，并交给浏览器插件自动选单/选模板「${tpl?.templateName || ''}」（请人工点打印）。完成后回填运单号。`
-      : tpl?.templateName
-        ? `已打开快递助手，请选择模板「${tpl.templateName}」后打印。未检测到打单助手插件时可安装：ShippingCore/extensions/kdzs-print-helper`
-        : '已打开快递助手打单页，完成后请点击「确认已打单发货」回填运单号。'
-    ElMessage.success(tip)
+    ElMessage.success(
+      `已打开快递助手并上传打单任务。请确认右下角「OSMS 打单助手」出现订单后，人工选模板/打印；完成后回填运单号。`,
+    )
     confirmKdzsVisible.value = true
     void syncWaybillsFromKdzs()
   } catch (e) {
@@ -902,13 +902,6 @@ function closeShipDialog() {
 }
 
 onMounted(async () => {
-  const syncHelper = () => {
-    kdzsHelperReady.value = isKdzsHelperInstalled()
-  }
-  syncHelper()
-  window.setTimeout(syncHelper, 400)
-  window.setTimeout(syncHelper, 1500)
-
   await loadOptions()
   const hasDeepLink =
     !!route.query.orderId ||
@@ -1121,9 +1114,7 @@ onMounted(async () => {
               type="info"
               :closable="false"
               :title="selectedTemplate
-                ? (kdzsHelperReady
-                  ? `将打开快递助手：插件自动选单并尝试选模板「${selectedTemplate.templateName}」；请人工点打印，再回填运单号。`
-                  : `将打开快递助手打单页。建议安装浏览器插件自动选单（extensions/kdzs-print-helper）；请选择模板「${selectedTemplate.templateName}」并人工打印后回填运单号。`)
+                ? `将打开快递助手并上传打单任务到云端；安装插件（extensions/kdzs-print-helper v1.0.2+）后自动选单/选模板「${selectedTemplate.templateName}」。请人工点打印，再回填运单号。`
                 : '请先选择快递模板'"
             />
           </template>

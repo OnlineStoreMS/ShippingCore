@@ -41,6 +41,7 @@ func Setup(db *gorm.DB, cfg *config.Config) *gin.Engine {
 	h := admin.NewHandlers(carrierSvc, shipperSvc, shipmentSvc, kdzsSvc)
 	uploadH := admin.NewUploadHandler(store)
 	photoH := admin.NewPhotoUploadHandler(store)
+	kdzsHandoffH := admin.NewKdzsHelperHandoffHandler()
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok", "service": "shippingcore"})
@@ -54,10 +55,12 @@ func Setup(db *gorm.DB, cfg *config.Config) *gin.Engine {
 	adminGroup.POST("/upload", uploadH.Upload)
 	adminGroup.POST("/photo-upload-sessions", photoH.CreateSession)
 	adminGroup.GET("/photo-upload-sessions/:token", photoH.GetSession)
+	adminGroup.POST("/kdzs/helper-handoff-sessions", kdzsHandoffH.CreateSession)
 
 	mobile := v1.Group("/mobile")
 	mobile.GET("/photo-upload/:token", photoH.MobileGet)
 	mobile.POST("/photo-upload/:token", photoH.MobileUpload)
+	mobile.GET("/kdzs-helper-handoff/:token", kdzsHandoffH.MobileGet)
 
 	return r
 }

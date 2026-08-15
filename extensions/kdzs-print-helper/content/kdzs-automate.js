@@ -414,36 +414,138 @@
       if (!handoff) status.textContent = '无待办任务'
       else {
         const n = (handoff.orders || []).length
-        status.textContent = `任务：${n} 单 · 模板 ${handoff.templateName || '未指定'}${running ? ' · 执行中…' : ''}`
+        const nos = (handoff.orders || [])
+          .map((o) => o.orderNo || o.platformOrderId || o.platformSysTid || '')
+          .filter(Boolean)
+          .slice(0, 3)
+          .join('、')
+        const more = n > 3 ? ` 等${n}单` : ''
+        status.textContent = `任务：${n} 单 · ${nos || '无单号'}${more} · 模板 ${handoff.templateName || '未指定'}${running ? ' · 执行中…' : ''}`
       }
     }
     if (logs) logs.textContent = lastLog.join('\n') || '等待任务…'
     if (runBtn instanceof HTMLButtonElement) runBtn.disabled = running
   }
 
-  function loadHandoff(manual = false) {
+  const OSMS_HANDOFF_QUERY = '_osms_ht'
+  const WINDOW_TOKEN_PREFIX = 'OSMS_HT:'
+  /** 首次从 URL/name 读出后缓存，避免重试时已被清掉 */
+  let pendingCloudToken = ''
+
+  function readTokenFromSearch(search) {
+    try {
+      return new URLSearchParams(search).get(OSMS_HANDOFF_QUERY) || ''
+    } catch {
+      return ''
+    }
+  }
+
+  /** 从 URL query / hash / window.name 取云端 token（只消费一次，之后用缓存） */
+  function peekCloudToken() {
+    if (pendingCloudToken) return pendingCloudToken
+
+    let token = ''
+    try {
+      token = readTokenFromSearch(location.search) || ''
+      if (!token && location.hash) {
+        const hash = location.hash.replace(/^#/, '')
+        const qIdx = hash.indexOf('?')
+        if (qIdx >= 0) token = readTokenFromSearch(hash.slice(qIdx)) || ''
+        if (!token) {
+          const m = hash.match(new RegExp(`[?&#]?${OSMS_HANDOFF_QUERY}=([^&]+)`))
+          if (m) token = decodeURIComponent(m[1])
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+
+    if (!token) {
+      try {
+        const n = String(window.name || '')
+        if (n.startsWith(WINDOW_TOKEN_PREFIX)) {
+          token = n.slice(WINDOW_TOKEN_PREFIX.length).trim()
+          window.name = ''
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+
+    token = String(token || '').trim()
+    if (!token) return ''
+
+    pendingCloudToken = token
+    try {
+      if (location.search.includes(OSMS_HANDOFF_QUERY)) {
+        const u = new URL(location.href)
+        u.searchParams.delete(OSMS_HANDOFF_QUERY)
+        history.replaceState(null, '', u.toString())
+      }
+    } catch {
+      /* ignore */
+    }
+    return pendingCloudToken
+  }
+
+  function fetchCloudHandoff(token) {
     return new Promise((resolve) => {
-      chrome.runtime.sendMessage({ type: 'KDZS_HELPER_GET_HANDOFF' }, (res) => {
+      chrome.runtime.sendMessage({ type: 'KDZS_HELPER_FETCH_CLOUD', token }, (res) => {
         if (chrome.runtime.lastError) {
-          log(chrome.runtime.lastError.message, 'error')
-          resolve(false)
+          resolve({ ok: false, error: chrome.runtime.lastError.message })
           return
         }
-        handoff = res?.payload || null
-        renderPanel()
-        if (handoff) {
-          log(`已加载任务：${(handoff.orders || []).length} 单`)
-          if (!manual && !running) {
-            // 自动执行一次
-            void runAutomation()
-          }
-        } else if (manual) {
-          log('存储中无任务')
-        }
-        resolve(!!handoff)
+        resolve(res || { ok: false, error: 'empty response' })
       })
     })
   }
+
+  function applyHandoff(payload, source, manual) {
+    handoff = { ...payload, savedAt: payload.savedAt || Date.now() }
+    renderPanel()
+    log(`已加载任务（${source}）：${(handoff.orders || []).length} 单`)
+    if (!manual && !running) void runAutomation()
+  }
+
+  function loadHandoff(manual = false) {
+    return (async () => {
+      const cloudToken = peekCloudToken()
+      if (cloudToken) {
+        log(`正在从云端拉取任务…`)
+        const res = await fetchCloudHandoff(cloudToken)
+        if (res?.ok && res.payload) {
+          pendingCloudToken = ''
+          applyHandoff(res.payload, '云端', manual)
+          return true
+        }
+        log(`云端拉取失败：${res?.error || '未知错误'}`, 'error')
+      }
+
+      const local = await new Promise((resolve) => {
+        chrome.runtime.sendMessage({ type: 'KDZS_HELPER_GET_HANDOFF' }, (res) => {
+          if (chrome.runtime.lastError) {
+            resolve(null)
+            return
+          }
+          resolve(res?.payload || null)
+        })
+      })
+      if (local) {
+        applyHandoff(local, '扩展存储', manual)
+        return true
+      }
+
+      handoff = null
+      renderPanel()
+      if (manual) {
+        log('无任务：请从发货中心点「打开快递助手」（会带云端 token）')
+      }
+      return false
+    })()
+  }
+
+  // 仅顶层页执行，避免 iframe 抢先一次性消费 token
+  if (window !== window.top) return
 
   // 仅在批打相关页显示面板；其它页也允许手动读取
   const href = location.href
@@ -452,10 +554,20 @@
 
   if (likelyPrint) {
     renderPanel()
-    // SPA 路由晚到，延迟加载并自动跑
-    setTimeout(() => void loadHandoff(false), 1200)
+    void loadHandoff(false)
     setTimeout(() => {
       if (!handoff) void loadHandoff(false)
-    }, 3500)
+    }, 1500)
+    setTimeout(() => {
+      if (!handoff) void loadHandoff(false)
+    }, 4000)
+
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'local' || !changes.kdzsHandoff) return
+      const next = changes.kdzsHandoff.newValue
+      if (!next) return
+      if (handoff && handoff.createdAt === next.createdAt) return
+      applyHandoff(next, '存储更新', false)
+    })
   }
 })()
