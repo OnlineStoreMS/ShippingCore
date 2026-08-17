@@ -466,6 +466,34 @@ func (h *Handlers) DeleteShipmentsByOrderCore(c *gin.Context) {
 	response.OK(c, gin.H{"deleted": n})
 }
 
+func (h *Handlers) SyncShipmentShippedAt(c *gin.Context) {
+	var in dto.SyncShippedAtDTO
+	if err := c.ShouldBindJSON(&in); err != nil {
+		response.Fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	n, err := h.shipment(c).SyncShippedAtByMailNo(in.OrderCoreOrderID, in.MailNo, in.ShippedAt)
+	if err != nil {
+		httputil.HandleServiceError(c, err)
+		return
+	}
+	response.OK(c, gin.H{"updated": n})
+}
+
+func (h *Handlers) UpsertKdzsFromSync(c *gin.Context) {
+	var in dto.UpsertKdzsFromSyncDTO
+	if err := c.ShouldBindJSON(&in); err != nil {
+		response.Fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	item, err := h.shipment(c).UpsertKdzsFromSync(&in)
+	if err != nil {
+		httputil.HandleServiceError(c, err)
+		return
+	}
+	response.OK(c, item)
+}
+
 // ── Pending orders proxy ──
 
 func (h *Handlers) ListPendingOrders(c *gin.Context) {

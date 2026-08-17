@@ -209,3 +209,50 @@ func (h *Handlers) ConfirmKdzsShip(c *gin.Context) {
 	}
 	response.OK(c, data)
 }
+
+func (h *Handlers) ConfirmKdzsSplitShip(c *gin.Context) {
+	var in dto.ConfirmKdzsSplitShipDTO
+	if err := c.ShouldBindJSON(&in); err != nil {
+		response.Fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	data, err := h.shipment(c).ConfirmKdzsSplitShip(c.Request.Context(), authcontext.BearerToken(c), &in)
+	if err != nil {
+		status := http.StatusBadGateway
+		msg := err.Error()
+		if err == service.ErrBadRequest || strings.Contains(msg, "请求参数") || strings.Contains(msg, "确认失败") {
+			status = http.StatusBadRequest
+		}
+		response.Fail(c, status, msg)
+		return
+	}
+	response.OK(c, data)
+}
+
+func (h *Handlers) CreateShipmentGroup(c *gin.Context) {
+	var in dto.CreateShipmentGroupDTO
+	if err := c.ShouldBindJSON(&in); err != nil {
+		response.Fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	data, err := h.shipment(c).CreateShipmentGroup(&in)
+	if err != nil {
+		httputil.HandleServiceError(c, err)
+		return
+	}
+	response.OK(c, data)
+}
+
+func (h *Handlers) GetShipmentGroup(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil {
+		response.Fail(c, http.StatusBadRequest, "invalid id")
+		return
+	}
+	data, err := h.shipment(c).GetShipmentGroup(id)
+	if err != nil {
+		httputil.HandleServiceError(c, err)
+		return
+	}
+	response.OK(c, data)
+}

@@ -280,8 +280,70 @@
     return m ? m[1] : ''
   }
 
+  async function waitForPrintBatchReady() {
+    log('等待批打页加载完成…')
+    for (let i = 0; i < 40; i++) {
+      const panel = document.querySelector('.range-picker-panel')
+      const begin = panel?.getAttribute('data-begin-date')
+      const wrap = document.querySelector('.kdzs-design-range-picker-wrapper')
+      const typeSelect = wrap?.parentElement?.querySelector('.ant-select')
+      if (panel && begin && wrap && typeSelect) {
+        // 默认历史时间范围渲染后再动手，避免点空
+        await sleep(1000)
+        log(`页面已就绪，当前时间范围 ${begin.slice(0, 10)} ~ ${(panel.getAttribute('data-end-date') || '').slice(0, 10)}`)
+        return true
+      }
+      await sleep(400)
+    }
+    log('批打页加载超时，继续尝试', 'error')
+    return false
+  }
+
+  /** 时间类型下拉：下单时间 / 打印时间 / 发货时间 —— 必须先选「下单时间」 */
+  async function ensureOrderTimeType() {
+    const wrap = document.querySelector('.kdzs-design-range-picker-wrapper')?.parentElement
+    const typeSelect = wrap?.querySelector('.ant-select')
+    if (!typeSelect) {
+      log('未找到时间类型下拉', 'error')
+      return false
+    }
+    const cur = textOf(typeSelect.querySelector('.ant-select-selection-item') || typeSelect)
+    if (cur.includes('下单时间')) {
+      log('时间类型已是「下单时间」')
+      return true
+    }
+    log(`当前时间类型「${cur || '?'}」，切换为「下单时间」`)
+    const selector = typeSelect.querySelector('.ant-select-selector') || typeSelect
+    clickEl(selector)
+    await sleep(450)
+    let opt = [...document.querySelectorAll('.ant-select-item-option')].find(
+      (el) => textOf(el).replace(/\s/g, '') === '下单时间',
+    )
+    if (!opt) {
+      // 再点一次
+      clickEl(selector)
+      await sleep(450)
+      opt = [...document.querySelectorAll('.ant-select-item-option')].find(
+        (el) => textOf(el).replace(/\s/g, '') === '下单时间',
+      )
+    }
+    if (!opt) {
+      log('下拉中未找到「下单时间」选项', 'error')
+      return false
+    }
+    clickEl(opt)
+    await sleep(350)
+    const after = textOf(typeSelect.querySelector('.ant-select-selection-item') || typeSelect)
+    if (!after.includes('下单时间')) {
+      log(`切换后仍为「${after}」`, 'error')
+      return false
+    }
+    log('已选择时间类型：下单时间')
+    return true
+  }
+
   async function ensurePickerMonth(picker, year, month) {
-    for (let i = 0; i < 24; i++) {
+    for (let i = 0; i < 36; i++) {
       const label = textOf(picker.querySelector('.picker-range-current-month'))
       const m = label.match(/(\d{4})\s*年\s*(\d{1,2})\s*月/)
       if (!m) return false
@@ -289,14 +351,14 @@
       const cm = Number(m[2])
       if (cy === year && cm === month) return true
       const diff = (year - cy) * 12 + (month - cm)
-      const heads = [...picker.querySelectorAll('span, a, div, button')].filter((el) => {
-        const t = textOf(el)
-        return t === '«' || t === '»'
-      })
-      const target = diff < 0 ? heads.find((el) => textOf(el) === '«') : heads.find((el) => textOf(el) === '»')
-      if (!target) return false
-      clickEl(target)
-      await sleep(180)
+      // 必须点这两个节点；泛搜「«」「»」容易点歪导致翻月失败
+      const btn =
+        diff < 0
+          ? picker.querySelector('.picker-range-last-month')
+          : picker.querySelector('.picker-range-next-month')
+      if (!btn) return false
+      btn.click()
+      await sleep(280)
     }
     return false
   }
@@ -304,14 +366,18 @@
   async function pickDayInPicker(picker, ymd) {
     if (!picker || !ymd) return false
     const [y, m] = ymd.split('-').map(Number)
-    await ensurePickerMonth(picker, y, m)
+    const okMonth = await ensurePickerMonth(picker, y, m)
+    if (!okMonth) {
+      log(`未能切到 ${y}年${m}月`, 'error')
+      return false
+    }
     const cell = picker.querySelector(`.day-cell[title="${ymd}"]`)
     if (!cell || cell.classList.contains('disabled')) {
       log(`日期不可选：${ymd}`, 'error')
       return false
     }
-    clickEl(cell)
-    await sleep(200)
+    cell.click()
+    await sleep(250)
     return true
   }
 
@@ -358,12 +424,20 @@
     }
 
     log(`设置下单时间：${range.fromYmd} ~ ${range.toYmd}${range.source ? `（${range.source}）` : ''}`)
-    clickEl(panel)
-    await sleep(500)
+    await ensureOrderTimeType()
+
+    const panelEl = document.querySelector('.range-picker-panel')
+    try {
+      panelEl?.scrollIntoView({ block: 'center' })
+    } catch {
+      /* ignore */
+    }
+    clickEl(panelEl)
+    await sleep(700)
 
     let pop = document.querySelector('.range-picker-popover')
     if (!pop) {
-      await sleep(400)
+      await sleep(500)
       pop = document.querySelector('.range-picker-popover')
     }
     if (!pop) {
@@ -377,6 +451,7 @@
       return false
     }
 
+    // 起、止月历都要翻到目标月再点同一天（否则只改到结束日）
     if (!(await pickDayInPicker(pickers[0], range.fromYmd))) return false
     if (!(await pickDayInPicker(pickers[1], range.toYmd))) return false
 
@@ -387,8 +462,8 @@
       log('未找到时间筛选「确定」', 'error')
       return false
     }
-    clickEl(okBtn)
-    await sleep(400)
+    okBtn.click()
+    await sleep(500)
 
     const begin = (document.querySelector('.range-picker-panel')?.getAttribute('data-begin-date') || '').slice(0, 10)
     const end = (document.querySelector('.range-picker-panel')?.getAttribute('data-end-date') || '').slice(0, 10)
@@ -619,17 +694,15 @@
       }
 
       log('开始自动化（不会自动打印）…')
-      await sleep(800)
+      await sleep(500)
+      await waitForPrintBatchReady()
 
-      for (let i = 0; i < 15; i++) {
-        if (document.body && textOf(document.body).length > 50) break
-        await sleep(400)
-      }
-
-      // 正确顺序：下单时间 → 查询 → 勾选订单 → 选模板
-      await setOrderTimeRange()
-      await clickQuery()
-      const n = await searchAndSelectOrders()
+      // 下单时间类型 → 日期范围 → 查询 → 勾选订单 → 模板
+      const n = await (async () => {
+        await setOrderTimeRange()
+        await clickQuery()
+        return searchAndSelectOrders()
+      })()
       log(`订单勾选结果：${n}/${(handoff.orders || []).length}`)
       await selectTemplate()
       await clickSelectShip()

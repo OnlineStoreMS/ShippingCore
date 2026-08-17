@@ -152,6 +152,7 @@ type CreateShipmentFromOrderDTO struct {
 	SendStartTm      string           `json:"sendStartTm,omitempty"` // 预约上门开始时间 YYYY-MM-DD HH:mm:ss
 	OrderID          uint64           `json:"orderId,omitempty"`
 	SourceSystem     string           `json:"sourceSystem,omitempty"`
+	GroupID          *uint64          `json:"groupId,omitempty"` // 拆分发货挂组
 	Order            OrderSnapshotDTO `json:"order"`
 }
 
@@ -160,12 +161,56 @@ type ConfirmKdzsShipDTO struct {
 	ExpressNo      string           `json:"expressNo" binding:"required"`
 	ExpressCompany string           `json:"expressCompany"`
 	Order          OrderSnapshotDTO `json:"order"`
+	GroupID        *uint64          `json:"groupId,omitempty"`
+}
+
+// SplitShipLineDTO 拆分发货一行：商品数量 + 运单号。
+type SplitShipLineDTO struct {
+	OrderItemID    uint64 `json:"orderItemId" binding:"required"`
+	Qty            int    `json:"qty" binding:"required"`
+	ExpressNo      string `json:"expressNo" binding:"required"`
+	ExpressCompany string `json:"expressCompany"`
+	Title          string `json:"title"`
+	SkuName        string `json:"skuName"`
+	OuterID        string `json:"outerId"`
+}
+
+// ConfirmKdzsSplitShipDTO 一次拆分确认：建发货组 + 多运单。
+type ConfirmKdzsSplitShipDTO struct {
+	OrderID        uint64            `json:"orderId" binding:"required"`
+	ExpressCompany string            `json:"expressCompany"`
+	Order          OrderSnapshotDTO  `json:"order"`
+	Lines          []SplitShipLineDTO `json:"lines" binding:"required,min=1"`
+}
+
+// CreateShipmentGroupDTO 创建拆分发货主单（顺丰等分段出单前先建组）。
+type CreateShipmentGroupDTO struct {
+	OrderID   uint64 `json:"orderId"`
+	OrderNo   string `json:"orderNo"`
+	SourceRef string `json:"sourceRef"`
+	ShipVia   string `json:"shipVia"`
 }
 
 // DeleteShipmentsByOrderCoreDTO 按订单中心销售单删除发货运单。
 type DeleteShipmentsByOrderCoreDTO struct {
 	OrderCoreOrderID uint64 `json:"orderCoreOrderId"`
 	SourceRef        string `json:"sourceRef"`
+}
+
+// SyncShippedAtDTO 按运单号对齐发货时间（与快递助手/订单中心一致）。
+type SyncShippedAtDTO struct {
+	OrderCoreOrderID uint64 `json:"orderCoreOrderId"`
+	MailNo           string `json:"mailNo" binding:"required"`
+	ShippedAt        string `json:"shippedAt" binding:"required"` // RFC3339 或 2006-01-02 15:04:05
+}
+
+// UpsertKdzsFromSyncDTO 订单中心同步快递助手已发货后，补建/对齐发货中心发货单。
+type UpsertKdzsFromSyncDTO struct {
+	OrderID        uint64           `json:"orderId" binding:"required"`
+	ExpressNo      string           `json:"expressNo" binding:"required"`
+	ExpressCompany string           `json:"expressCompany"`
+	ShippedAt      string           `json:"shippedAt"` // 快递助手发货时间；空则不改已有值
+	Order          OrderSnapshotDTO `json:"order"`
 }
 
 type DecryptPendingOrdersDTO struct {

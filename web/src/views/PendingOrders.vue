@@ -70,6 +70,24 @@ const kdzsExpressCompany = ref('')
 const kdzsExpressRows = ref<{ order: OMSOrder; expressNo: string }[]>([])
 /** 单笔打单：勾选要发货的商品下标（默认全选；单件也展示） */
 const selectedShipItemIndexes = ref<number[]>([])
+/** 拆分发货：按数量拆成多行，每行对应一个运单 */
+const splitShipMode = ref(false)
+type SplitLine = {
+  key: string
+  /** 部分选：绑定商品下标；整单拆分包裹行用 -1 */
+  itemIndex: number
+  orderItemId: number
+  title: string
+  skuName: string
+  outerId: string
+  remaining: number
+  qty: number
+  expressNo: string
+  /** 全选拆分：仅包裹行，确认时自动分摊全部待发商品 */
+  packageOnly?: boolean
+}
+const splitLines = ref<SplitLine[]>([])
+let splitLineSeq = 0
 
 /** 云打印：取单成功后面单模板 + 打印机确认 */
 const printDialogVisible = ref(false)
@@ -440,6 +458,14 @@ const shipItemIndeterminate = computed(() => {
   return n > 0 && n < shipItemRows.value.length
 })
 
+/** 是否勾选了全部待发商品（整单拆分：按包裹明细履约，不绑商品） */
+const isFullSplitSelect = computed(() => {
+  if (isBatchShip.value || !shipItemRows.value.length) return false
+  if (selectedShipItemIndexes.value.length !== shipItemRows.value.length) return false
+  const set = new Set(selectedShipItemIndexes.value)
+  return shipItemRows.value.every((r) => set.has(r.index))
+})
+
 const selectedCarrier = computed(() =>
   carrierAccounts.value.find((c) => c.id === shipForm.carrierAccountId),
 )
@@ -524,16 +550,289 @@ function initShipItemSelection(order: OMSOrder) {
     .map((item, i) => ({ i, left: item.id ? remaining[item.id] : item.quantity || 0 }))
     .filter((r) => r.left > 0)
     .map((r) => r.i)
+  rebuildSplitLinesFromSelection()
 }
 
 function toggleShipItemAll(checked: boolean) {
   selectedShipItemIndexes.value = checked ? shipItemRows.value.map((r) => r.index) : []
+  rebuildSplitLinesFromSelection()
+}
+
+function onShipItemSelectionChange() {
+  if (splitShipMode.value) rebuildSplitLinesFromSelection()
+}
+
+function rebuildSplitLinesFromSelection() {
+  if (!splitShipMode.value || isBatchShip.value) {
+    splitLines.value = []
+    return
+  }
+  const order = shipTargets.value[0]
+  if (!order) {
+    splitLines.value = []
+    return
+  }
+
+  // 全选：拆分明细 = 包裹行，不查商品↔拆分对应；履约以包裹为准
+  if (isFullSplitSelect.value) {
+    const pkgs = splitLines.value.filter((l) => l.packageOnly)
+    if (pkgs.length) {
+      splitLines.value = pkgs.map((l, i) => ({
+        ...l,
+        title: `包裹 ${i + 1}`,
+        itemIndex: -1,
+        orderItemId: 0,
+        qty: 0,
+        remaining: 0,
+        packageOnly: true,
+      }))
+    } else {
+      splitLines.value = [newPackageLine(1)]
+    }
+    return
+  }
+
+  // 部分选：按勾选商品生成/保留对应拆分行
+  const remaining = remainingQtyByItem(order)
+  const next: SplitLine[] = []
+  for (const idx of selectedShipItemIndexes.value) {
+    const item = order.items?.[idx]
+    if (!item?.id) continue
+    const left = remaining[item.id] || 0
+    if (left <= 0) continue
+    const existing = splitLines.value.filter((l) => !l.packageOnly && l.orderItemId === item.id)
+    if (existing.length) {
+      let used = 0
+      for (const line of existing) {
+        const qty = Math.min(Math.max(1, line.qty || 1), Math.max(0, left - used))
+        if (qty <= 0) continue
+        used += qty
+        next.push({
+          ...line,
+          packageOnly: false,
+          remaining: left,
+          qty,
+          title: formatGoodsLine(item) || item.productName || '',
+        })
+      }
+      if (used === 0) {
+        next.push(newSplitLine(idx, item, left, left))
+      }
+      continue
+    }
+    next.push(newSplitLine(idx, item, left, left))
+  }
+  splitLines.value = next
+}
+
+function newPackageLine(seq?: number): SplitLine {
+  splitLineSeq += 1
+  const n = seq ?? splitLines.value.filter((l) => l.packageOnly).length + 1
+  return {
+    key: `p${splitLineSeq}`,
+    itemIndex: -1,
+    orderItemId: 0,
+    title: `包裹 ${n}`,
+    skuName: '',
+    outerId: '',
+    remaining: 0,
+    qty: 0,
+    expressNo: '',
+    packageOnly: true,
+  }
+}
+
+function newSplitLine(
+  itemIndex: number,
+  item: NonNullable<OMSOrder['items']>[number],
+  remaining: number,
+  qty: number,
+): SplitLine {
+  splitLineSeq += 1
+  return {
+    key: `s${splitLineSeq}`,
+    itemIndex,
+    orderItemId: item.id!,
+    title: formatGoodsLine(item) || item.productName || '',
+    skuName: item.skuSpecs || '',
+    outerId: '',
+    remaining,
+    qty: Math.min(Math.max(1, qty), remaining),
+    expressNo: '',
+    packageOnly: false,
+  }
+}
+
+function renumberPackageTitles() {
+  let i = 0
+  for (const line of splitLines.value) {
+    if (!line.packageOnly) continue
+    i += 1
+    line.title = `包裹 ${i}`
+  }
+}
+
+function addPackageLine() {
+  const totalUnits = shipItemRows.value.reduce((s, r) => s + (r.remaining || 0), 0)
+  const pkgCount = splitLines.value.filter((l) => l.packageOnly).length
+  if (pkgCount >= totalUnits && totalUnits > 0) {
+    ElMessage.warning(`包裹数不能超过待发件数（${totalUnits}）`)
+    return
+  }
+  splitLines.value.push(newPackageLine())
+  renumberPackageTitles()
+}
+
+function addSplitLine(itemIndex: number) {
+  if (isFullSplitSelect.value) {
+    addPackageLine()
+    return
+  }
+  const order = shipTargets.value[0]
+  const item = order?.items?.[itemIndex]
+  if (!item?.id) return
+  const remaining = remainingQtyByItem(order)[item.id] || 0
+  const used = splitLines.value
+    .filter((l) => !l.packageOnly && l.orderItemId === item.id)
+    .reduce((s, l) => s + (l.qty || 0), 0)
+  const left = remaining - used
+  if (left <= 0) {
+    ElMessage.warning('该商品剩余可拆数量不足')
+    return
+  }
+  splitLines.value.push(newSplitLine(itemIndex, item, remaining, left))
+}
+
+function removeSplitLine(key: string) {
+  const line = splitLines.value.find((l) => l.key === key)
+  if (line?.packageOnly && splitLines.value.filter((l) => l.packageOnly).length <= 1) {
+    ElMessage.warning('至少保留一个包裹')
+    return
+  }
+  splitLines.value = splitLines.value.filter((l) => l.key !== key)
+  if (line?.packageOnly) renumberPackageTitles()
+}
+
+function splitQtyByItemId(): Record<number, number> {
+  const m: Record<number, number> = {}
+  for (const line of splitLines.value) {
+    if (line.packageOnly || !line.orderItemId) continue
+    m[line.orderItemId] = (m[line.orderItemId] || 0) + Math.max(0, line.qty || 0)
+  }
+  return m
+}
+
+/** 全选拆分：全部待发商品按件数均分到各包裹（确认/取号时用） */
+function allocateFullSplitPackages(order: OMSOrder): {
+  packageIndex: number
+  expressNo: string
+  orderItemId: number
+  itemIndex: number
+  qty: number
+  title: string
+  skuName: string
+  outerId: string
+}[] {
+  const packages = splitLines.value.filter((l) => l.packageOnly)
+  const n = packages.length
+  if (!n) return []
+  const remaining = remainingQtyByItem(order)
+  const out: {
+    packageIndex: number
+    expressNo: string
+    orderItemId: number
+    itemIndex: number
+    qty: number
+    title: string
+    skuName: string
+    outerId: string
+  }[] = []
+  for (const row of shipItemRows.value) {
+    const item = row.item
+    if (!item?.id) continue
+    const total = remaining[item.id] || 0
+    if (total <= 0) continue
+    const base = Math.floor(total / n)
+    let rem = total % n
+    for (let i = 0; i < n; i++) {
+      const qty = base + (rem > 0 ? 1 : 0)
+      if (rem > 0) rem -= 1
+      if (qty <= 0) continue
+      out.push({
+        packageIndex: i,
+        expressNo: packages[i].expressNo.trim(),
+        orderItemId: item.id,
+        itemIndex: row.index,
+        qty,
+        title: formatGoodsLine(item) || item.productName || '',
+        skuName: item.skuSpecs || '',
+        outerId: '',
+      })
+    }
+  }
+  return out
+}
+
+function validateSplitLines(): boolean {
+  if (!splitLines.value.length) {
+    ElMessage.warning('请至少添加一行拆分发货')
+    return false
+  }
+  const order = shipTargets.value[0]
+  if (!order) return false
+
+  if (isFullSplitSelect.value) {
+    const pkgs = splitLines.value.filter((l) => l.packageOnly)
+    if (!pkgs.length) {
+      ElMessage.warning('请至少添加一个包裹')
+      return false
+    }
+    const totalUnits = shipItemRows.value.reduce((s, r) => s + (r.remaining || 0), 0)
+    if (pkgs.length > totalUnits) {
+      ElMessage.warning(`包裹数不能超过待发件数（${totalUnits}）`)
+      return false
+    }
+    return true
+  }
+
+  const remaining = remainingQtyByItem(order)
+  const used: Record<number, number> = {}
+  for (const line of splitLines.value) {
+    if (line.packageOnly) continue
+    if (!line.orderItemId || line.qty <= 0) {
+      ElMessage.warning('拆分行数量须大于 0')
+      return false
+    }
+    used[line.orderItemId] = (used[line.orderItemId] || 0) + line.qty
+  }
+  for (const [idStr, qty] of Object.entries(used)) {
+    const id = Number(idStr)
+    const left = remaining[id] || 0
+    if (qty > left) {
+      ElMessage.warning('拆分数量超过商品剩余可发数量')
+      return false
+    }
+  }
+  return true
 }
 
 function snapshotForShip(order: OMSOrder) {
-  // 批量：整单可发商品；单笔：仅勾选行，数量按剩余可发
+  // 批量：整单；全选拆分：全部待发（不按商品↔拆分映射）；部分拆分：按拆分行；普通：勾选行
   if (isBatchShip.value || !shipItemRows.value.length) {
     return omsOrderToSnapshot(order)
+  }
+  if (splitShipMode.value && isFullSplitSelect.value) {
+    return omsOrderToSnapshot(order, {
+      itemIndexes: shipItemRows.value.map((r) => r.index),
+      qtyByItemId: remainingQtyByItem(order),
+    })
+  }
+  if (splitShipMode.value && splitLines.value.length) {
+    const indexes = [...new Set(splitLines.value.filter((l) => !l.packageOnly).map((l) => l.itemIndex))]
+    return omsOrderToSnapshot(order, {
+      itemIndexes: indexes,
+      qtyByItemId: splitQtyByItemId(),
+    })
   }
   return omsOrderToSnapshot(order, {
     itemIndexes: [...selectedShipItemIndexes.value],
@@ -544,6 +843,7 @@ function snapshotForShip(order: OMSOrder) {
 function ensureShipItemsSelected(): boolean {
   if (isBatchShip.value) return true
   if (!shipItemRows.value.length) return true
+  if (splitShipMode.value) return validateSplitLines()
   if (!selectedShipItemIndexes.value.length) {
     ElMessage.warning('请至少勾选一件要发货的商品')
     return false
@@ -552,15 +852,29 @@ function ensureShipItemsSelected(): boolean {
 }
 
 function goSFOrder(order: OMSOrder, itemIndexes?: number[]) {
+  let opts:
+    | { itemIndexes: number[]; qtyByItemId: Record<number, number> }
+    | { qtyByItemId: Record<number, number> }
+    | undefined
+  if (splitShipMode.value && isFullSplitSelect.value) {
+    opts = {
+      itemIndexes: shipItemRows.value.map((r) => r.index),
+      qtyByItemId: remainingQtyByItem(order),
+    }
+  } else if (splitShipMode.value && splitLines.value.length) {
+    opts = {
+      itemIndexes: [...new Set(splitLines.value.filter((l) => !l.packageOnly).map((l) => l.itemIndex))],
+      qtyByItemId: splitQtyByItemId(),
+    }
+  } else if (itemIndexes?.length) {
+    opts = { itemIndexes, qtyByItemId: remainingQtyByItem(order) }
+  } else {
+    opts = { qtyByItemId: remainingQtyByItem(order) }
+  }
   saveSFOrderHandoff({
     orderId: order.id,
     sourceSystem: 'ordercore',
-    order: omsOrderToSnapshot(
-      order,
-      itemIndexes?.length
-        ? { itemIndexes, qtyByItemId: remainingQtyByItem(order) }
-        : { qtyByItemId: remainingQtyByItem(order) },
-    ),
+    order: omsOrderToSnapshot(order, opts),
   })
   router.push('/sf-order')
 }
@@ -579,6 +893,8 @@ function prepareShipDialog(orders: OMSOrder[], preferredMode?: PrintMode) {
   selectedTemplateId.value = ''
   kdzsExpressCompany.value = ''
   kdzsExpressRows.value = orders.map((order) => ({ order, expressNo: '' }))
+  splitShipMode.value = false
+  splitLines.value = []
   if (orders.length === 1) initShipItemSelection(orders[0])
   else selectedShipItemIndexes.value = []
   const defaultCarrier =
@@ -831,9 +1147,13 @@ async function submitShip() {
   const order = shipTargets.value[0]
   if (!order) return
 
-  // 自建物流 + 顺丰：标准寄件 → 完整下单页
+  // 自建物流 + 顺丰：标准寄件 → 完整下单页（拆分时按本次数量合计带入）
   if (isSFCarrier.value && sfShipAction.value === 'standard') {
-    const indexes = [...selectedShipItemIndexes.value]
+    const indexes = splitShipMode.value
+      ? isFullSplitSelect.value
+        ? shipItemRows.value.map((r) => r.index)
+        : [...new Set(splitLines.value.filter((l) => !l.packageOnly).map((l) => l.itemIndex))]
+      : [...selectedShipItemIndexes.value]
     closeShipDialog()
     goSFOrder(order, indexes)
     return
@@ -845,10 +1165,86 @@ async function submitShip() {
   }
   loading.ship = true
   try {
-    // 快件类型在「标准寄件」页选择并记住；快速下单复用上次选择
     const savedExpress = localStorage.getItem('shippingcore.sf.expressType')
     const expressType =
       savedExpress === '1' || savedExpress === '2' ? savedExpress : undefined
+
+    // 拆分发货：建组后按包裹/行逐段取号
+    if (splitShipMode.value && splitLines.value.length > 0) {
+      if (!validateSplitLines()) {
+        loading.ship = false
+        return
+      }
+      const group = await shippingApi.createShipmentGroup({
+        orderId: order.id,
+        orderNo: order.orderNo,
+        sourceRef: order.platformSysTid || order.orderNo,
+        shipVia: 'sf',
+      })
+      let lastWaybill: { id: number; mailNo?: string } | null = null
+      let segmentCount = 0
+
+      if (isFullSplitSelect.value) {
+        const allocs = allocateFullSplitPackages(order)
+        const pkgCount = splitLines.value.filter((l) => l.packageOnly).length
+        for (let i = 0; i < pkgCount; i++) {
+          const rows = allocs.filter((a) => a.packageIndex === i)
+          if (!rows.length) continue
+          const qtyByItemId: Record<number, number> = {}
+          const indexes: number[] = []
+          for (const r of rows) {
+            qtyByItemId[r.orderItemId] = (qtyByItemId[r.orderItemId] || 0) + r.qty
+            if (!indexes.includes(r.itemIndex)) indexes.push(r.itemIndex)
+          }
+          const snap = omsOrderToSnapshot(order, { itemIndexes: indexes, qtyByItemId })
+          const shipment = await shippingApi.createShipmentFromOrder({
+            carrierAccountId: shipForm.carrierAccountId,
+            shipperProfileId: shipForm.shipperProfileId,
+            useMonthly: shipForm.useMonthly,
+            expressType,
+            orderId: order.id,
+            sourceSystem: 'ordercore',
+            groupId: group.id,
+            order: snap,
+          })
+          lastWaybill = await shippingApi.createShipmentWaybill(shipment.id)
+          segmentCount += 1
+        }
+      } else {
+        for (const line of splitLines.value) {
+          if (line.packageOnly) continue
+          const snap = omsOrderToSnapshot(order, {
+            itemIndexes: [line.itemIndex],
+            qtyByItemId: { [line.orderItemId]: line.qty },
+          })
+          const shipment = await shippingApi.createShipmentFromOrder({
+            carrierAccountId: shipForm.carrierAccountId,
+            shipperProfileId: shipForm.shipperProfileId,
+            useMonthly: shipForm.useMonthly,
+            expressType,
+            orderId: order.id,
+            sourceSystem: 'ordercore',
+            groupId: group.id,
+            order: snap,
+          })
+          lastWaybill = await shippingApi.createShipmentWaybill(shipment.id)
+          segmentCount += 1
+        }
+      }
+      const carrier = carrierAccounts.value.find((c) => c.id === shipForm.carrierAccountId)
+      closeShipDialog()
+      if (lastWaybill) {
+        await openCloudPrintDialog({
+          shipmentId: lastWaybill.id,
+          mailNo: lastWaybill.mailNo || '',
+          carrier,
+        })
+      }
+      ElMessage.success(`拆分发货已取号 ${segmentCount} 段`)
+      await loadOmsOrders()
+      return
+    }
+
     const shipment = await shippingApi.createShipmentFromOrder({
       carrierAccountId: shipForm.carrierAccountId,
       shipperProfileId: shipForm.shipperProfileId,
@@ -884,12 +1280,75 @@ const primaryShipLabel = computed(() => {
 async function submitKdzsConfirm() {
   if (loading.ship) return
   if (!ensureShipItemsSelected()) return
-  const rows = kdzsExpressRows.value
-  if (!rows.length) return
   if (!kdzsExpressCompany.value.trim()) {
     ElMessage.warning('请选择快递公司')
     return
   }
+
+  // 拆分发货：每行/每包裹一个运单号
+  if (!isBatchShip.value && splitShipMode.value) {
+    if (!validateSplitLines()) return
+    const missing = splitLines.value.filter((l) => !l.expressNo.trim())
+    if (missing.length) {
+      ElMessage.warning(isFullSplitSelect.value ? '请为每个包裹填写运单号' : '请为每条拆分行填写运单号')
+      return
+    }
+    const nos = splitLines.value.map((l) => l.expressNo.trim().toUpperCase())
+    if (new Set(nos).size !== nos.length) {
+      ElMessage.warning(isFullSplitSelect.value ? '包裹运单号不能重复' : '拆分行运单号不能重复')
+      return
+    }
+    const order = shipTargets.value[0]
+    if (!order) return
+    loading.ship = true
+    try {
+      const lines = isFullSplitSelect.value
+        ? allocateFullSplitPackages(order).map((a) => ({
+            orderItemId: a.orderItemId,
+            qty: a.qty,
+            expressNo: a.expressNo,
+            title: a.title,
+            skuName: a.skuName,
+            outerId: a.outerId,
+          }))
+        : splitLines.value
+            .filter((l) => !l.packageOnly)
+            .map((l) => ({
+              orderItemId: l.orderItemId,
+              qty: l.qty,
+              expressNo: l.expressNo.trim(),
+              title: l.title,
+              skuName: l.skuName,
+              outerId: l.outerId,
+            }))
+      if (!lines.length) {
+        ElMessage.warning('没有可履约的拆分明细')
+        return
+      }
+      await shippingApi.confirmKdzsSplitShip({
+        orderId: order.id,
+        expressCompany: kdzsExpressCompany.value.trim(),
+        order: omsOrderToSnapshot(order),
+        lines,
+      })
+      const pkgCount = isFullSplitSelect.value
+        ? splitLines.value.filter((l) => l.packageOnly).length
+        : lines.length
+      ElMessage.success(`拆分发货已确认 ${pkgCount} 段`)
+      confirmKdzsVisible.value = false
+      closeShipDialog()
+      selectedOrders.value = []
+      await loadOmsOrders()
+    } catch (e) {
+      ElMessage.error((e as Error).message || '确认发货失败')
+    } finally {
+      loading.ship = false
+    }
+    return
+  }
+
+  const rows = kdzsExpressRows.value
+  if (!rows.length) return
   const missing = rows.filter((r) => !r.expressNo.trim())
   if (missing.length) {
     ElMessage.warning(isBatchShip.value ? '请为每笔订单填写运单号' : '请输入运单号')
@@ -924,6 +1383,8 @@ function closeShipDialog() {
   confirmKdzsVisible.value = false
   selectedTemplateId.value = ''
   selectedShipItemIndexes.value = []
+  splitShipMode.value = false
+  splitLines.value = []
 }
 
 onMounted(async () => {
@@ -1083,8 +1544,20 @@ onMounted(async () => {
             <span class="muted">
               已选 {{ selectedShipItemIndexes.length }}/{{ shipItemRows.length }}
             </span>
+            <el-switch
+              v-model="splitShipMode"
+              inline-prompt
+              active-text="拆分"
+              inactive-text="整发"
+              style="margin-left: auto"
+              @change="rebuildSplitLinesFromSelection"
+            />
           </div>
-          <el-checkbox-group v-model="selectedShipItemIndexes" class="ship-items-list">
+          <el-checkbox-group
+            v-model="selectedShipItemIndexes"
+            class="ship-items-list"
+            @change="onShipItemSelectionChange"
+          >
             <label
               v-for="row in shipItemRows"
               :key="row.index"
@@ -1101,8 +1574,49 @@ onMounted(async () => {
                   </span>
                 </div>
               </div>
+              <el-button
+                v-if="splitShipMode && !isFullSplitSelect && selectedShipItemIndexes.includes(row.index)"
+                link
+                type="primary"
+                size="small"
+                @click.prevent="addSplitLine(row.index)"
+              >
+                加拆分
+              </el-button>
             </label>
           </el-checkbox-group>
+
+          <div v-if="splitShipMode && splitLines.length" class="split-lines">
+            <div class="split-lines-title">
+              {{
+                isFullSplitSelect
+                  ? '拆分明细（整单按包裹履约，确认时自动分摊全部待发商品）'
+                  : '拆分明细（按勾选商品对应拆分，每行一个运单）'
+              }}
+            </div>
+            <template v-if="isFullSplitSelect">
+              <div v-for="line in splitLines" :key="line.key" class="split-line-row">
+                <div class="split-line-name">{{ line.title }}</div>
+                <span class="muted">确认发货时填写运单号</span>
+                <el-button link type="danger" size="small" @click="removeSplitLine(line.key)">删</el-button>
+              </div>
+              <el-button type="primary" link size="small" @click="addPackageLine">加包裹</el-button>
+            </template>
+            <template v-else>
+              <div v-for="line in splitLines" :key="line.key" class="split-line-row">
+                <div class="split-line-name" :title="line.title">{{ line.title }}</div>
+                <el-input-number
+                  v-model="line.qty"
+                  :min="1"
+                  :max="line.remaining"
+                  size="small"
+                  controls-position="right"
+                />
+                <span class="muted">/ 剩 {{ line.remaining }}</span>
+                <el-button link type="danger" size="small" @click="removeSplitLine(line.key)">删</el-button>
+              </div>
+            </template>
+          </div>
         </div>
 
         <el-form label-width="100px" class="ship-form">
@@ -1286,7 +1800,7 @@ onMounted(async () => {
     <el-dialog
       v-model="confirmKdzsVisible"
       title="确认已打单发货"
-      :width="isBatchShip ? '560px' : '440px'"
+      :width="splitShipMode && !isBatchShip ? '640px' : isBatchShip ? '560px' : '440px'"
       append-to-body
     >
       <el-form label-width="90px">
@@ -1300,7 +1814,19 @@ onMounted(async () => {
             <el-option v-for="c in expressCompanyOptions" :key="c" :label="c" :value="c" />
           </el-select>
         </el-form-item>
-        <template v-if="!isBatchShip">
+        <template v-if="!isBatchShip && splitShipMode">
+          <div class="batch-confirm-hint muted">
+            {{ isFullSplitSelect ? '请为每个包裹填写运单号（商品将自动分摊到各包裹）' : '请为每条拆分行填写运单号' }}
+          </div>
+          <div v-for="line in splitLines" :key="line.key" class="batch-row split-confirm-row">
+            <div class="batch-order">
+              {{ line.title }}
+              <span v-if="!line.packageOnly" class="muted">×{{ line.qty }}</span>
+            </div>
+            <el-input v-model="line.expressNo" placeholder="运单号" />
+          </div>
+        </template>
+        <template v-else-if="!isBatchShip">
           <el-form-item label="运单号" required>
             <el-input v-model="kdzsExpressRows[0].expressNo" placeholder="快递助手打单后的运单号" />
           </el-form-item>
@@ -1315,7 +1841,7 @@ onMounted(async () => {
       </el-form>
       <template #footer>
         <el-button @click="confirmKdzsVisible = false">取消</el-button>
-        <el-button :loading="loading.syncWaybill" @click="syncWaybillsFromKdzs">同步单号</el-button>
+        <el-button v-if="!splitShipMode" :loading="loading.syncWaybill" @click="syncWaybillsFromKdzs">同步单号</el-button>
         <el-button type="primary" :loading="loading.ship" @click="submitKdzsConfirm">确认发货</el-button>
       </template>
     </el-dialog>
@@ -1372,6 +1898,34 @@ onMounted(async () => {
   cursor: pointer;
   background: #fff;
   border: 1px solid #eef0f3;
+}
+.split-lines {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed #e4e7ed;
+}
+.split-lines-title {
+  font-size: 12px;
+  color: #606266;
+  margin-bottom: 8px;
+}
+.split-line-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.split-line-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.split-confirm-row .batch-order {
+  min-width: 160px;
+  max-width: 240px;
 }
 .ship-item-row:hover { border-color: #d0d5dd; }
 .ship-item-text {

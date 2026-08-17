@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Printer, Refresh, Search } from '@element-plus/icons-vue'
@@ -33,6 +33,33 @@ const list = ref<Shipment[]>([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
+
+type DisplayRow = {
+  key: string
+  kind: 'single' | 'group'
+  primary: Shipment
+  peers: Shipment[]
+}
+
+/** 同页内按 groupId 折叠拆分发货 */
+const displayRows = computed<DisplayRow[]>(() => {
+  const seen = new Set<number>()
+  const out: DisplayRow[] = []
+  for (const s of list.value) {
+    const gid = Number(s.groupId || 0)
+    if (gid > 0) {
+      if (seen.has(gid)) continue
+      seen.add(gid)
+      const peers = list.value.filter((x) => Number(x.groupId || 0) === gid)
+      out.push({ kind: 'group', key: `g${gid}`, primary: peers[0], peers })
+      continue
+    }
+    out.push({ kind: 'single', key: `s${s.id}`, primary: s, peers: [s] })
+  }
+  return out
+})
+
+const groupDetailPeers = ref<Shipment[] | null>(null)
 
 const labelVisible = ref(false)
 const labelLoading = ref(false)
@@ -207,6 +234,12 @@ function shipTimeOf(row: Pick<Shipment, 'shippedAt' | 'createdAt' | 'mailNo'>) {
   return '-'
 }
 
+/** 快递助手在助手侧打印，本系统不记打印时间 */
+function printTimeOf(row: Pick<Shipment, 'shipVia' | 'printedAt' | 'mailNo' | 'sfOrderId' | 'carrierAccountId'>) {
+  if (isKdzsShipment(row)) return '—'
+  return fmtTime(row.printedAt)
+}
+
 async function load() {
   loading.value = true
   try {
@@ -267,6 +300,16 @@ async function loadPromiseTm(ship: Shipment) {
 async function openDetail(row: Shipment) {
   try {
     detail.value = await shippingApi.getShipment(row.id)
+    groupDetailPeers.value = null
+    const gid = Number(detail.value.groupId || 0)
+    if (gid > 0) {
+      try {
+        const g = await shippingApi.getShipmentGroup(gid)
+        groupDetailPeers.value = g.shipments || []
+      } catch {
+        groupDetailPeers.value = list.value.filter((x) => Number(x.groupId || 0) === gid)
+      }
+    }
     detailVisible.value = true
     void loadPromiseTm(detail.value)
   } catch (e) {
@@ -539,102 +582,126 @@ onMounted(() => {
         <el-button @click="resetFilters">重置</el-button>
       </div>
 
-      <el-table :data="list" border stripe empty-text="暂无发货单">
+      <el-table :data="displayRows" border stripe empty-text="暂无发货单" row-key="key">
         <el-table-column label="订单号" min-width="160" show-overflow-tooltip>
-          <template #default="{ row }">{{ orderNoDisplay(row) }}</template>
+          <template #default="{ row }">
+            <div class="order-cell">
+              <span>{{ orderNoDisplay(row.primary) }}</span>
+              <el-tag v-if="row.kind === 'group'" size="small" type="warning">拆分×{{ row.peers.length }}</el-tag>
+            </div>
+          </template>
         </el-table-column>
         <el-table-column label="订单类型" width="120" show-overflow-tooltip>
-          <template #default="{ row }">{{ formatOrderSource(row) }}</template>
+          <template #default="{ row }">{{ formatOrderSource(row.primary) }}</template>
         </el-table-column>
         <el-table-column label="平台" width="90">
-          <template #default="{ row }">{{ labelPlatform(row.platform) }}</template>
+          <template #default="{ row }">{{ labelPlatform(row.primary.platform) }}</template>
         </el-table-column>
         <el-table-column label="平台单号" min-width="180">
           <template #default="{ row }">
-            <div v-if="row.sourceTid">{{ row.sourceTid }}</div>
+            <div v-if="row.primary.sourceTid">{{ row.primary.sourceTid }}</div>
             <div
-              v-if="row.sourceRef && row.sourceRef !== row.sourceTid"
+              v-if="row.primary.sourceRef && row.primary.sourceRef !== row.primary.sourceTid"
               class="muted"
             >
-              系统：{{ row.sourceRef }}
+              系统：{{ row.primary.sourceRef }}
             </div>
-            <span v-if="!row.sourceTid && !row.sourceRef">-</span>
+            <span v-if="!row.primary.sourceTid && !row.primary.sourceRef">-</span>
           </template>
         </el-table-column>
         <el-table-column label="店铺" min-width="120" show-overflow-tooltip>
-          <template #default="{ row }">{{ shopDisplay(row) }}</template>
+          <template #default="{ row }">{{ shopDisplay(row.primary) }}</template>
         </el-table-column>
-        <el-table-column label="商品信息" min-width="260">
+        <el-table-column label="商品信息" min-width="280">
           <template #default="{ row }">
-            <div v-if="row.items?.length" class="goods-list">
-              <div v-for="(it, idx) in row.items" :key="it.id || idx" class="goods-cell">
-                <div class="goods-text">{{ formatGoodsLine(it) || '-' }}</div>
-              </div>
+            <div class="goods-list">
+              <template v-for="peer in row.peers" :key="peer.id">
+                <div v-if="peer.items?.length">
+                  <div v-for="(it, idx) in peer.items" :key="it.id || idx" class="goods-cell">
+                    <div class="goods-text">
+                      {{ formatGoodsLine(it) || '-' }}
+                      <span v-if="row.kind === 'group'" class="muted"> · {{ peer.mailNo || '无单号' }}</span>
+                    </div>
+                  </div>
+                </div>
+                <div v-else class="goods-cell">
+                  <div class="goods-text">
+                    {{ peer.cargoName || '-' }}
+                    <span v-if="row.kind === 'group'" class="muted"> · {{ peer.mailNo || '无单号' }}</span>
+                  </div>
+                </div>
+              </template>
             </div>
-            <span v-else>{{ row.cargoName || '-' }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="mailNo" label="运单号" min-width="150" show-overflow-tooltip />
+        <el-table-column label="运单号" min-width="150">
+          <template #default="{ row }">
+            <div v-if="row.kind === 'group'" class="mail-stack">
+              <div v-for="peer in row.peers" :key="peer.id">{{ peer.mailNo || '-' }}</div>
+            </div>
+            <span v-else>{{ row.primary.mailNo || '-' }}</span>
+          </template>
+        </el-table-column>
         <el-table-column label="状态" width="90">
           <template #default="{ row }">
-            <el-tag :type="statusTag(row.status).type" size="small">{{ statusTag(row.status).label }}</el-tag>
+            <el-tag :type="statusTag(row.primary.status).type" size="small">{{ statusTag(row.primary.status).label }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="收件信息" min-width="200">
           <template #default="{ row }">
             <div class="cell-stack">
-              <div class="primary">{{ receiverLines(row).nameMobile || '-' }}</div>
-              <div class="secondary addr">{{ receiverLines(row).addr || '-' }}</div>
+              <div class="primary">{{ receiverLines(row.primary).nameMobile || '-' }}</div>
+              <div class="secondary addr">{{ receiverLines(row.primary).addr || '-' }}</div>
             </div>
           </template>
         </el-table-column>
         <el-table-column label="发货时间" width="170">
-          <template #default="{ row }">{{ shipTimeOf(row) }}</template>
+          <template #default="{ row }">{{ shipTimeOf(row.primary) }}</template>
         </el-table-column>
         <el-table-column label="打印时间" width="170">
-          <template #default="{ row }">{{ fmtTime(row.printedAt) }}</template>
+          <template #default="{ row }">{{ printTimeOf(row.primary) }}</template>
         </el-table-column>
         <el-table-column label="操作" width="240" fixed="right">
           <template #default="{ row }">
-            <el-button link type="primary" size="small" @click="openDetail(row)">详情</el-button>
+            <el-button link type="primary" size="small" @click="openDetail(row.primary)">详情</el-button>
             <el-button
-              v-if="row.labelPdfUrl"
+              v-if="row.primary.labelPdfUrl"
               link
               type="primary"
               size="small"
-              @click="openLabelPreview(row)"
+              @click="openLabelPreview(row.primary)"
             >
               面单
             </el-button>
             <el-button
-              v-if="canRetry(row)"
+              v-if="canRetry(row.primary)"
               link
               type="warning"
               size="small"
-              :loading="actionLoading[row.id] === 'waybill'"
-              @click="retryWaybill(row)"
+              :loading="actionLoading[row.primary.id] === 'waybill'"
+              @click="retryWaybill(row.primary)"
             >
               建单
             </el-button>
             <el-button
-              v-if="canPrint(row)"
+              v-if="canPrint(row.primary)"
               link
               type="primary"
               size="small"
-              :loading="actionLoading[row.id] === 'print'"
-              @click="printRow(row)"
+              :loading="actionLoading[row.primary.id] === 'print'"
+              @click="printRow(row.primary)"
             >
               打印
             </el-button>
             <el-button
-              v-if="canCancel(row)"
+              v-if="canCancel(row.primary)"
               link
               type="danger"
               size="small"
-              :loading="actionLoading[row.id] === 'cancel'"
-              @click="cancelRow(row)"
+              :loading="actionLoading[row.primary.id] === 'cancel'"
+              @click="cancelRow(row.primary)"
             >
-              {{ row.mailNo ? '取消快递单' : '作废' }}
+              {{ row.primary.mailNo ? '取消快递单' : '作废' }}
             </el-button>
           </template>
         </el-table-column>
@@ -686,7 +753,7 @@ onMounted(() => {
             {{ isKdzsShipment(detail) ? `快递助手${detail.expressCompany ? ` · ${detail.expressCompany}` : ''}` : detail.expressCompany }}
           </el-descriptions-item>
           <el-descriptions-item label="发货时间">{{ shipTimeOf(detail) }}</el-descriptions-item>
-          <el-descriptions-item label="打印时间">{{ fmtTime(detail.printedAt) }}</el-descriptions-item>
+          <el-descriptions-item v-if="!isKdzsShipment(detail)" label="打印时间">{{ fmtTime(detail.printedAt) }}</el-descriptions-item>
           <el-descriptions-item v-if="detail.mailNo && isSFManagedShipment(detail)" label="预计派送">
             <span v-if="promiseLoading" class="muted">查询中…</span>
             <span v-else-if="promiseLabel">{{ promiseLabel }}</span>
@@ -729,6 +796,26 @@ onMounted(() => {
               preview-teleported
             />
           </div>
+        </div>
+
+        <div v-if="groupDetailPeers && groupDetailPeers.length > 1" class="items-block">
+          <div class="block-title">拆分发货明细</div>
+          <el-table :data="groupDetailPeers" border size="small">
+            <el-table-column label="运单号" min-width="140">
+              <template #default="{ row }">{{ row.mailNo || '-' }}</template>
+            </el-table-column>
+            <el-table-column label="商品" min-width="180">
+              <template #default="{ row }">
+                <div v-for="(it, idx) in row.items || []" :key="it.id || idx">
+                  {{ formatGoodsLine(it) || row.cargoName || '-' }}
+                </div>
+                <span v-if="!row.items?.length">{{ row.cargoName || '-' }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="快递" width="100" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.expressCompany || '-' }}</template>
+            </el-table-column>
+          </el-table>
         </div>
 
         <div v-if="detail.items?.length" class="items-block">
@@ -797,6 +884,8 @@ onMounted(() => {
 .pager { margin-top: 16px; display: flex; justify-content: flex-end; }
 .goods-list { display: flex; flex-direction: column; gap: 6px; }
 .goods-cell { display: flex; gap: 8px; align-items: flex-start; }
+.order-cell { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.mail-stack { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
 .goods-text {
   font-size: 13px;
   line-height: 1.4;

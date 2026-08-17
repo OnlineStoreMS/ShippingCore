@@ -107,6 +107,7 @@ export interface CreateShipmentFromOrderInput {
   sendStartTm?: string
   orderId?: number
   sourceSystem?: 'ordercore' | 'storesyncagent'
+  groupId?: number
   order: OrderSnapshot
 }
 
@@ -115,11 +116,41 @@ export interface ConfirmKdzsShipInput {
   expressNo: string
   expressCompany?: string
   order: OrderSnapshot
+  groupId?: number
+}
+
+export interface SplitShipLineInput {
+  orderItemId: number
+  qty: number
+  expressNo: string
+  expressCompany?: string
+  title?: string
+  skuName?: string
+  outerId?: string
+}
+
+export interface ConfirmKdzsSplitShipInput {
+  orderId: number
+  expressCompany?: string
+  order: OrderSnapshot
+  lines: SplitShipLineInput[]
+}
+
+export interface ShipmentGroup {
+  id: number
+  orderCoreOrderId?: number
+  orderNo?: string
+  sourceRef?: string
+  shipVia?: string
+  status?: string
+  createdAt?: string
+  shipments?: Shipment[]
 }
 
 export interface ShipmentItem {
   id: number
   shipmentId: number
+  orderItemId?: number
   goodsName: string
   quantity: number
   skuCode: string
@@ -160,9 +191,11 @@ export interface Shipment {
   mailNo: string
   /** 发货通道：sf=丰桥；kdzs=快递助手 */
   shipVia?: 'sf' | 'kdzs' | string
-  /** 快递公司（快递助手等非顺丰填单） */
+  /** 快递公司（快递助手等非顺丰填单等） */
   expressCompany?: string
   orderCoreOrderId?: number
+  /** 拆分发货主单 ID */
+  groupId?: number
   sfOrderId: string
   /** 顺丰临时面单链接（会过期，详情勿用） */
   labelUrl: string
@@ -590,6 +623,16 @@ export const shippingApi = {
 
   confirmKdzsShip: (body: ConfirmKdzsShipInput) =>
     client.post('/shipments/confirm-kdzs-ship', body).then((r) => unwrap<Shipment>(r)),
+  confirmKdzsSplitShip: (body: ConfirmKdzsSplitShipInput) =>
+    client.post('/shipments/confirm-kdzs-split-ship', body).then((r) => unwrap<ShipmentGroup>(r)),
+  createShipmentGroup: (body: {
+    orderId?: number
+    orderNo?: string
+    sourceRef?: string
+    shipVia?: string
+  }) => client.post('/shipment-groups', body).then((r) => unwrap<ShipmentGroup>(r)),
+  getShipmentGroup: (id: number) =>
+    client.get(`/shipment-groups/${id}`).then((r) => unwrap<ShipmentGroup>(r)),
 }
 
 export function maskCheckword(value?: string): string {

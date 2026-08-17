@@ -20,6 +20,8 @@ func RegisterRoutes(g *gin.RouterGroup, h *Handlers) {
 
 	g.GET("/shipments", h.ListShipments)
 	g.POST("/shipments/delete-by-ordercore", h.DeleteShipmentsByOrderCore)
+	g.POST("/shipments/sync-shipped-at", h.SyncShipmentShippedAt)
+	g.POST("/shipments/upsert-kdzs-from-sync", h.UpsertKdzsFromSync)
 	g.GET("/shipments/:id", h.GetShipment)
 	g.GET("/shipments/:id/promise-tm", h.SearchPromiseTm)
 	g.POST("/shipments/from-order", h.CreateShipmentFromOrder)
@@ -49,4 +51,7 @@ func RegisterRoutes(g *gin.RouterGroup, h *Handlers) {
 	g.POST("/kdzs/print-waybills", h.QueryPrintWaybills)
 
 	g.POST("/shipments/confirm-kdzs-ship", h.ConfirmKdzsShip)
+	g.POST("/shipments/confirm-kdzs-split-ship", h.ConfirmKdzsSplitShip)
+	g.POST("/shipment-groups", h.CreateShipmentGroup)
+	g.GET("/shipment-groups/:id", h.GetShipmentGroup)
 }

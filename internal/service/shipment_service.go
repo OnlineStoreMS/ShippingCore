@@ -322,6 +322,128 @@ func friendlyPromiseTmHint(raw string) string {
 	}
 }
 
+// SyncShippedAtByMailNo 把发货中心运单发货时间对齐为快递助手/订单中心时间。
+// 快递助手单同时清空 printed_at（本系统未打印）。
+func (s *ShipmentService) SyncShippedAtByMailNo(orderCoreOrderID uint64, mailNo, shippedAtRaw string) (int, error) {
+	mailNo = strings.TrimSpace(mailNo)
+	t := parseFlexibleTime(shippedAtRaw)
+	if mailNo == "" || t == nil {
+		return 0, fmt.Errorf("%w: mailNo 与 shippedAt 必填", ErrBadRequest)
+	}
+	dbq := s.db().Model(&model.Shipment{}).
+		Where("tenant_id = ? AND mail_no = ? AND status <> ?", s.tenantID, mailNo, model.ShipmentStatusCancelled)
+	if orderCoreOrderID > 0 {
+		dbq = dbq.Where("order_core_order_id = ?", orderCoreOrderID)
+	}
+	res := dbq.Update("shipped_at", *t)
+	if res.Error != nil {
+		return 0, res.Error
+	}
+	return int(res.RowsAffected), nil
+}
+
+// UpsertKdzsFromSync 订单中心同步到快递助手已发货后：有则对齐发货时间并清空打印时间，无则补建发货单。
+func (s *ShipmentService) UpsertKdzsFromSync(in *dto.UpsertKdzsFromSyncDTO) (*model.Shipment, error) {
+	if in == nil || in.OrderID == 0 || strings.TrimSpace(in.ExpressNo) == "" {
+		return nil, ErrBadRequest
+	}
+	expressNo := strings.TrimSpace(in.ExpressNo)
+	expressCompany := strings.TrimSpace(in.ExpressCompany)
+	if expressCompany == "" {
+		expressCompany = "快递"
+	}
+	shippedAt := parseFlexibleTime(in.ShippedAt)
+
+	if existing, ok := s.findActiveKdzsShipment(in.OrderID, expressNo); ok {
+		updates := map[string]any{
+			"printed_at": nil, // 快递助手打单：不记本系统打印时间
+			"ship_via":   model.ShipViaKdzs,
+		}
+		if shippedAt != nil {
+			updates["shipped_at"] = *shippedAt
+		}
+		if expressCompany != "" && strings.TrimSpace(existing.ExpressCompany) == "" {
+			updates["express_company"] = expressCompany
+		}
+		if err := s.db().Model(existing).Updates(updates).Error; err != nil {
+			return nil, err
+		}
+		return s.Get(existing.ID)
+	}
+
+	order := in.Order
+	cargoName := "商品"
+	items := make([]model.ShipmentItem, 0, len(order.Goods))
+	for _, g := range order.Goods {
+		name := orderGoodsShipName(g)
+		qty := g.Num
+		if qty <= 0 {
+			qty = 1
+		}
+		if cargoName == "商品" && name != "" {
+			cargoName = name
+		}
+		items = append(items, model.ShipmentItem{
+			OrderItemID: g.OrderItemID,
+			GoodsName:   name,
+			Quantity:    qty,
+			SkuCode:     strings.TrimSpace(g.SkuName),
+			OuterID:     g.OuterID,
+		})
+	}
+
+	orderNo := strings.TrimSpace(order.OrderNo)
+	sourceTid := strings.TrimSpace(order.SourceTid)
+	sourceRef := strings.TrimSpace(order.SysTid)
+	if orderNo == "" {
+		if strings.HasPrefix(strings.ToUpper(sourceTid), "OC") {
+			orderNo = sourceTid
+		} else if strings.HasPrefix(strings.ToUpper(sourceRef), "OC") {
+			orderNo = sourceRef
+		}
+	}
+	if sourceRef == "" {
+		sourceRef = firstNonEmptyTrim(orderNo, sourceTid)
+	}
+	if shippedAt == nil {
+		now := time.Now()
+		shippedAt = &now
+	}
+
+	shipment := model.Shipment{
+		TenantID:         s.tenantID,
+		SourceSystem:     model.SourceSystemOrderCore,
+		SourceRef:        sourceRef,
+		SourceTid:        sourceTid,
+		OrderNo:          orderNo,
+		Platform:         strings.TrimSpace(order.Platform),
+		ShopID:           strings.TrimSpace(order.ShopID),
+		ShopName:         strings.TrimSpace(order.ShopName),
+		SourceChannel:    strings.TrimSpace(order.SourceChannel),
+		ManualSourceName: strings.TrimSpace(order.ManualSourceName),
+		OrderCoreOrderID: in.OrderID,
+		ReceiverName:     strings.TrimSpace(order.ReceiverName),
+		ReceiverMobile:   strings.TrimSpace(order.ReceiverMobile),
+		ReceiverProvince: strings.TrimSpace(order.ReceiverProvince),
+		ReceiverCity:     strings.TrimSpace(order.ReceiverCity),
+		ReceiverCounty:   strings.TrimSpace(order.ReceiverCounty),
+		ReceiverAddress:  strings.TrimSpace(order.ReceiverAddress),
+		MailNo:           expressNo,
+		ShipVia:          model.ShipViaKdzs,
+		ExpressCompany:   expressCompany,
+		Status:           model.ShipmentStatusPrinted,
+		ShippedAt:        shippedAt,
+		// PrintedAt 故意不写：快递助手侧打印
+		CargoName: cargoName,
+		ParcelQty: 1,
+		Items:     items,
+	}
+	if err := s.db().Create(&shipment).Error; err != nil {
+		return nil, err
+	}
+	return s.Get(shipment.ID)
+}
+
 // DeleteByOrderCore 按订单中心销售单删除发货运单（手工单删除级联）。
 func (s *ShipmentService) DeleteByOrderCore(orderCoreOrderID uint64, sourceRef string) (int, error) {
 	sourceRef = strings.TrimSpace(sourceRef)
@@ -515,6 +637,7 @@ func (s *ShipmentService) CreateFromOrder(in *dto.CreateShipmentFromOrderDTO) (*
 		SourceChannel:    strings.TrimSpace(order.SourceChannel),
 		ManualSourceName: strings.TrimSpace(order.ManualSourceName),
 		OrderCoreOrderID: orderCoreOrderID,
+		GroupID:          in.GroupID,
 		CarrierAccountID: carrier.ID,
 		ShipperProfileID: shipper.ID,
 		ShipVia:          model.ShipViaSF,
@@ -654,7 +777,7 @@ func (s *ShipmentService) CreateWaybill(ctx context.Context, token string, id ui
 	}
 
 	if shipment.OrderCoreOrderID > 0 && shipment.MailNo != "" {
-		if err := s.shipOrderCore(ctx, token, shipment.OrderCoreOrderID, "顺丰", shipment.MailNo, shipment.Items); err != nil {
+		if _, err := s.shipOrderCore(ctx, token, shipment.OrderCoreOrderID, "顺丰", shipment.MailNo, shipment.Items, true); err != nil {
 			return nil, fmt.Errorf("运单已出(%s)，回写订单中心失败: %w", shipment.MailNo, err)
 		}
 	}
@@ -1265,8 +1388,22 @@ func (s *ShipmentService) ConfirmKdzsShip(ctx context.Context, token string, in 
 
 	// 幂等：同订单同运单号已有未取消发货单时复用，避免网关失败/重试产生重复单
 	if existing, ok := s.findActiveKdzsShipment(in.OrderID, expressNo); ok {
-		if err := s.shipOrderCore(ctx, token, in.OrderID, firstNonEmptyTrim(expressCompany, existing.ExpressCompany), expressNo, existing.Items); err != nil {
+		shippedAt, err := s.shipOrderCore(ctx, token, in.OrderID, firstNonEmptyTrim(expressCompany, existing.ExpressCompany), expressNo, existing.Items, false)
+		if err != nil {
 			return nil, fmt.Errorf("发货单已存在，回写订单中心失败: %w", err)
+		}
+		updates := map[string]any{}
+		if shippedAt != nil && (existing.ShippedAt == nil || !existing.ShippedAt.Equal(*shippedAt)) {
+			updates["shipped_at"] = *shippedAt
+			updates["printed_at"] = nil
+		} else if existing.PrintedAt != nil {
+			updates["printed_at"] = nil
+		}
+		if in.GroupID != nil && (existing.GroupID == nil || *existing.GroupID != *in.GroupID) {
+			updates["group_id"] = *in.GroupID
+		}
+		if len(updates) > 0 {
+			_ = s.db().Model(existing).Updates(updates).Error
 		}
 		return s.Get(existing.ID)
 	}
@@ -1305,7 +1442,16 @@ func (s *ShipmentService) ConfirmKdzsShip(ctx context.Context, token string, in 
 	if sourceRef == "" {
 		sourceRef = firstNonEmptyTrim(orderNo, sourceTid)
 	}
+	// 先回写订单中心（同号已同步则幂等成功），成功后再建发货中心记录，避免孤儿单
+	shippedAt, err := s.shipOrderCore(ctx, token, in.OrderID, expressCompany, expressNo, items, false)
+	if err != nil {
+		return nil, fmt.Errorf("回写订单中心失败: %w", err)
+	}
 	now := time.Now()
+	if shippedAt == nil {
+		shippedAt = &now
+	}
+
 	shipment := model.Shipment{
 		TenantID:         s.tenantID,
 		SourceSystem:     model.SourceSystemOrderCore,
@@ -1318,6 +1464,7 @@ func (s *ShipmentService) ConfirmKdzsShip(ctx context.Context, token string, in 
 		SourceChannel:    strings.TrimSpace(order.SourceChannel),
 		ManualSourceName: strings.TrimSpace(order.ManualSourceName),
 		OrderCoreOrderID: in.OrderID,
+		GroupID:          in.GroupID,
 		ReceiverName:     strings.TrimSpace(order.ReceiverName),
 		ReceiverMobile:   strings.TrimSpace(order.ReceiverMobile),
 		ReceiverProvince: strings.TrimSpace(order.ReceiverProvince),
@@ -1328,20 +1475,190 @@ func (s *ShipmentService) ConfirmKdzsShip(ctx context.Context, token string, in 
 		ShipVia:          model.ShipViaKdzs,
 		ExpressCompany:   expressCompany,
 		Status:           model.ShipmentStatusPrinted,
-		ShippedAt:        &now,
-		PrintedAt:        &now,
+		ShippedAt:        shippedAt,
+		// 快递助手打单不在本系统打印，不记 printedAt（避免把确认时间误当成打印时间）
 		CargoName:        cargoName,
 		ParcelQty:        1,
 		Items:            items,
 	}
 	if err := s.db().Create(&shipment).Error; err != nil {
+		return nil, fmt.Errorf("订单中心已发货，创建发货单失败: %w", err)
+	}
+	return s.Get(shipment.ID)
+}
+
+// CreateShipmentGroup 创建拆分发货主单。
+func (s *ShipmentService) CreateShipmentGroup(in *dto.CreateShipmentGroupDTO) (*model.ShipmentGroup, error) {
+	if in == nil {
+		return nil, ErrBadRequest
+	}
+	shipVia := strings.TrimSpace(in.ShipVia)
+	if shipVia == "" {
+		shipVia = model.ShipViaKdzs
+	}
+	g := model.ShipmentGroup{
+		TenantID:         s.tenantID,
+		OrderCoreOrderID: in.OrderID,
+		OrderNo:          strings.TrimSpace(in.OrderNo),
+		SourceRef:        strings.TrimSpace(in.SourceRef),
+		ShipVia:          shipVia,
+		Status:           model.ShipmentStatusPrinted,
+	}
+	if err := s.db().Create(&g).Error; err != nil {
+		return nil, err
+	}
+	return &g, nil
+}
+
+// ConfirmKdzsSplitShip 拆分发货确认：建组 + 多运单回写订单中心。
+// 同一运单号可对应多行商品（整单按包裹履约时前端会拆成多行同号），按运单号合并为一票。
+func (s *ShipmentService) ConfirmKdzsSplitShip(ctx context.Context, token string, in *dto.ConfirmKdzsSplitShipDTO) (*model.ShipmentGroup, error) {
+	if in == nil || in.OrderID == 0 || len(in.Lines) == 0 {
+		return nil, ErrBadRequest
+	}
+	defaultCompany := strings.TrimSpace(in.ExpressCompany)
+	if defaultCompany == "" {
+		defaultCompany = "快递"
+	}
+
+	type pkgGoods struct {
+		OrderItemID uint64
+		Qty         int
+		Title       string
+		SkuName     string
+		OuterID     string
+		Company     string
+	}
+	type pkgBucket struct {
+		ExpressNo string
+		Goods     []pkgGoods
+	}
+	orderKeys := make([]string, 0)
+	buckets := map[string]*pkgBucket{}
+	qtyByItem := map[uint64]int{}
+
+	for i, line := range in.Lines {
+		no := strings.TrimSpace(line.ExpressNo)
+		if no == "" {
+			return nil, fmt.Errorf("%w: 第 %d 行运单号不能为空", ErrBadRequest, i+1)
+		}
+		if line.OrderItemID == 0 {
+			return nil, fmt.Errorf("%w: 第 %d 行缺少商品行 ID", ErrBadRequest, i+1)
+		}
+		if line.Qty <= 0 {
+			return nil, fmt.Errorf("%w: 第 %d 行发货数量须大于 0", ErrBadRequest, i+1)
+		}
+		key := strings.ToUpper(no)
+		b, ok := buckets[key]
+		if !ok {
+			b = &pkgBucket{ExpressNo: no}
+			buckets[key] = b
+			orderKeys = append(orderKeys, key)
+		}
+		b.Goods = append(b.Goods, pkgGoods{
+			OrderItemID: line.OrderItemID,
+			Qty:         line.Qty,
+			Title:       strings.TrimSpace(line.Title),
+			SkuName:     strings.TrimSpace(line.SkuName),
+			OuterID:     strings.TrimSpace(line.OuterID),
+			Company:     strings.TrimSpace(line.ExpressCompany),
+		})
+		qtyByItem[line.OrderItemID] += line.Qty
+	}
+
+	orderNo := strings.TrimSpace(in.Order.OrderNo)
+	sourceRef := firstNonEmptyTrim(strings.TrimSpace(in.Order.SysTid), orderNo, strings.TrimSpace(in.Order.SourceTid))
+	group, err := s.CreateShipmentGroup(&dto.CreateShipmentGroupDTO{
+		OrderID:   in.OrderID,
+		OrderNo:   orderNo,
+		SourceRef: sourceRef,
+		ShipVia:   model.ShipViaKdzs,
+	})
+	if err != nil {
 		return nil, err
 	}
 
-	if err := s.shipOrderCore(ctx, token, in.OrderID, expressCompany, expressNo, items); err != nil {
-		return nil, fmt.Errorf("发货单已创建(#%d)，回写订单中心失败: %w", shipment.ID, err)
+	goodsByID := map[uint64]dto.OrderGoodsDTO{}
+	for _, g := range in.Order.Goods {
+		if g.OrderItemID > 0 {
+			goodsByID[g.OrderItemID] = g
+		}
 	}
-	return s.Get(shipment.ID)
+
+	created := make([]*model.Shipment, 0, len(orderKeys))
+	for _, key := range orderKeys {
+		b := buckets[key]
+		company := defaultCompany
+		snapGoods := make([]dto.OrderGoodsDTO, 0, len(b.Goods))
+		// 同运单同商品合并数量
+		merged := map[uint64]*dto.OrderGoodsDTO{}
+		mergeOrder := make([]uint64, 0)
+		for _, g := range b.Goods {
+			if c := firstNonEmptyTrim(g.Company); c != "" {
+				company = c
+			}
+			base := goodsByID[g.OrderItemID]
+			title := firstNonEmptyTrim(g.Title, base.Title)
+			skuName := firstNonEmptyTrim(g.SkuName, base.SkuName)
+			outerID := firstNonEmptyTrim(g.OuterID, base.OuterID)
+			if cur, ok := merged[g.OrderItemID]; ok {
+				cur.Num += g.Qty
+				continue
+			}
+			row := dto.OrderGoodsDTO{
+				OrderItemID: g.OrderItemID,
+				Title:       title,
+				SkuName:     skuName,
+				Num:         g.Qty,
+				OuterID:     outerID,
+				Price:       base.Price,
+			}
+			merged[g.OrderItemID] = &row
+			mergeOrder = append(mergeOrder, g.OrderItemID)
+		}
+		for _, id := range mergeOrder {
+			snapGoods = append(snapGoods, *merged[id])
+		}
+		snap := in.Order
+		snap.Goods = snapGoods
+		sh, err := s.ConfirmKdzsShip(ctx, token, &dto.ConfirmKdzsShipDTO{
+			OrderID:        in.OrderID,
+			ExpressNo:      b.ExpressNo,
+			ExpressCompany: company,
+			Order:          snap,
+			GroupID:        &group.ID,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("运单 %s 确认失败: %w", b.ExpressNo, err)
+		}
+		created = append(created, sh)
+	}
+	_ = qtyByItem
+	group.Shipments = make([]model.Shipment, 0, len(created))
+	for _, sh := range created {
+		if sh != nil {
+			group.Shipments = append(group.Shipments, *sh)
+		}
+	}
+	return group, nil
+}
+
+// GetShipmentGroup 查发货组及组内运单。
+func (s *ShipmentService) GetShipmentGroup(id uint64) (*model.ShipmentGroup, error) {
+	var g model.ShipmentGroup
+	err := s.db().
+		Where("tenant_id = ? AND id = ?", s.tenantID, id).
+		Preload("Shipments", func(db *gorm.DB) *gorm.DB {
+			return db.Where("status <> ?", model.ShipmentStatusCancelled).Order("id ASC").Preload("Items")
+		}).
+		First(&g).Error
+	if err != nil {
+		return nil, err
+	}
+	for i := range g.Shipments {
+		s.rewriteShipmentURLs(&g.Shipments[i])
+	}
+	return &g, nil
 }
 
 func (s *ShipmentService) findActiveKdzsShipment(orderCoreOrderID uint64, expressNo string) (*model.Shipment, bool) {
@@ -1362,9 +1679,11 @@ func (s *ShipmentService) findActiveKdzsShipment(orderCoreOrderID uint64, expres
 	return &list[0], true
 }
 
-func (s *ShipmentService) shipOrderCore(ctx context.Context, token string, orderID uint64, expressCompany, expressNo string, shipmentItems []model.ShipmentItem) error {
+// shipOrderCore 回写订单中心发货，并返回该运单在订单中心的发货时间（优先快递助手同步时间）。
+// callback=true：顺丰等渠道需回传电商平台；快递助手侧已打单发货传 false，避免重复回传。
+func (s *ShipmentService) shipOrderCore(ctx context.Context, token string, orderID uint64, expressCompany, expressNo string, shipmentItems []model.ShipmentItem, callback bool) (*time.Time, error) {
 	if s.orderCore == nil || orderID == 0 || strings.TrimSpace(expressNo) == "" {
-		return nil
+		return nil, nil
 	}
 	shipItems := make([]ordercore.ShipItemInput, 0, len(shipmentItems))
 	for _, it := range shipmentItems {
@@ -1378,15 +1697,84 @@ func (s *ShipmentService) shipOrderCore(ctx context.Context, token string, order
 	}
 	// 有发货明细却丢了销售行 ID 时，禁止回落成「空 items=整单发完」，避免部分发货被标成全部已发
 	if len(shipmentItems) > 0 && len(shipItems) == 0 {
-		return fmt.Errorf("发货明细缺少订单商品行 ID，无法按商品同步订单中心；请从待发货勾选商品重新下单")
+		return nil, fmt.Errorf("发货明细缺少订单商品行 ID，无法按商品同步订单中心；请从待发货勾选商品重新下单")
 	}
-	_, err := s.orderCore.Ship(ctx, token, orderID, ordercore.ShipRequest{
+	cb := callback
+	raw, err := s.orderCore.Ship(ctx, token, orderID, ordercore.ShipRequest{
 		ExpressCompany: expressCompany,
 		ExpressNo:      strings.TrimSpace(expressNo),
-		Callback:       true,
+		Callback:       &cb,
 		Items:          shipItems,
 	})
-	return err
+	if err != nil {
+		return nil, err
+	}
+	return extractOrderShipmentShippedAt(raw, expressNo), nil
+}
+
+func extractOrderShipmentShippedAt(raw json.RawMessage, expressNo string) *time.Time {
+	if len(raw) == 0 {
+		return nil
+	}
+	expressNo = strings.TrimSpace(expressNo)
+	var o struct {
+		ShippedAt json.RawMessage `json:"shippedAt"`
+		Shipments []struct {
+			ExpressNo string          `json:"expressNo"`
+			ShippedAt json.RawMessage `json:"shippedAt"`
+		} `json:"shipments"`
+	}
+	if err := json.Unmarshal(raw, &o); err != nil {
+		return nil
+	}
+	for _, sh := range o.Shipments {
+		if strings.TrimSpace(sh.ExpressNo) == expressNo {
+			if t := parseJSONTime(sh.ShippedAt); t != nil {
+				return t
+			}
+		}
+	}
+	return parseJSONTime(o.ShippedAt)
+}
+
+func parseJSONTime(raw json.RawMessage) *time.Time {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var t time.Time
+	if err := json.Unmarshal(raw, &t); err == nil && !t.IsZero() {
+		out := t
+		return &out
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return parseFlexibleTime(s)
+	}
+	return nil
+}
+
+func parseFlexibleTime(s string) *time.Time {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	layouts := []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05",
+		"2006-01-02 15:04:05.000",
+		"2006-01-02",
+	}
+	for _, layout := range layouts {
+		if t, err := time.ParseInLocation(layout, s, time.Local); err == nil {
+			return &t
+		}
+		if t, err := time.Parse(layout, s); err == nil {
+			return &t
+		}
+	}
+	return nil
 }
 
 // orderGoodsShipName 发货内容：优先规格名称（skuName），无规格时才用商品名称。

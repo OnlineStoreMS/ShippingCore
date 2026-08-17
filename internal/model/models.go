@@ -106,6 +106,9 @@ type Shipment struct {
 
 	OrderCoreOrderID uint64 `gorm:"index" json:"orderCoreOrderId,omitempty"`
 
+	// GroupID 拆分发货主单；空表示普通单笔发货
+	GroupID *uint64 `gorm:"index" json:"groupId,omitempty"`
+
 	MailNo          string `gorm:"size:64;index" json:"mailNo"`
 	// ShipVia 发货通道：sf=丰桥；kdzs=快递助手（此类单不支持本系统取消运单/云打印）
 	ShipVia         string `gorm:"size:16;index" json:"shipVia,omitempty"`
@@ -117,9 +120,10 @@ type Shipment struct {
 	LabelData    string `gorm:"type:text" json:"labelData,omitempty"`
 	Status       string     `gorm:"size:32;index;default:draft" json:"status"`
 	ErrorMessage string     `gorm:"size:1024" json:"errorMessage,omitempty"`
-	// ShippedAt 首次取得运单号 / 确认发货时间（不因再次打印改动）
+	// ShippedAt 首次取得运单号 / 确认发货时间（不因再次打印改动）；快递助手单优先对齐订单中心/KDZS
 	ShippedAt *time.Time `json:"shippedAt,omitempty"`
-	PrintedAt *time.Time `json:"printedAt,omitempty"` // 最近一次成功打印时间
+	// PrintedAt 本系统最近一次成功打印时间；快递助手打单不写此字段
+	PrintedAt *time.Time `json:"printedAt,omitempty"`
 
 	CargoName   string  `gorm:"size:256" json:"cargoName"`
 	ParcelQty   int     `gorm:"default:1" json:"parcelQty"`
@@ -233,3 +237,20 @@ type KdzsSetting struct {
 }
 
 func (KdzsSetting) TableName() string { return "kdzs_settings" }
+
+// ShipmentGroup 拆分发货主单：一次拆分确认归组，组内每运单仍是独立 shipments 行。
+type ShipmentGroup struct {
+	ID               uint64    `gorm:"primaryKey" json:"id"`
+	TenantID         uint64    `gorm:"index;not null" json:"tenantId"`
+	OrderCoreOrderID uint64    `gorm:"index" json:"orderCoreOrderId,omitempty"`
+	OrderNo          string    `gorm:"size:128;index" json:"orderNo"`
+	SourceRef        string    `gorm:"size:128;index" json:"sourceRef"`
+	ShipVia          string    `gorm:"size:16;index" json:"shipVia,omitempty"`
+	Status           string    `gorm:"size:32;index;default:printed" json:"status"`
+	CreatedAt        time.Time `json:"createdAt"`
+	UpdatedAt        time.Time `json:"updatedAt"`
+
+	Shipments []Shipment `gorm:"foreignKey:GroupID" json:"shipments,omitempty"`
+}
+
+func (ShipmentGroup) TableName() string { return "shipment_groups" }
