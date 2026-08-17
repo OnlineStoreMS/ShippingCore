@@ -179,8 +179,9 @@ type SplitShipLineDTO struct {
 }
 
 // ShipPlanLineInput 保存发货计划行。
+// OrderItemID=0 表示整单拆分规格行（不对应原商品；保存后打单只认计划行）。
 type ShipPlanLineInput struct {
-	OrderItemID uint64 `json:"orderItemId" binding:"required"`
+	OrderItemID uint64 `json:"orderItemId"`
 	SkuName     string `json:"skuName" binding:"required"`
 	Qty         int    `json:"qty" binding:"required"`
 	SortNo      int    `json:"sortNo"`

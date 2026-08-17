@@ -53,17 +53,21 @@ func (s *ShipmentService) PutShipPlan(orderCoreID uint64, in *dto.PutShipPlanDTO
 	}
 
 	prepared := make([]model.ShipPlanLine, 0, len(in.Lines))
+	hasBound := false
+	hasFree := false
 	for i, line := range in.Lines {
 		sku := strings.TrimSpace(line.SkuName)
-		if line.OrderItemID == 0 {
-			return nil, fmt.Errorf("%w: 第 %d 行缺少原商品 ID", ErrBadRequest, i+1)
-		}
 		if sku == "" {
 			return nil, fmt.Errorf("%w: 第 %d 行规格名称不能为空", ErrBadRequest, i+1)
 		}
 		qty := line.Qty
 		if qty <= 0 {
 			return nil, fmt.Errorf("%w: 第 %d 行数量须大于 0", ErrBadRequest, i+1)
+		}
+		if line.OrderItemID > 0 {
+			hasBound = true
+		} else {
+			hasFree = true
 		}
 		sortNo := line.SortNo
 		if sortNo == 0 {
@@ -78,6 +82,9 @@ func (s *ShipmentService) PutShipPlan(orderCoreID uint64, in *dto.PutShipPlanDTO
 			SortNo:      sortNo,
 			Status:      model.ShipPlanStatusPending,
 		})
+	}
+	if hasBound && hasFree {
+		return nil, fmt.Errorf("%w: 整单拆分与按商品拆分不能混用，请统一后再保存", ErrBadRequest)
 	}
 
 	err := s.db().Transaction(func(tx *gorm.DB) error {

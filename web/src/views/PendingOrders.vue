@@ -91,6 +91,8 @@ const pendingShipPlanLines = ref<ShipPlanLine[]>([])
 /** 待发货「拆分」编辑 */
 const splitDialogVisible = ref(false)
 const splitTargetOrder = ref<OMSOrder | null>(null)
+/** partial=按商品拆分；full=整单拆分（全部按新规格行发货） */
+const splitEditMode = ref<'partial' | 'full'>('partial')
 type SplitDraftLine = {
   key: string
   orderItemId: number
@@ -563,7 +565,6 @@ function onSelectionChange(rows: OMSOrder[]) {
 function buildShipPickRows(order: OMSOrder, planLines: ShipPlanLine[]): ShipPickRow[] {
   const remaining = remainingQtyByItem(order)
   const pending = planLines.filter((l) => l.status === 'pending')
-  const covered = new Set(pending.map((l) => l.orderItemId).filter((id) => id > 0))
   const rows: ShipPickRow[] = []
 
   for (const line of pending) {
@@ -573,7 +574,7 @@ function buildShipPickRows(order: OMSOrder, planLines: ShipPlanLine[]): ShipPick
       key: `plan:${line.id}`,
       kind: 'plan',
       planLineId: line.id,
-      orderItemId: line.orderItemId,
+      orderItemId: line.orderItemId || 0,
       label: spec || formatGoodsLine(item) || `规格#${line.id}`,
       skuName: spec,
       qty: Math.max(1, line.qty || 1),
@@ -582,6 +583,13 @@ function buildShipPickRows(order: OMSOrder, planLines: ShipPlanLine[]): ShipPick
     })
   }
 
+  // 整单拆分（存在 orderItemId=0 的计划行）：打单只认计划行
+  const isFullOrderPlan = pending.some((l) => !l.orderItemId)
+  if (isFullOrderPlan) {
+    return rows
+  }
+
+  const covered = new Set(pending.map((l) => l.orderItemId).filter((id) => id > 0))
   ;(order.items || []).forEach((item, index) => {
     if (!item?.id || covered.has(item.id)) return
     const left = remaining[item.id] ?? item.quantity ?? 0
@@ -725,6 +733,10 @@ function addSplitDraftLine(itemIndex: number, orderItemId: number) {
   })
 }
 
+function addFullSplitDraftLine() {
+  addSplitDraftLine(-1, 0)
+}
+
 function removeSplitDraftLine(key: string) {
   splitDraftLines.value = splitDraftLines.value.filter((l) => l.key !== key)
 }
@@ -733,16 +745,39 @@ function clearSplitDraftForItem(itemIndex: number) {
   splitDraftLines.value = splitDraftLines.value.filter((l) => l.itemIndex !== itemIndex)
 }
 
+function onSplitEditModeChange(mode: 'partial' | 'full') {
+  splitEditMode.value = mode
+  splitDraftLines.value = []
+  splitDraftSeq = 0
+  if (mode === 'full') {
+    addFullSplitDraftLine()
+  }
+}
+
 async function openSplitDialog(order: OMSOrder) {
   splitTargetOrder.value = order
   splitDraftLines.value = []
   splitDraftSeq = 0
+  splitEditMode.value = 'partial'
   try {
     const { list } = await shippingApi.getShipPlan(order.id)
     const pending = (list || []).filter((l) => l.status === 'pending')
+    const isFull = pending.length > 0 && pending.every((l) => !l.orderItemId)
+    splitEditMode.value = isFull ? 'full' : 'partial'
     for (const line of pending) {
+      if (isFull || !line.orderItemId) {
+        splitDraftSeq += 1
+        splitDraftLines.value.push({
+          key: `d${splitDraftSeq}`,
+          itemIndex: -1,
+          orderItemId: 0,
+          skuName: line.skuName,
+          qty: Math.max(1, line.qty || 1),
+        })
+        continue
+      }
       const itemIndex = (order.items || []).findIndex((it) => it.id === line.orderItemId)
-      if (itemIndex < 0 || !line.orderItemId) continue
+      if (itemIndex < 0) continue
       splitDraftSeq += 1
       splitDraftLines.value.push({
         key: `d${splitDraftSeq}`,
@@ -771,19 +806,30 @@ async function saveSplitPlan() {
       ElMessage.warning('拆分行数量须大于 0')
       return
     }
+    if (splitEditMode.value === 'partial' && !line.orderItemId) {
+      ElMessage.warning('按商品拆分请为每行关联原商品')
+      return
+    }
   }
   loading.splitSave = true
   try {
+    const full = splitEditMode.value === 'full'
     await shippingApi.putShipPlan(
       order.id,
       splitDraftLines.value.map((l, i) => ({
-        orderItemId: l.orderItemId,
+        orderItemId: full ? 0 : l.orderItemId,
         skuName: l.skuName.trim(),
         qty: l.qty,
         sortNo: i + 1,
       })),
     )
-    ElMessage.success(splitDraftLines.value.length ? '拆分计划已保存' : '已取消拆分')
+    ElMessage.success(
+      splitDraftLines.value.length
+        ? full
+          ? '整单拆分已保存'
+          : '拆分计划已保存'
+        : '已取消拆分',
+    )
     splitDialogVisible.value = false
     await loadOmsOrders()
   } catch (e) {
@@ -1579,48 +1625,35 @@ onMounted(async () => {
       append-to-body
     >
       <div v-if="splitTargetOrder" class="split-edit">
-        <div class="muted" style="margin-bottom: 10px">
-          对需要拆分的商品点「加拆分」并填写规格名称；未拆分的商品在打单时仍按原行勾选。保存后刷新仍保留。
-        </div>
-        <div
-          v-for="(item, index) in splitTargetOrder.items || []"
-          :key="item.id || index"
-          class="split-edit-item"
-        >
-          <div class="split-edit-item-hd">
-            <img v-if="item.picUrl" :src="item.picUrl" class="goods-thumb" alt="" />
-            <div class="ship-item-text">
-              <div>{{ formatGoodsLine(item) || item.productName || '-' }}</div>
-            </div>
-            <el-button
-              v-if="item.id"
-              link
-              type="primary"
-              size="small"
-              @click="addSplitDraftLine(index, item.id!)"
-            >
-              加拆分
-            </el-button>
-            <el-button
-              v-if="splitDraftLinesForItem(index).length"
-              link
-              type="danger"
-              size="small"
-              @click="clearSplitDraftForItem(index)"
-            >
-              取消拆分
-            </el-button>
-          </div>
-          <div
-            v-for="line in splitDraftLinesForItem(index)"
-            :key="line.key"
-            class="split-line-row"
+        <div class="split-edit-mode">
+          <el-radio-group
+            :model-value="splitEditMode"
+            @change="(v: string | number | boolean | undefined) => onSplitEditModeChange(v === 'full' ? 'full' : 'partial')"
           >
+            <el-radio-button value="partial">按商品拆分</el-radio-button>
+            <el-radio-button value="full">整单拆分</el-radio-button>
+          </el-radio-group>
+        </div>
+        <div class="muted" style="margin-bottom: 10px">
+          <template v-if="splitEditMode === 'full'">
+            整单拆分：只填规格名称，不对应原商品；保存后打单发货全部按这些规格行勾选。
+          </template>
+          <template v-else>
+            对需要拆分的商品点「加拆分」并填写规格名称；未拆分的商品在打单时仍按原行勾选。
+          </template>
+        </div>
+
+        <template v-if="splitEditMode === 'full'">
+          <div class="split-lines-hd" style="margin-bottom: 8px">
+            <span class="split-lines-title">拆分规格</span>
+            <el-button type="primary" link size="small" @click="addFullSplitDraftLine">加拆分</el-button>
+          </div>
+          <div v-for="line in splitDraftLines" :key="line.key" class="split-line-row">
             <el-input
               v-model="line.skuName"
               size="small"
               class="split-line-title-input"
-              placeholder="规格名称（必填）"
+              placeholder="规格名称"
               clearable
             />
             <el-input-number
@@ -1633,7 +1666,65 @@ onMounted(async () => {
               删
             </el-button>
           </div>
-        </div>
+          <div v-if="!splitDraftLines.length" class="muted" style="font-size: 12px">
+            点击「加拆分」添加规格明细
+          </div>
+        </template>
+
+        <template v-else>
+          <div
+            v-for="(item, index) in splitTargetOrder.items || []"
+            :key="item.id || index"
+            class="split-edit-item"
+          >
+            <div class="split-edit-item-hd">
+              <img v-if="item.picUrl" :src="item.picUrl" class="goods-thumb" alt="" />
+              <div class="ship-item-text">
+                <div>{{ formatGoodsLine(item) || item.productName || '-' }}</div>
+              </div>
+              <el-button
+                v-if="item.id"
+                link
+                type="primary"
+                size="small"
+                @click="addSplitDraftLine(index, item.id!)"
+              >
+                加拆分
+              </el-button>
+              <el-button
+                v-if="splitDraftLinesForItem(index).length"
+                link
+                type="danger"
+                size="small"
+                @click="clearSplitDraftForItem(index)"
+              >
+                取消拆分
+              </el-button>
+            </div>
+            <div
+              v-for="line in splitDraftLinesForItem(index)"
+              :key="line.key"
+              class="split-line-row"
+            >
+              <el-input
+                v-model="line.skuName"
+                size="small"
+                class="split-line-title-input"
+                placeholder="规格名称"
+                clearable
+              />
+              <el-input-number
+                v-model="line.qty"
+                :min="1"
+                size="small"
+                controls-position="right"
+              />
+              <el-button link type="danger" size="small" @click="removeSplitDraftLine(line.key)">
+                删
+              </el-button>
+            </div>
+          </div>
+        </template>
       </div>
       <template #footer>
         <el-button @click="splitDialogVisible = false">取消</el-button>
@@ -1791,5 +1882,8 @@ onMounted(async () => {
   align-items: flex-start;
   gap: 8px;
   margin-bottom: 8px;
+}
+.split-edit-mode {
+  margin-bottom: 12px;
 }
 </style>

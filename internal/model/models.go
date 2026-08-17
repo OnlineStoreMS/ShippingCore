@@ -260,7 +260,8 @@ const (
 	ShipPlanStatusShipped = "shipped"
 )
 
-// ShipPlanLine 待发货拆分计划行：保存后打单时勾选发货，替换对应原商品行。
+// ShipPlanLine 待发货拆分计划行：保存后打单时勾选发货。
+// OrderItemID>0：按商品拆分，替换该原商品行；OrderItemID=0：整单拆分，打单只认计划行。
 type ShipPlanLine struct {
 	ID            uint64    `gorm:"primaryKey" json:"id"`
 	TenantID      uint64    `gorm:"index;not null" json:"tenantId"`
