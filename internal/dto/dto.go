@@ -165,9 +165,10 @@ type ConfirmKdzsShipDTO struct {
 }
 
 // SplitShipLineDTO 拆分发货一行：商品数量 + 运单号。
+// OrderItemID/Qty 均为 0 时表示「无商品明细追加包裹」（订单已全部发完后追加运单）。
 type SplitShipLineDTO struct {
-	OrderItemID    uint64 `json:"orderItemId" binding:"required"`
-	Qty            int    `json:"qty" binding:"required"`
+	OrderItemID    uint64 `json:"orderItemId"`
+	Qty            int    `json:"qty"`
 	ExpressNo      string `json:"expressNo" binding:"required"`
 	ExpressCompany string `json:"expressCompany"`
 	Title          string `json:"title"`

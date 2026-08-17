@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -1542,11 +1543,14 @@ func (s *ShipmentService) ConfirmKdzsSplitShip(ctx context.Context, token string
 		if no == "" {
 			return nil, fmt.Errorf("%w: 第 %d 行运单号不能为空", ErrBadRequest, i+1)
 		}
-		if line.OrderItemID == 0 {
-			return nil, fmt.Errorf("%w: 第 %d 行缺少商品行 ID", ErrBadRequest, i+1)
-		}
-		if line.Qty <= 0 {
-			return nil, fmt.Errorf("%w: 第 %d 行发货数量须大于 0", ErrBadRequest, i+1)
+		emptyPkg := line.OrderItemID == 0 && line.Qty <= 0
+		if !emptyPkg {
+			if line.OrderItemID == 0 {
+				return nil, fmt.Errorf("%w: 第 %d 行缺少商品行 ID", ErrBadRequest, i+1)
+			}
+			if line.Qty <= 0 {
+				return nil, fmt.Errorf("%w: 第 %d 行发货数量须大于 0", ErrBadRequest, i+1)
+			}
 		}
 		key := strings.ToUpper(no)
 		b, ok := buckets[key]
@@ -1554,6 +1558,9 @@ func (s *ShipmentService) ConfirmKdzsSplitShip(ctx context.Context, token string
 			b = &pkgBucket{ExpressNo: no}
 			buckets[key] = b
 			orderKeys = append(orderKeys, key)
+		}
+		if emptyPkg {
+			continue
 		}
 		b.Goods = append(b.Goods, pkgGoods{
 			OrderItemID: line.OrderItemID,
@@ -1565,6 +1572,15 @@ func (s *ShipmentService) ConfirmKdzsSplitShip(ctx context.Context, token string
 		})
 		qtyByItem[line.OrderItemID] += line.Qty
 	}
+
+	// 有商品的包裹先确认，无明细追加包裹后确认（依赖订单中心「已发完可追加空运单」）
+	sort.SliceStable(orderKeys, func(i, j int) bool {
+		gi, gj := len(buckets[orderKeys[i]].Goods), len(buckets[orderKeys[j]].Goods)
+		if (gi == 0) != (gj == 0) {
+			return gi > 0
+		}
+		return i < j
+	})
 
 	orderNo := strings.TrimSpace(in.Order.OrderNo)
 	sourceRef := firstNonEmptyTrim(strings.TrimSpace(in.Order.SysTid), orderNo, strings.TrimSpace(in.Order.SourceTid))
