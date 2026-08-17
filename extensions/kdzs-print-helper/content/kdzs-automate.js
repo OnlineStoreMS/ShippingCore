@@ -315,43 +315,32 @@
     return true
   }
 
-  /** 先设下单时间并点查询，再勾选订单、选模板 */
+  /** 设置下单时间（优先云端任务时间；无则先用单号探一次列表读「下单时间」列） */
   async function setOrderTimeRange() {
     let range = resolveOrderTimeRange()
     if (!range) {
-      // 任务无时间时：先按单号在当前（宽）列表定位，读行内下单时间
-      const ymds = []
-      for (const order of handoff?.orders || []) {
-        const keys = preferSearchKeys(order)
-        if (!keys.length) continue
+      log('任务未带付款/下单时间，尝试从列表探测…')
+      const orders = handoff?.orders || []
+      const probe = orders[0]
+      if (probe) {
+        const keys = preferSearchKeys(probe)
         for (const k of keys) {
           await queryByOrderNo(k)
-          let hit = null
-          for (const kk of keys) {
-            hit = findRowContaining(kk)
-            if (hit) break
-          }
-          if (!hit) {
-            const rows = listPackageItems()
-            if (rows.length === 1) hit = rows[0]
-          }
+          let hit = findRowContaining(k)
+          if (!hit && listPackageItems().length === 1) hit = listPackageItems()[0]
           if (hit) {
             const y = extractCreateTimeYmd(hit)
             if (y) {
-              ymds.push(y)
-              log(`从列表读到下单时间 ${y}`)
+              range = { fromYmd: y, toYmd: y, source: '列表下单时间列' }
+              log(`探测到下单时间 ${y}`)
+              break
             }
-            break
           }
         }
       }
-      if (ymds.length) {
-        ymds.sort()
-        range = { fromYmd: ymds[0], toYmd: ymds[ymds.length - 1], source: '列表下单时间列' }
-      }
     }
     if (!range?.fromYmd || !range?.toYmd) {
-      log('任务无付款/下单时间，跳过时间筛选（将用页面当前时间范围）', 'error')
+      log('无法确定下单时间，将按页面当前时间范围继续', 'error')
       return false
     }
 
@@ -365,71 +354,64 @@
     const curEnd = (panel.getAttribute('data-end-date') || '').slice(0, 10)
     if (curBegin === range.fromYmd && curEnd === range.toYmd) {
       log(`下单时间已是 ${range.fromYmd} ~ ${range.toYmd}`)
-    } else {
-      log(`设置下单时间：${range.fromYmd} ~ ${range.toYmd}${range.source ? `（${range.source}）` : ''}`)
-      clickEl(panel)
-      await sleep(500)
-
-      let pop = document.querySelector('.range-picker-popover')
-      if (!pop) {
-        await sleep(400)
-        pop = document.querySelector('.range-picker-popover')
-      }
-      if (!pop) {
-        log('下单时间弹层未打开', 'error')
-        return false
-      }
-
-      const pickers = [...pop.querySelectorAll('.kdzs-design-date-picker')]
-      if (pickers.length < 2) {
-        log('下单时间起止选择器不完整', 'error')
-        return false
-      }
-
-      if (!(await pickDayInPicker(pickers[0], range.fromYmd))) return false
-      if (!(await pickDayInPicker(pickers[1], range.toYmd))) return false
-
-      const okBtn =
-        pop.querySelector('.submit-btn') ||
-        [...pop.querySelectorAll('button, div, span')].find((el) => textOf(el).replace(/\s/g, '') === '确定')
-      if (!okBtn) {
-        log('未找到时间筛选「确定」', 'error')
-        return false
-      }
-      clickEl(okBtn)
-      await sleep(400)
-
-      const begin = (document.querySelector('.range-picker-panel')?.getAttribute('data-begin-date') || '').slice(0, 10)
-      const end = (document.querySelector('.range-picker-panel')?.getAttribute('data-end-date') || '').slice(0, 10)
-      if (begin === range.fromYmd && end === range.toYmd) {
-        log(`下单时间已设置为 ${begin} ~ ${end}`)
-      } else {
-        log(`下单时间设置后为 ${begin || '?'} ~ ${end || '?'}，请人工确认`, 'error')
-      }
-    }
-
-    // 时间确定后点「查询」，让列表按新范围刷新
-    await clickQueryButton()
-    return true
-  }
-
-  async function clickQueryButton() {
-    // 清空单号框，避免只按旧单号查；时间范围已收窄
-    const platformInput = findInputByPlaceholder(['平台订单编号'])
-    const sysInput = findInputByPlaceholder(['系统订单编号'])
-    if (platformInput) setInputValue(platformInput, '')
-    if (sysInput) setInputValue(sysInput, '')
-    await sleep(150)
-    const searchBtns = findButtonsByText(['查询', '搜索'])
-    const btn = searchBtns.find((b) => /查\s*询|搜索/.test(textOf(b))) || searchBtns[0]
-    if (btn) {
-      log('点击查询（按新下单时间范围）')
-      clickEl(btn)
-      await sleep(1400)
       return true
     }
-    log('未找到「查询」按钮', 'error')
+
+    log(`设置下单时间：${range.fromYmd} ~ ${range.toYmd}${range.source ? `（${range.source}）` : ''}`)
+    clickEl(panel)
+    await sleep(500)
+
+    let pop = document.querySelector('.range-picker-popover')
+    if (!pop) {
+      await sleep(400)
+      pop = document.querySelector('.range-picker-popover')
+    }
+    if (!pop) {
+      log('下单时间弹层未打开', 'error')
+      return false
+    }
+
+    const pickers = [...pop.querySelectorAll('.kdzs-design-date-picker')]
+    if (pickers.length < 2) {
+      log('下单时间起止选择器不完整', 'error')
+      return false
+    }
+
+    if (!(await pickDayInPicker(pickers[0], range.fromYmd))) return false
+    if (!(await pickDayInPicker(pickers[1], range.toYmd))) return false
+
+    const okBtn =
+      pop.querySelector('.submit-btn') ||
+      [...pop.querySelectorAll('button, div, span')].find((el) => textOf(el).replace(/\s/g, '') === '确定')
+    if (!okBtn) {
+      log('未找到时间筛选「确定」', 'error')
+      return false
+    }
+    clickEl(okBtn)
+    await sleep(400)
+
+    const begin = (document.querySelector('.range-picker-panel')?.getAttribute('data-begin-date') || '').slice(0, 10)
+    const end = (document.querySelector('.range-picker-panel')?.getAttribute('data-end-date') || '').slice(0, 10)
+    if (begin === range.fromYmd && end === range.toYmd) {
+      log(`下单时间已设置为 ${begin} ~ ${end}`)
+      return true
+    }
+    log(`下单时间设置后为 ${begin || '?'} ~ ${end || '?'}，请人工确认`, 'error')
     return false
+  }
+
+  /** 点击「查询」使时间范围生效 */
+  async function clickQuery() {
+    const searchBtns = findButtonsByText(['查询', '搜索'])
+    const btn = searchBtns.find((b) => /查\s*询|搜索/.test(textOf(b))) || searchBtns[0]
+    if (!btn) {
+      log('未找到「查询」按钮', 'error')
+      return false
+    }
+    log('点击查询（应用时间范围）')
+    clickEl(btn)
+    await sleep(1400)
+    return true
   }
 
   async function searchAndSelectOrders() {
@@ -439,6 +421,7 @@
       return 0
     }
 
+    // 与 1.0.7 一致：先勾选，不先改时间（避免干扰）
     await uncheckAllOrders()
 
     let selected = 0
@@ -643,8 +626,9 @@
         await sleep(400)
       }
 
-      // 正确顺序：下单时间+查询 → 勾选订单 → 选模板
+      // 正确顺序：下单时间 → 查询 → 勾选订单 → 选模板
       await setOrderTimeRange()
+      await clickQuery()
       const n = await searchAndSelectOrders()
       log(`订单勾选结果：${n}/${(handoff.orders || []).length}`)
       await selectTemplate()
