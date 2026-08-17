@@ -454,6 +454,14 @@ const shipItemIndeterminate = computed(() => {
   return n > 0 && n < shipItemRows.value.length
 })
 
+/** 全选拆分：不按商品行展示「加拆分」，只用总的拆分按钮 */
+const isFullSplitSelect = computed(() => {
+  if (isBatchShip.value || !shipItemRows.value.length) return false
+  if (selectedShipItemIndexes.value.length !== shipItemRows.value.length) return false
+  const set = new Set(selectedShipItemIndexes.value)
+  return shipItemRows.value.every((r) => set.has(r.index))
+})
+
 const selectedCarrier = computed(() =>
   carrierAccounts.value.find((c) => c.id === shipForm.carrierAccountId),
 )
@@ -560,7 +568,21 @@ function rebuildSplitLinesFromSelection() {
     splitLines.value = []
     return
   }
-  // 勾选商品生成拆分行；已有行保留用户填写的名称/数量
+
+  // 全选拆分：不按商品自动生成明细，只用总「加拆分」；保留已有手填行
+  if (isFullSplitSelect.value) {
+    const selectedIdx = new Set(selectedShipItemIndexes.value)
+    const kept = splitLines.value.filter((l) => selectedIdx.has(l.itemIndex))
+    // 修正关联下标/ID（勾选仍是全选）
+    splitLines.value = kept.map((line) => {
+      const item = order.items?.[line.itemIndex]
+      if (!item?.id) return line
+      return { ...line, orderItemId: item.id }
+    })
+    return
+  }
+
+  // 部分选：勾选哪些商品就生成哪些拆分行；已有行保留用户填写的名称/数量
   const remaining = remainingQtyByItem(order)
   const next: SplitLine[] = []
   for (const idx of selectedShipItemIndexes.value) {
@@ -572,7 +594,6 @@ function rebuildSplitLinesFromSelection() {
         next.push({
           ...line,
           itemIndex: idx,
-          // 不覆盖用户已改的商品名称/规格
           qty: Math.max(1, line.qty || 1),
         })
       }
@@ -612,6 +633,17 @@ function addSplitLine(itemIndex: number) {
   line.title = ''
   line.skuName = ''
   splitLines.value.push(line)
+}
+
+/** 全选拆分：总入口加一行（默认关联首个待发商品，名称自行填写） */
+function addSplitLineGlobal() {
+  const row = shipItemRows.value.find((r) => selectedShipItemIndexes.value.includes(r.index))
+    || shipItemRows.value[0]
+  if (!row) {
+    ElMessage.warning('请先勾选发货商品')
+    return
+  }
+  addSplitLine(row.index)
 }
 
 function onSplitLineProductChange(line: SplitLine, itemIndex: number) {
@@ -1356,7 +1388,7 @@ onMounted(async () => {
                 </div>
               </div>
               <el-button
-                v-if="splitShipMode && selectedShipItemIndexes.includes(row.index)"
+                v-if="splitShipMode && !isFullSplitSelect && selectedShipItemIndexes.includes(row.index)"
                 link
                 type="primary"
                 size="small"
@@ -1367,8 +1399,25 @@ onMounted(async () => {
             </label>
           </el-checkbox-group>
 
-          <div v-if="splitShipMode && splitLines.length" class="split-lines">
-            <div class="split-lines-title">拆分明细（可改商品名称；关联销售行用于回写数量）</div>
+          <div v-if="splitShipMode" class="split-lines">
+            <div class="split-lines-hd">
+              <div class="split-lines-title">
+                {{
+                  isFullSplitSelect
+                    ? '拆分明细（全选：统一加拆分，可改商品名称）'
+                    : '拆分明细（可改商品名称；关联销售行用于回写数量）'
+                }}
+              </div>
+              <el-button
+                v-if="isFullSplitSelect"
+                type="primary"
+                link
+                size="small"
+                @click="addSplitLineGlobal"
+              >
+                加拆分
+              </el-button>
+            </div>
             <div v-for="line in splitLines" :key="line.key" class="split-line-row">
               <el-select
                 :model-value="line.itemIndex"
@@ -1405,6 +1454,9 @@ onMounted(async () => {
                 controls-position="right"
               />
               <el-button link type="danger" size="small" @click="removeSplitLine(line.key)">删</el-button>
+            </div>
+            <div v-if="!splitLines.length" class="muted" style="font-size: 12px; margin-top: 4px">
+              {{ isFullSplitSelect ? '点击上方「加拆分」添加明细' : '勾选商品后将自动生成拆分行' }}
             </div>
           </div>
         </div>
@@ -1695,6 +1747,12 @@ onMounted(async () => {
 .split-lines-title {
   font-size: 12px;
   color: #606266;
+}
+.split-lines-hd {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   margin-bottom: 8px;
 }
 .split-line-row {
