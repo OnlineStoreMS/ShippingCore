@@ -256,3 +256,68 @@ func (h *Handlers) GetShipmentGroup(c *gin.Context) {
 	}
 	response.OK(c, data)
 }
+
+func (h *Handlers) GetShipPlan(c *gin.Context) {
+	orderID, err := strconv.ParseUint(c.Param("orderId"), 10, 64)
+	if err != nil || orderID == 0 {
+		response.Fail(c, http.StatusBadRequest, "invalid orderId")
+		return
+	}
+	data, err := h.shipment(c).GetShipPlan(orderID, c.Query("status"))
+	if err != nil {
+		httputil.HandleServiceError(c, err)
+		return
+	}
+	response.OK(c, gin.H{"list": data, "total": len(data)})
+}
+
+func (h *Handlers) PutShipPlan(c *gin.Context) {
+	orderID, err := strconv.ParseUint(c.Param("orderId"), 10, 64)
+	if err != nil || orderID == 0 {
+		response.Fail(c, http.StatusBadRequest, "invalid orderId")
+		return
+	}
+	var in dto.PutShipPlanDTO
+	if err := c.ShouldBindJSON(&in); err != nil {
+		response.Fail(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	data, err := h.shipment(c).PutShipPlan(orderID, &in)
+	if err != nil {
+		httputil.HandleServiceError(c, err)
+		return
+	}
+	response.OK(c, gin.H{"list": data, "total": len(data)})
+}
+
+func (h *Handlers) CountPendingShipPlans(c *gin.Context) {
+	raw := strings.TrimSpace(c.Query("orderIds"))
+	if raw == "" {
+		response.OK(c, gin.H{"counts": map[uint64]int64{}})
+		return
+	}
+	parts := strings.Split(raw, ",")
+	ids := make([]uint64, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		id, err := strconv.ParseUint(p, 10, 64)
+		if err != nil || id == 0 {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	counts, err := h.shipment(c).CountPendingShipPlanByOrders(ids)
+	if err != nil {
+		httputil.HandleServiceError(c, err)
+		return
+	}
+	// JSON object keys must be strings
+	out := make(map[string]int64, len(counts))
+	for k, v := range counts {
+		out[strconv.FormatUint(k, 10)] = v
+	}
+	response.OK(c, gin.H{"counts": out})
+}

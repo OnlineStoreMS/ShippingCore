@@ -689,6 +689,7 @@ func (s *ShipmentService) CreateFromOrder(in *dto.CreateShipmentFromOrderDTO) (*
 	if err := s.db().Create(&shipment).Error; err != nil {
 		return nil, err
 	}
+	_ = s.MarkShipPlanLinesShipped(collectPlanLineIDsFromGoods(order.Goods))
 	return s.Get(shipment.ID)
 }
 
@@ -1485,6 +1486,7 @@ func (s *ShipmentService) ConfirmKdzsShip(ctx context.Context, token string, in 
 	if err := s.db().Create(&shipment).Error; err != nil {
 		return nil, fmt.Errorf("订单中心已发货，创建发货单失败: %w", err)
 	}
+	_ = s.MarkShipPlanLinesShipped(collectPlanLineIDsFromGoods(order.Goods))
 	return s.Get(shipment.ID)
 }
 
@@ -1676,6 +1678,7 @@ func (s *ShipmentService) ConfirmKdzsSplitShip(ctx context.Context, token string
 		created = append(created, sh)
 	}
 	_ = qtyByItem
+	_ = s.MarkShipPlanLinesShipped(collectPlanLineIDsFromSplitLines(in.Lines))
 	group.Shipments = make([]model.Shipment, 0, len(created))
 	for _, sh := range created {
 		if sh != nil {

@@ -59,6 +59,7 @@ export interface ShipperProfile {
 
 export interface OrderGoods {
   orderItemId?: number
+  planLineId?: number
   title: string
   skuName: string
   num: number
@@ -121,6 +122,7 @@ export interface ConfirmKdzsShipInput {
 
 export interface SplitShipLineInput {
   orderItemId: number
+  planLineId?: number
   qty: number
   expressNo: string
   expressCompany?: string
@@ -397,6 +399,25 @@ export interface OMSOrder {
   items?: OMSOrderItem[]
   address?: OMSOrderAddress
   shipments?: OMSOrderShipment[]
+  /** 待发拆分段数（前端批量拉取后写入） */
+  pendingPlanCount?: number
+}
+
+export interface ShipPlanLine {
+  id: number
+  orderCoreId: number
+  orderItemId: number
+  skuName: string
+  qty: number
+  sortNo: number
+  status: string
+}
+
+export interface ShipPlanLineInput {
+  orderItemId: number
+  skuName: string
+  qty: number
+  sortNo?: number
 }
 
 export interface OMSOrderListResponse {
@@ -633,6 +654,21 @@ export const shippingApi = {
   }) => client.post('/shipment-groups', body).then((r) => unwrap<ShipmentGroup>(r)),
   getShipmentGroup: (id: number) =>
     client.get(`/shipment-groups/${id}`).then((r) => unwrap<ShipmentGroup>(r)),
+
+  getShipPlan: (orderId: number, status?: string) =>
+    client
+      .get(`/orders/${orderId}/ship-plan`, { params: status ? { status } : undefined })
+      .then((r) => unwrap<{ list: ShipPlanLine[]; total: number }>(r)),
+  putShipPlan: (orderId: number, lines: ShipPlanLineInput[]) =>
+    client
+      .put(`/orders/${orderId}/ship-plan`, { lines })
+      .then((r) => unwrap<{ list: ShipPlanLine[]; total: number }>(r)),
+  countPendingShipPlans: (orderIds: number[]) =>
+    client
+      .get('/ship-plan/pending-counts', {
+        params: { orderIds: orderIds.filter((id) => id > 0).join(',') },
+      })
+      .then((r) => unwrap<{ counts: Record<string, number> }>(r)),
 }
 
 export function maskCheckword(value?: string): string {

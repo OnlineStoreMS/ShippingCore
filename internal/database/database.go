@@ -48,6 +48,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&model.WaybillAuth{},
 		&model.KdzsAccount{},
 		&model.KdzsSetting{},
+		&model.ShipPlanLine{},
 	); err != nil {
 		return err
 	}
@@ -63,6 +64,8 @@ func ensureIndexes(db *gorm.DB) error {
 			CREATE INDEX IF NOT EXISTS idx_shipments_tenant_source_ref ON shipments (tenant_id, source_ref);
 			CREATE INDEX IF NOT EXISTS idx_shipments_tenant_group ON shipments (tenant_id, group_id);
 			CREATE INDEX IF NOT EXISTS idx_shipment_groups_tenant_order ON shipment_groups (tenant_id, order_core_order_id);
+			CREATE INDEX IF NOT EXISTS idx_ship_plan_lines_tenant_order ON ship_plan_lines (tenant_id, order_core_id);
+			CREATE INDEX IF NOT EXISTS idx_ship_plan_lines_tenant_order_status ON ship_plan_lines (tenant_id, order_core_id, status);
 		`).Error
 	default:
 		return nil

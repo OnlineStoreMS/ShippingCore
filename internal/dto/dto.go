@@ -106,6 +106,7 @@ type SearchPromiseTmResult struct {
 
 type OrderGoodsDTO struct {
 	OrderItemID uint64  `json:"orderItemId"`
+	PlanLineID  uint64  `json:"planLineId,omitempty"`
 	Title       string  `json:"title"`
 	SkuName     string  `json:"skuName"`
 	Num         int     `json:"num"`
@@ -168,12 +169,42 @@ type ConfirmKdzsShipDTO struct {
 // OrderItemID/Qty 均为 0 时表示「无商品明细追加包裹」（订单已全部发完后追加运单）。
 type SplitShipLineDTO struct {
 	OrderItemID    uint64 `json:"orderItemId"`
+	PlanLineID     uint64 `json:"planLineId,omitempty"`
 	Qty            int    `json:"qty"`
 	ExpressNo      string `json:"expressNo" binding:"required"`
 	ExpressCompany string `json:"expressCompany"`
 	Title          string `json:"title"`
 	SkuName        string `json:"skuName"`
 	OuterID        string `json:"outerId"`
+}
+
+// ShipPlanLineInput 保存发货计划行。
+type ShipPlanLineInput struct {
+	OrderItemID uint64 `json:"orderItemId" binding:"required"`
+	SkuName     string `json:"skuName" binding:"required"`
+	Qty         int    `json:"qty" binding:"required"`
+	SortNo      int    `json:"sortNo"`
+}
+
+// PutShipPlanDTO 覆盖保存订单的待发计划行（仅替换 pending；已发 shipped 保留）。
+type PutShipPlanDTO struct {
+	Lines []ShipPlanLineInput `json:"lines"`
+}
+
+// ShipPlanLineDTO 发货计划行回传。
+type ShipPlanLineDTO struct {
+	ID          uint64 `json:"id"`
+	OrderCoreID uint64 `json:"orderCoreId"`
+	OrderItemID uint64 `json:"orderItemId"`
+	SkuName     string `json:"skuName"`
+	Qty         int    `json:"qty"`
+	SortNo      int    `json:"sortNo"`
+	Status      string `json:"status"`
+}
+
+// MarkShipPlanShippedDTO 将计划行标为已发。
+type MarkShipPlanShippedDTO struct {
+	IDs []uint64 `json:"ids" binding:"required,min=1"`
 }
 
 // ConfirmKdzsSplitShipDTO 一次拆分确认：建发货组 + 多运单。

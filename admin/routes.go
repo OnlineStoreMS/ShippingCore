@@ -54,4 +54,8 @@ func RegisterRoutes(g *gin.RouterGroup, h *Handlers) {
 	g.POST("/shipments/confirm-kdzs-split-ship", h.ConfirmKdzsSplitShip)
 	g.POST("/shipment-groups", h.CreateShipmentGroup)
 	g.GET("/shipment-groups/:id", h.GetShipmentGroup)
+
+	g.GET("/orders/:orderId/ship-plan", h.GetShipPlan)
+	g.PUT("/orders/:orderId/ship-plan", h.PutShipPlan)
+	g.GET("/ship-plan/pending-counts", h.CountPendingShipPlans)
 }
