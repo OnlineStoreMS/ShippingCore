@@ -1544,12 +1544,19 @@ func (s *ShipmentService) ConfirmKdzsSplitShip(ctx context.Context, token string
 			return nil, fmt.Errorf("%w: 第 %d 行运单号不能为空", ErrBadRequest, i+1)
 		}
 		emptyPkg := line.OrderItemID == 0 && line.Qty <= 0
-		if !emptyPkg {
+		freeForm := line.OrderItemID == 0 && line.Qty > 0 // 整单拆分：仅规格名称，无原商品对应
+		if !emptyPkg && !freeForm {
 			if line.OrderItemID == 0 {
 				return nil, fmt.Errorf("%w: 第 %d 行缺少商品行 ID", ErrBadRequest, i+1)
 			}
 			if line.Qty <= 0 {
 				return nil, fmt.Errorf("%w: 第 %d 行发货数量须大于 0", ErrBadRequest, i+1)
+			}
+		}
+		if freeForm {
+			sku := firstNonEmptyTrim(line.SkuName, line.Title)
+			if sku == "" {
+				return nil, fmt.Errorf("%w: 第 %d 行规格名称不能为空", ErrBadRequest, i+1)
 			}
 		}
 		key := strings.ToUpper(no)
@@ -1570,7 +1577,9 @@ func (s *ShipmentService) ConfirmKdzsSplitShip(ctx context.Context, token string
 			OuterID:     strings.TrimSpace(line.OuterID),
 			Company:     strings.TrimSpace(line.ExpressCompany),
 		})
-		qtyByItem[line.OrderItemID] += line.Qty
+		if line.OrderItemID > 0 {
+			qtyByItem[line.OrderItemID] += line.Qty
+		}
 	}
 
 	// 有商品的包裹先确认，无明细追加包裹后确认（依赖订单中心「已发完可追加空运单」）
@@ -1606,18 +1615,35 @@ func (s *ShipmentService) ConfirmKdzsSplitShip(ctx context.Context, token string
 		b := buckets[key]
 		company := defaultCompany
 		snapGoods := make([]dto.OrderGoodsDTO, 0, len(b.Goods))
-		// 同运单同商品合并数量
+		// 同运单同商品合并数量；整单拆分（orderItemId=0）按规格名分行不合并错位
 		merged := map[uint64]*dto.OrderGoodsDTO{}
 		mergeOrder := make([]uint64, 0)
+		freeIdx := uint64(0)
 		for _, g := range b.Goods {
 			if c := firstNonEmptyTrim(g.Company); c != "" {
 				company = c
 			}
 			base := goodsByID[g.OrderItemID]
+			skuName := firstNonEmptyTrim(g.SkuName, g.Title, base.SkuName, base.Title)
 			title := firstNonEmptyTrim(g.Title, base.Title)
-			skuName := firstNonEmptyTrim(g.SkuName, base.SkuName)
 			outerID := firstNonEmptyTrim(g.OuterID, base.OuterID)
-			if cur, ok := merged[g.OrderItemID]; ok {
+			mergeKey := g.OrderItemID
+			if mergeKey == 0 {
+				freeIdx++
+				mergeKey = ^uint64(0) - freeIdx // 伪 key，避免多规格挤成一行
+				row := dto.OrderGoodsDTO{
+					OrderItemID: 0,
+					Title:       title,
+					SkuName:     skuName,
+					Num:         g.Qty,
+					OuterID:     outerID,
+					Price:       0,
+				}
+				merged[mergeKey] = &row
+				mergeOrder = append(mergeOrder, mergeKey)
+				continue
+			}
+			if cur, ok := merged[mergeKey]; ok {
 				cur.Num += g.Qty
 				continue
 			}
@@ -1629,8 +1655,8 @@ func (s *ShipmentService) ConfirmKdzsSplitShip(ctx context.Context, token string
 				OuterID:     outerID,
 				Price:       base.Price,
 			}
-			merged[g.OrderItemID] = &row
-			mergeOrder = append(mergeOrder, g.OrderItemID)
+			merged[mergeKey] = &row
+			mergeOrder = append(mergeOrder, mergeKey)
 		}
 		for _, id := range mergeOrder {
 			snapGoods = append(snapGoods, *merged[id])
