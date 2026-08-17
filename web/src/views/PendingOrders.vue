@@ -560,7 +560,7 @@ function rebuildSplitLinesFromSelection() {
     splitLines.value = []
     return
   }
-  // 与多商品发货相同：勾选哪些商品就生成哪些拆分行；数量以明细为准
+  // 勾选商品生成拆分行；已有行保留用户填写的名称/数量
   const remaining = remainingQtyByItem(order)
   const next: SplitLine[] = []
   for (const idx of selectedShipItemIndexes.value) {
@@ -572,8 +572,7 @@ function rebuildSplitLinesFromSelection() {
         next.push({
           ...line,
           itemIndex: idx,
-          title: formatGoodsLine(item) || item.productName || '',
-          skuName: item.skuSpecs || '',
+          // 不覆盖用户已改的商品名称/规格
           qty: Math.max(1, line.qty || 1),
         })
       }
@@ -603,11 +602,30 @@ function newSplitLine(
   }
 }
 
+/** 加一条拆分：默认带当前商品，名称可改；也可在明细里切换关联商品 */
 function addSplitLine(itemIndex: number) {
   const order = shipTargets.value[0]
   const item = order?.items?.[itemIndex]
   if (!item?.id) return
-  splitLines.value.push(newSplitLine(itemIndex, item, 1))
+  const line = newSplitLine(itemIndex, item, 1)
+  // 新增行名称留空便于填写拆分商品名；仍关联该销售行用于回写数量
+  line.title = ''
+  line.skuName = ''
+  splitLines.value.push(line)
+}
+
+function onSplitLineProductChange(line: SplitLine, itemIndex: number) {
+  const order = shipTargets.value[0]
+  const item = order?.items?.[itemIndex]
+  if (!item?.id) return
+  line.itemIndex = itemIndex
+  line.orderItemId = item.id
+  if (!line.title.trim()) {
+    line.title = formatGoodsLine(item) || item.productName || ''
+  }
+  if (!line.skuName.trim()) {
+    line.skuName = item.skuSpecs || ''
+  }
 }
 
 function removeSplitLine(key: string) {
@@ -631,6 +649,10 @@ function validateSplitLines(): boolean {
   for (const line of splitLines.value) {
     if (!line.orderItemId || line.qty <= 0) {
       ElMessage.warning('拆分行数量须大于 0')
+      return false
+    }
+    if (!line.title.trim()) {
+      ElMessage.warning('请填写拆分行商品名称')
       return false
     }
   }
@@ -1346,9 +1368,36 @@ onMounted(async () => {
           </el-checkbox-group>
 
           <div v-if="splitShipMode && splitLines.length" class="split-lines">
-            <div class="split-lines-title">拆分明细（与多商品发货相同，每行商品+数量对应一个运单）</div>
+            <div class="split-lines-title">拆分明细（可改商品名称；关联销售行用于回写数量）</div>
             <div v-for="line in splitLines" :key="line.key" class="split-line-row">
-              <div class="split-line-name" :title="line.title">{{ line.title }}</div>
+              <el-select
+                :model-value="line.itemIndex"
+                size="small"
+                class="split-line-product"
+                placeholder="关联商品"
+                @change="(v: number) => onSplitLineProductChange(line, v)"
+              >
+                <el-option
+                  v-for="row in shipItemRows"
+                  :key="row.index"
+                  :label="formatGoodsLine(row.item) || row.item.productName || `商品#${row.item.id}`"
+                  :value="row.index"
+                />
+              </el-select>
+              <el-input
+                v-model="line.title"
+                size="small"
+                class="split-line-title-input"
+                placeholder="拆分商品名称"
+                clearable
+              />
+              <el-input
+                v-model="line.skuName"
+                size="small"
+                class="split-line-sku-input"
+                placeholder="规格（可选）"
+                clearable
+              />
               <el-input-number
                 v-model="line.qty"
                 :min="1"
@@ -1653,6 +1702,19 @@ onMounted(async () => {
   align-items: center;
   gap: 8px;
   margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+.split-line-product {
+  width: 140px;
+  flex-shrink: 0;
+}
+.split-line-title-input {
+  flex: 1;
+  min-width: 140px;
+}
+.split-line-sku-input {
+  width: 120px;
+  flex-shrink: 0;
 }
 .split-line-name {
   flex: 1;
