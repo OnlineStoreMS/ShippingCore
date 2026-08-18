@@ -232,13 +232,19 @@
     if (!input) return false
     setInputValue(input, orderNo)
     await sleep(200)
-    const searchBtns = findButtonsByText(['查询', '搜索'])
-    const btn = searchBtns.find((b) => /查\s*询|搜索/.test(textOf(b))) || searchBtns[0]
+    const btn = findMainQueryButton()
     if (btn) {
-      clickEl(btn)
+      clickEl(btn.closest('button') || btn)
       await sleep(1400)
     } else {
-      await sleep(600)
+      const searchBtns = findButtonsByText(['查询', '搜索'])
+      const fallback = searchBtns.find((b) => /查\s*询|搜索/.test(textOf(b))) || searchBtns[0]
+      if (fallback) {
+        clickEl(fallback.closest('button') || fallback)
+        await sleep(1400)
+      } else {
+        await sleep(600)
+      }
     }
     return true
   }
@@ -419,7 +425,7 @@
     const curBegin = (panel.getAttribute('data-begin-date') || '').slice(0, 10)
     const curEnd = (panel.getAttribute('data-end-date') || '').slice(0, 10)
     if (curBegin === range.fromYmd && curEnd === range.toYmd) {
-      log(`下单时间已是 ${range.fromYmd} ~ ${range.toYmd}`)
+      log(`下单时间已是 ${range.fromYmd} ~ ${range.toYmd}，仍将点查询刷新列表`)
       return true
     }
 
@@ -463,7 +469,19 @@
       return false
     }
     okBtn.click()
-    await sleep(500)
+    await sleep(800)
+
+    // 弹层若未关，再点一次确定
+    pop = document.querySelector('.range-picker-popover')
+    if (pop && visible(pop)) {
+      const again =
+        pop.querySelector('.submit-btn') ||
+        [...pop.querySelectorAll('button')].find((el) => textOf(el).replace(/\s/g, '') === '确定')
+      if (again) {
+        again.click()
+        await sleep(500)
+      }
+    }
 
     const begin = (document.querySelector('.range-picker-panel')?.getAttribute('data-begin-date') || '').slice(0, 10)
     const end = (document.querySelector('.range-picker-panel')?.getAttribute('data-end-date') || '').slice(0, 10)
@@ -475,28 +493,89 @@
     return false
   }
 
+  /** 筛选栏里真正的「查询」按钮（避开弹层/其它文案） */
+  function findMainQueryButton() {
+    const exact = (el) => {
+      const t = textOf(el).replace(/\s/g, '')
+      return t === '查询' || t === '搜索'
+    }
+    const nearPicker = []
+    const panel = document.querySelector('.range-picker-panel')
+    const toolbar =
+      panel?.closest('.ant-form, form, [class*="filter"], [class*="Filter"], [class*="search"], [class*="Search"]') ||
+      document.querySelector('.kdzs-design-range-picker-wrapper')?.parentElement?.parentElement
+
+    const pool = toolbar
+      ? [...toolbar.querySelectorAll('button, .ant-btn, a')]
+      : [...document.querySelectorAll('button.ant-btn, button, .ant-btn')]
+
+    for (const el of pool) {
+      if (!visible(el) || !exact(el)) continue
+      // 排除日期弹层内按钮
+      if (el.closest('.range-picker-popover, .ant-picker-dropdown')) continue
+      nearPicker.push(el)
+    }
+    if (nearPicker.length) {
+      // 优先主色/实心按钮
+      return (
+        nearPicker.find((el) => el.classList.contains('ant-btn-primary') || el.className.includes('primary')) ||
+        nearPicker[0]
+      )
+    }
+
+    // 全局兜底：精确文案的 button
+    return (
+      [...document.querySelectorAll('button, .ant-btn')].find(
+        (el) => visible(el) && exact(el) && !el.closest('.range-picker-popover, .ant-picker-dropdown'),
+      ) || null
+    )
+  }
+
   /** 点击「查询」使时间范围生效 */
-  async function clickQuery() {
-    const searchBtns = findButtonsByText(['查询', '搜索'])
-    const btn = searchBtns.find((b) => /查\s*询|搜索/.test(textOf(b))) || searchBtns[0]
+  async function clickQuery(reason = '应用时间范围') {
+    // 等日期弹层完全收起，避免点到遮罩/错误节点
+    for (let i = 0; i < 8; i++) {
+      const pop = document.querySelector('.range-picker-popover')
+      if (!pop || !visible(pop)) break
+      await sleep(200)
+    }
+
+    let btn = findMainQueryButton()
+    if (!btn) {
+      const searchBtns = findButtonsByText(['查询', '搜索']).filter(
+        (el) => !el.closest('.range-picker-popover, .ant-picker-dropdown'),
+      )
+      btn =
+        searchBtns.find((b) => {
+          const t = textOf(b).replace(/\s/g, '')
+          return t === '查询' || t === '搜索'
+        }) || searchBtns.find((b) => b.tagName === 'BUTTON') || searchBtns[0]
+    }
     if (!btn) {
       log('未找到「查询」按钮', 'error')
       return false
     }
-    log('点击查询（应用时间范围）')
-    clickEl(btn)
-    await sleep(1400)
+    log(`点击查询（${reason}）`)
+    try {
+      btn.scrollIntoView({ block: 'center', inline: 'nearest' })
+    } catch {
+      /* ignore */
+    }
+    // 优先点到真正的 button
+    const realBtn = btn.closest('button') || btn
+    clickEl(realBtn)
+    await sleep(1600)
     return true
   }
 
-  async function searchAndSelectOrders() {
+  async function searchAndSelectOrders(opts = {}) {
+    const preferListFirst = !!opts.preferListFirst
     const orders = handoff?.orders || []
     if (!orders.length) {
       log('无订单信息，跳过选单', 'error')
       return 0
     }
 
-    // 与 1.0.7 一致：先勾选，不先改时间（避免干扰）
     await uncheckAllOrders()
 
     let selected = 0
@@ -507,17 +586,33 @@
       log(`查找订单 ${keys.join(' / ')}`)
 
       let hit = null
-      for (const k of keys) {
-        await queryByOrderNo(k)
-        for (const kk of keys) {
-          hit = findRowContaining(kk)
+      // 时间筛选查询后列表里通常已有目标单：先直接找，避免再点查询刷新
+      if (preferListFirst) {
+        for (const k of keys) {
+          hit = findRowContaining(k)
           if (hit) break
         }
-        if (!hit) {
-          const rows = listPackageItems()
-          if (rows.length === 1) hit = rows[0]
+        if (!hit && listPackageItems().length === 1) {
+          hit = listPackageItems()[0]
         }
-        if (hit) break
+        if (hit) {
+          log(`列表中已找到：${label}（跳过单号查询）`)
+        }
+      }
+
+      if (!hit) {
+        for (const k of keys) {
+          await queryByOrderNo(k)
+          for (const kk of keys) {
+            hit = findRowContaining(kk)
+            if (hit) break
+          }
+          if (!hit) {
+            const rows = listPackageItems()
+            if (rows.length === 1) hit = rows[0]
+          }
+          if (hit) break
+        }
       }
 
       if (!hit) {
@@ -697,11 +792,11 @@
       await sleep(500)
       await waitForPrintBatchReady()
 
-      // 下单时间类型 → 日期范围 → 查询 → 勾选订单 → 模板
+      // 下单时间 → 点一次查询 → 在结果里勾选（列表已有则不再按单号查，避免二次刷新）
       const n = await (async () => {
         await setOrderTimeRange()
-        await clickQuery()
-        return searchAndSelectOrders()
+        await clickQuery('应用时间范围')
+        return searchAndSelectOrders({ preferListFirst: true })
       })()
       log(`订单勾选结果：${n}/${(handoff.orders || []).length}`)
       await selectTemplate()
