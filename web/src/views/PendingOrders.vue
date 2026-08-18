@@ -380,6 +380,16 @@ function formatGoodsLine(g?: { productName?: string; skuSpecs?: string; quantity
   return `${title} x${num}`
 }
 
+/** 订单中心拆分子行（同步后出现在 items 里），列表/拆分编辑只展示原商品根行 */
+function isOMSSplitChild(it?: { splitKind?: string; parentOrderItemId?: number } | null) {
+  if (!it) return false
+  return !!(it.splitKind || (it.parentOrderItemId && it.parentOrderItemId > 0))
+}
+
+function rootOMSItems(order?: OMSOrder | null) {
+  return (order?.items || []).filter((it) => !isOMSSplitChild(it))
+}
+
 /** 付款时间：YYYY-MM-DD HH:mm:ss */
 function formatPayTime(v?: string) {
   if (!v) return '-'
@@ -434,6 +444,7 @@ function goodsRowsWithShipMark(order: OMSOrder) {
     isSplit: boolean
   }
   const rows: Row[] = []
+  const rootItems = rootOMSItems(order)
 
   if (isFullOrderPlan) {
     for (const p of [...pendingPlans, ...shippedPlans]) {
@@ -456,7 +467,7 @@ function goodsRowsWithShipMark(order: OMSOrder) {
     const covered = new Set(plans.map((l) => l.orderItemId).filter((id) => id > 0))
     for (const p of pendingPlans) {
       const qty = Math.max(1, p.qty || 1)
-      const item = (order.items || []).find((it) => it.id === p.orderItemId)
+      const item = rootItems.find((it) => it.id === p.orderItemId)
       rows.push({
         key: `plan:${p.id}`,
         kind: 'plan',
@@ -471,7 +482,7 @@ function goodsRowsWithShipMark(order: OMSOrder) {
     for (const p of shippedPlans) {
       if (!p.orderItemId) continue
       const qty = Math.max(1, p.qty || 1)
-      const item = (order.items || []).find((it) => it.id === p.orderItemId)
+      const item = rootItems.find((it) => it.id === p.orderItemId)
       rows.push({
         key: `plan-shipped:${p.id}`,
         kind: 'plan',
@@ -483,7 +494,7 @@ function goodsRowsWithShipMark(order: OMSOrder) {
         isSplit: true,
       })
     }
-    ;(order.items || []).forEach((g, idx) => {
+    rootItems.forEach((g, idx) => {
       if (g.id && covered.has(g.id)) return
       const shipped = g.id ? shippedMap[g.id] || 0 : 0
       const total = g.quantity || 0
@@ -501,7 +512,7 @@ function goodsRowsWithShipMark(order: OMSOrder) {
     return rows
   }
 
-  return (order.items || []).map((g, idx) => {
+  return rootItems.map((g, idx) => {
     const shipped = g.id ? shippedMap[g.id] || 0 : 0
     const total = g.quantity || 0
     return {
@@ -705,7 +716,7 @@ function buildShipPickRows(order: OMSOrder, planLines: ShipPlanLine[]): ShipPick
   ;(order.items || []).forEach((item, index) => {
     if (!item?.id || covered.has(item.id)) return
     // 订单中心拆分子行由计划行承载，勿再作为原商品勾选
-    if (item.splitKind || item.parentOrderItemId) return
+    if (isOMSSplitChild(item)) return
     const left = remaining[item.id] ?? item.quantity ?? 0
     if (left <= 0) return
     const spec = (item.skuSpecs || '').trim()
@@ -923,7 +934,7 @@ async function openSplitDialog(order: OMSOrder) {
         })
         continue
       }
-      const itemIndex = (order.items || []).findIndex((it) => it.id === line.orderItemId)
+      const itemIndex = rootOMSItems(order).findIndex((it) => it.id === line.orderItemId)
       if (itemIndex < 0) continue
       splitDraftSeq += 1
       splitDraftLines.value.push({
@@ -1833,7 +1844,7 @@ onMounted(async () => {
 
         <template v-else>
           <div
-            v-for="(item, index) in splitTargetOrder.items || []"
+            v-for="(item, index) in rootOMSItems(splitTargetOrder)"
             :key="item.id || index"
             class="split-edit-item"
           >
