@@ -87,6 +87,8 @@ type CargoLine = {
   itemCount: number
   /** 订单中心销售行 ID，按商品发货同步必备 */
   orderItemId?: number
+  /** 发货计划行 ID（拆分规格） */
+  planLineId?: number
   title?: string
   outerId?: string
   price?: number
@@ -103,6 +105,7 @@ function emptyCargoLine(name = ''): CargoLine {
     heightCm: undefined,
     itemCount: 1,
     orderItemId: 0,
+    planLineId: 0,
     title: '',
     outerId: '',
     price: 0,
@@ -330,6 +333,7 @@ function applyHandoff(h: SFOrderHandoff) {
       if (!name) return null
       const line = emptyCargoLine(name)
       line.orderItemId = g.orderItemId || 0
+      line.planLineId = g.planLineId || 0
       line.title = g.title || ''
       line.itemCount = g.num > 0 ? g.num : 1
       line.parcelQty = 1
@@ -341,6 +345,18 @@ function applyHandoff(h: SFOrderHandoff) {
   form.cargoLines = lines.length ? lines : [emptyCargoLine('文件')]
   form.fillMode = 'unit'
   form.totalParcelQty = 1
+
+  // 带入打单发货页已选物流账号 / 寄件人
+  if (h.carrierAccountId && carriers.value.some((c) => c.id === h.carrierAccountId)) {
+    form.carrierAccountId = h.carrierAccountId
+    const c = carriers.value.find((x) => x.id === h.carrierAccountId)
+    const preferMonthly = h.useMonthly ?? !!c?.useMonthly
+    if (preferMonthly && c?.custId) form.payMode = 'monthly'
+    else if (form.payMode === 'monthly') form.payMode = 'cash'
+  }
+  if (h.shipperProfileId && shippers.value.some((s) => s.id === h.shipperProfileId)) {
+    form.shipperProfileId = h.shipperProfileId
+  }
 }
 
 async function uploadRemarkImage(options: UploadRequestOptions) {
@@ -709,6 +725,7 @@ function buildOrderSnapshot(): OrderSnapshot {
   const sourceTid = form.sourceTid.trim() || orderNo || sysTid
   const goods = namedCargoLines.value.map((l) => ({
     orderItemId: l.orderItemId || 0,
+    planLineId: l.planLineId || 0,
     title: l.title || '',
     skuName: l.name.trim(),
     num: lineContribCount(l) || 1,
@@ -746,9 +763,11 @@ function validate(): string | null {
   if (!form.receiverName.trim() || !form.receiverMobile.trim()) return '请填写收件人姓名与手机'
   if (!form.receiverAddress.trim()) return '请填写收件详细地址'
   if (!namedCargoLines.value.length) return '请至少填写一行物品名称'
-  // 从订单中心带入时，须保留销售行 ID，否则订单会按「空明细=全部发完」误标已发货
+  // 从订单中心带入时，须保留销售行 ID（或拆分计划行），否则订单会按「空明细=全部发完」误标已发货
   if (handoffMeta.value?.orderId) {
-    const linked = namedCargoLines.value.filter((l) => (l.orderItemId || 0) > 0)
+    const linked = namedCargoLines.value.filter(
+      (l) => (l.orderItemId || 0) > 0 || (l.planLineId || 0) > 0,
+    )
     if (!linked.length) {
       return '订单商品行 ID 丢失，请关闭本页后从待发货重新勾选商品进入寄件'
     }

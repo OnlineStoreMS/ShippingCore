@@ -5,6 +5,11 @@ export const SF_ORDER_HANDOFF_KEY = 'shippingcore.sfOrder.handoff'
 export interface SFOrderHandoff {
   orderId?: number
   sourceSystem?: 'ordercore' | 'storesyncagent'
+  /** 打单发货页已选物流账号，标准寄件页带入 */
+  carrierAccountId?: number
+  /** 打单发货页已选寄件人 */
+  shipperProfileId?: number
+  useMonthly?: boolean
   order: OrderSnapshot
 }
 
@@ -33,10 +38,23 @@ export function shippedQtyByItem(order: OMSOrder & { shipments?: OMSOrderShipmen
   }
   if (!hasItemRows && (order.shipments || []).length > 0 && order.shipStatus === 'shipped') {
     for (const it of order.items || []) {
-      if (it.id) map[it.id] = it.quantity || 0
+      if (it.id && isShippableOMSItem(order, it)) map[it.id] = it.quantity || 0
     }
   }
   return map
+}
+
+function isShippableOMSItem(
+  order: OMSOrder,
+  it: NonNullable<OMSOrder['items']>[number],
+): boolean {
+  if (it.splitKind === 'partial' || it.splitKind === 'full') return true
+  const items = order.items || []
+  if (items.some((x) => x.splitKind === 'full')) return false
+  if (it.id && items.some((x) => x.splitKind === 'partial' && x.parentOrderItemId === it.id)) {
+    return false
+  }
+  return true
 }
 
 export function remainingQtyByItem(order: OMSOrder & { shipments?: OMSOrderShipment[] }): Record<number, number> {
@@ -44,6 +62,10 @@ export function remainingQtyByItem(order: OMSOrder & { shipments?: OMSOrderShipm
   const out: Record<number, number> = {}
   for (const it of order.items || []) {
     if (!it.id) continue
+    if (!isShippableOMSItem(order, it)) {
+      out[it.id] = 0
+      continue
+    }
     out[it.id] = Math.max(0, (it.quantity || 0) - (shipped[it.id] || 0))
   }
   return out
@@ -112,6 +134,7 @@ export function omsOrderToSnapshot(
           .filter(Boolean)
       : all.filter((g) => {
           if (!g.id) return true
+          if (!isShippableOMSItem(order, g)) return false
           const left = remaining[g.id]
           return left == null || left > 0
         })

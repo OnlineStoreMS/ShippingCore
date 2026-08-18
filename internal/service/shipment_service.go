@@ -689,7 +689,7 @@ func (s *ShipmentService) CreateFromOrder(in *dto.CreateShipmentFromOrderDTO) (*
 	if err := s.db().Create(&shipment).Error; err != nil {
 		return nil, err
 	}
-	_ = s.MarkShipPlanLinesShipped(collectPlanLineIDsFromGoods(order.Goods))
+	_ = s.ApplyShipPlanProgressFromGoods(order.Goods)
 	return s.Get(shipment.ID)
 }
 
@@ -1486,7 +1486,7 @@ func (s *ShipmentService) ConfirmKdzsShip(ctx context.Context, token string, in 
 	if err := s.db().Create(&shipment).Error; err != nil {
 		return nil, fmt.Errorf("订单中心已发货，创建发货单失败: %w", err)
 	}
-	_ = s.MarkShipPlanLinesShipped(collectPlanLineIDsFromGoods(order.Goods))
+	_ = s.ApplyShipPlanProgressFromGoods(order.Goods)
 	return s.Get(shipment.ID)
 }
 
@@ -1678,7 +1678,7 @@ func (s *ShipmentService) ConfirmKdzsSplitShip(ctx context.Context, token string
 		created = append(created, sh)
 	}
 	_ = qtyByItem
-	_ = s.MarkShipPlanLinesShipped(collectPlanLineIDsFromSplitLines(in.Lines))
+	_ = s.ApplyShipPlanProgressFromSplitLines(in.Lines)
 	group.Shipments = make([]model.Shipment, 0, len(created))
 	for _, sh := range created {
 		if sh != nil {
@@ -1740,9 +1740,8 @@ func (s *ShipmentService) shipOrderCore(ctx context.Context, token string, order
 			Qty:         it.Quantity,
 		})
 	}
-	// 有发货明细却丢了销售行 ID 时，禁止回落成「空 items=整单发完」，避免部分发货被标成全部已发
 	if len(shipmentItems) > 0 && len(shipItems) == 0 {
-		return nil, fmt.Errorf("发货明细缺少订单商品行 ID，无法按商品同步订单中心；请从待发货勾选商品重新下单")
+		return nil, fmt.Errorf("发货明细缺少订单商品行 ID；请从待发货重新保存拆分并勾选子行后下单")
 	}
 	cb := callback
 	raw, err := s.orderCore.Ship(ctx, token, orderID, ordercore.ShipRequest{

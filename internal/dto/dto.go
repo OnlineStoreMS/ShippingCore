@@ -194,13 +194,14 @@ type PutShipPlanDTO struct {
 
 // ShipPlanLineDTO 发货计划行回传。
 type ShipPlanLineDTO struct {
-	ID          uint64 `json:"id"`
-	OrderCoreID uint64 `json:"orderCoreId"`
-	OrderItemID uint64 `json:"orderItemId"`
-	SkuName     string `json:"skuName"`
-	Qty         int    `json:"qty"`
-	SortNo      int    `json:"sortNo"`
-	Status      string `json:"status"`
+	ID               uint64 `json:"id"`
+	OrderCoreID      uint64 `json:"orderCoreId"`
+	OrderItemID      uint64 `json:"orderItemId"`
+	SplitOrderItemID uint64 `json:"splitOrderItemId"`
+	SkuName          string `json:"skuName"`
+	Qty              int    `json:"qty"`
+	SortNo           int    `json:"sortNo"`
+	Status           string `json:"status"`
 }
 
 // MarkShipPlanShippedDTO 将计划行标为已发。

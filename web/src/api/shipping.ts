@@ -358,6 +358,9 @@ export interface OMSOrderItem {
   skuSpecs?: string
   quantity?: number
   picUrl?: string
+  parentOrderItemId?: number
+  splitKind?: '' | 'partial' | 'full'
+  shipPlanLineId?: number
 }
 
 export interface OMSOrderShipmentItem {
@@ -401,12 +404,15 @@ export interface OMSOrder {
   shipments?: OMSOrderShipment[]
   /** 待发拆分段数（前端批量拉取后写入） */
   pendingPlanCount?: number
+  /** 发货计划行（含 pending/shipped，列表展示用） */
+  shipPlanLines?: ShipPlanLine[]
 }
 
 export interface ShipPlanLine {
   id: number
   orderCoreId: number
   orderItemId: number
+  splitOrderItemId?: number
   skuName: string
   qty: number
   sortNo: number

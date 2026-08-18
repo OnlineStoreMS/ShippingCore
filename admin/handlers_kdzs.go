@@ -282,7 +282,7 @@ func (h *Handlers) PutShipPlan(c *gin.Context) {
 		response.Fail(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	data, err := h.shipment(c).PutShipPlan(orderID, &in)
+	data, err := h.shipment(c).PutShipPlan(c.Request.Context(), authcontext.BearerToken(c), orderID, &in)
 	if err != nil {
 		httputil.HandleServiceError(c, err)
 		return

@@ -262,17 +262,19 @@ const (
 
 // ShipPlanLine 待发货拆分计划行：保存后打单时勾选发货。
 // OrderItemID>0：按商品拆分，替换该原商品行；OrderItemID=0：整单拆分，打单只认计划行。
+// SplitOrderItemID：OrderCore 同步后的拆分子行 ID（打单/回写用）。
 type ShipPlanLine struct {
-	ID            uint64    `gorm:"primaryKey" json:"id"`
-	TenantID      uint64    `gorm:"index;not null" json:"tenantId"`
-	OrderCoreID   uint64    `gorm:"index;not null;column:order_core_id" json:"orderCoreId"`
-	OrderItemID   uint64    `gorm:"index;not null" json:"orderItemId"`
-	SkuName       string    `gorm:"size:256;not null" json:"skuName"`
-	Qty           int       `gorm:"not null;default:1" json:"qty"`
-	SortNo        int       `gorm:"not null;default:0" json:"sortNo"`
-	Status        string    `gorm:"size:16;index;not null;default:pending" json:"status"`
-	CreatedAt     time.Time `json:"createdAt"`
-	UpdatedAt     time.Time `json:"updatedAt"`
+	ID               uint64    `gorm:"primaryKey" json:"id"`
+	TenantID         uint64    `gorm:"index;not null" json:"tenantId"`
+	OrderCoreID      uint64    `gorm:"index;not null;column:order_core_id" json:"orderCoreId"`
+	OrderItemID      uint64    `gorm:"index;not null" json:"orderItemId"`
+	SplitOrderItemID uint64    `gorm:"index;default:0" json:"splitOrderItemId"`
+	SkuName          string    `gorm:"size:256;not null" json:"skuName"`
+	Qty              int       `gorm:"not null;default:1" json:"qty"`
+	SortNo           int       `gorm:"not null;default:0" json:"sortNo"`
+	Status           string    `gorm:"size:16;index;not null;default:pending" json:"status"`
+	CreatedAt        time.Time `json:"createdAt"`
+	UpdatedAt        time.Time `json:"updatedAt"`
 }
 
 func (ShipPlanLine) TableName() string { return "ship_plan_lines" }

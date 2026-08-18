@@ -138,6 +138,46 @@ func (c *Client) Unship(ctx context.Context, token string, orderID uint64, body 
 	return c.doJSON(ctx, http.MethodPost, reqURL, token, body)
 }
 
+type SyncSplitItemsRequest struct {
+	Mode  string                 `json:"mode"`
+	Lines []SyncSplitItemLine    `json:"lines"`
+}
+
+type SyncSplitItemLine struct {
+	ParentOrderItemID uint64 `json:"parentOrderItemId"`
+	SkuName           string `json:"skuName"`
+	Qty               int    `json:"qty"`
+	ShipPlanLineID    uint64 `json:"shipPlanLineId"`
+}
+
+type SyncSplitItemsResult struct {
+	Mode  string `json:"mode"`
+	Lines []struct {
+		ID                uint64 `json:"id"`
+		ParentOrderItemID uint64 `json:"parentOrderItemId"`
+		SkuName           string `json:"skuName"`
+		Qty               int    `json:"qty"`
+		ShipPlanLineID    uint64 `json:"shipPlanLineId"`
+		SplitKind         string `json:"splitKind"`
+	} `json:"lines"`
+}
+
+func (c *Client) SyncSplitItems(ctx context.Context, token string, orderID uint64, body SyncSplitItemsRequest) (*SyncSplitItemsResult, error) {
+	if c == nil || c.BaseURL == "" {
+		return nil, fmt.Errorf("ordercore 未配置")
+	}
+	reqURL := fmt.Sprintf("%s/api/v1/admin/orders/%d/split-items", c.BaseURL, orderID)
+	raw, err := c.doJSON(ctx, http.MethodPut, reqURL, token, body)
+	if err != nil {
+		return nil, err
+	}
+	var out SyncSplitItemsResult
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("解析 split-items 响应失败: %w", err)
+	}
+	return &out, nil
+}
+
 func (c *Client) doJSON(ctx context.Context, method, reqURL, token string, body interface{}) (json.RawMessage, error) {
 	var reader io.Reader
 	if body != nil {

@@ -79,7 +79,10 @@ type ShipPickRow = {
   itemIndex?: number
   label: string
   skuName: string
-  qty: number
+  /** 待发上限 */
+  maxQty: number
+  /** 本次发货件数（可改，默认=待发） */
+  shipQty: number
   picUrl?: string
   /** KDZS 确认时按行填运单（多选混发时也可共用一个号） */
   expressNo?: string
@@ -408,17 +411,108 @@ function buildKdzsOrderTimeRange(orders: OMSOrder[]): { from: string; to: string
   }
 }
 
-/** 部分发货订单：商品行附带已发标记（按运单明细汇总） */
+/** 列表商品展示：有拆分计划时用规格行替换被拆原商品（原 xN 不再作为发货口径） */
 function goodsRowsWithShipMark(order: OMSOrder) {
-  const shippedMap = order.shipStatus === 'partial_shipped' ? shippedQtyByItem(order) : {}
+  const shippedMap = shippedQtyByItem(order)
+  const plans = order.shipPlanLines || []
+  const pendingPlans = plans.filter((l) => l.status === 'pending')
+  const shippedPlans = plans.filter((l) => l.status === 'shipped')
+  const isFullOrderPlan =
+    pendingPlans.some((l) => !l.orderItemId) ||
+    (pendingPlans.length === 0 &&
+      shippedPlans.length > 0 &&
+      shippedPlans.every((l) => !l.orderItemId))
+
+  type Row = {
+    key: string
+    kind: 'plan' | 'item'
+    title: string
+    picUrl?: string
+    shipped: number
+    total: number
+    fullyShipped: boolean
+    isSplit: boolean
+  }
+  const rows: Row[] = []
+
+  if (isFullOrderPlan) {
+    for (const p of [...pendingPlans, ...shippedPlans]) {
+      const qty = Math.max(1, p.qty || 1)
+      const done = p.status === 'shipped'
+      rows.push({
+        key: `plan:${p.id}`,
+        kind: 'plan',
+        title: `${(p.skuName || '').trim() || `规格#${p.id}`} x${qty}`,
+        shipped: done ? qty : 0,
+        total: qty,
+        fullyShipped: done,
+        isSplit: true,
+      })
+    }
+    return rows
+  }
+
+  if (plans.length) {
+    const covered = new Set(plans.map((l) => l.orderItemId).filter((id) => id > 0))
+    for (const p of pendingPlans) {
+      const qty = Math.max(1, p.qty || 1)
+      const item = (order.items || []).find((it) => it.id === p.orderItemId)
+      rows.push({
+        key: `plan:${p.id}`,
+        kind: 'plan',
+        title: `${(p.skuName || '').trim() || `规格#${p.id}`} x${qty}`,
+        picUrl: item?.picUrl,
+        shipped: 0,
+        total: qty,
+        fullyShipped: false,
+        isSplit: true,
+      })
+    }
+    for (const p of shippedPlans) {
+      if (!p.orderItemId) continue
+      const qty = Math.max(1, p.qty || 1)
+      const item = (order.items || []).find((it) => it.id === p.orderItemId)
+      rows.push({
+        key: `plan-shipped:${p.id}`,
+        kind: 'plan',
+        title: `${(p.skuName || '').trim() || `规格#${p.id}`} x${qty}`,
+        picUrl: item?.picUrl,
+        shipped: qty,
+        total: qty,
+        fullyShipped: true,
+        isSplit: true,
+      })
+    }
+    ;(order.items || []).forEach((g, idx) => {
+      if (g.id && covered.has(g.id)) return
+      const shipped = g.id ? shippedMap[g.id] || 0 : 0
+      const total = g.quantity || 0
+      rows.push({
+        key: `item:${idx}`,
+        kind: 'item',
+        title: formatGoodsLine(g) || '-',
+        picUrl: g.picUrl,
+        shipped,
+        total,
+        fullyShipped: shipped > 0 && total > 0 && shipped >= total,
+        isSplit: false,
+      })
+    })
+    return rows
+  }
+
   return (order.items || []).map((g, idx) => {
     const shipped = g.id ? shippedMap[g.id] || 0 : 0
     const total = g.quantity || 0
     return {
-      idx,
-      g,
+      key: `item:${idx}`,
+      kind: 'item' as const,
+      title: formatGoodsLine(g) || '-',
+      picUrl: g.picUrl,
       shipped,
+      total,
       fullyShipped: shipped > 0 && total > 0 && shipped >= total,
+      isSplit: false,
     }
   })
 }
@@ -497,7 +591,23 @@ async function attachPendingPlanCounts(orders: OMSOrder[]) {
     const { counts } = await shippingApi.countPendingShipPlans(ids)
     for (const o of orders) {
       o.pendingPlanCount = counts[String(o.id)] || 0
+      o.shipPlanLines = o.shipPlanLines || []
     }
+    // 有拆分（待发或已部分发）的订单拉取计划行，列表用规格行替换原商品展示
+    const needPlans = orders.filter(
+      (o) => (o.pendingPlanCount || 0) > 0 || o.shipStatus === 'partial_shipped',
+    )
+    await Promise.all(
+      needPlans.map(async (o) => {
+        try {
+          const { list } = await shippingApi.getShipPlan(o.id)
+          o.shipPlanLines = list || []
+          o.pendingPlanCount = (list || []).filter((l) => l.status === 'pending').length
+        } catch {
+          o.shipPlanLines = []
+        }
+      }),
+    )
   } catch {
     /* optional */
   }
@@ -570,14 +680,16 @@ function buildShipPickRows(order: OMSOrder, planLines: ShipPlanLine[]): ShipPick
   for (const line of pending) {
     const item = (order.items || []).find((it) => it.id === line.orderItemId)
     const spec = (line.skuName || '').trim()
+    const maxQty = Math.max(1, line.qty || 1)
     rows.push({
       key: `plan:${line.id}`,
       kind: 'plan',
       planLineId: line.id,
-      orderItemId: line.orderItemId || 0,
-      label: spec || formatGoodsLine(item) || `规格#${line.id}`,
+      orderItemId: line.splitOrderItemId || line.orderItemId || 0,
+      label: spec || item?.productName || `规格#${line.id}`,
       skuName: spec,
-      qty: Math.max(1, line.qty || 1),
+      maxQty,
+      shipQty: maxQty,
       picUrl: item?.picUrl,
       expressNo: '',
     })
@@ -592,19 +704,23 @@ function buildShipPickRows(order: OMSOrder, planLines: ShipPlanLine[]): ShipPick
   const covered = new Set(pending.map((l) => l.orderItemId).filter((id) => id > 0))
   ;(order.items || []).forEach((item, index) => {
     if (!item?.id || covered.has(item.id)) return
+    // 订单中心拆分子行由计划行承载，勿再作为原商品勾选
+    if (item.splitKind || item.parentOrderItemId) return
     const left = remaining[item.id] ?? item.quantity ?? 0
     if (left <= 0) return
     const spec = (item.skuSpecs || '').trim()
     const product = (item.productName || '').trim()
     const name = spec || product || `商品#${item.id}`
+    const maxQty = left
     rows.push({
       key: `item:${index}`,
       kind: 'item',
       orderItemId: item.id,
       itemIndex: index,
-      label: formatGoodsLine(item) || name,
+      label: name,
       skuName: name,
-      qty: left,
+      maxQty,
+      shipQty: maxQty,
       picUrl: item.picUrl,
       expressNo: '',
     })
@@ -628,18 +744,37 @@ function toggleShipPickAll(checked: boolean) {
   selectedShipKeys.value = checked ? shipPickRows.value.map((r) => r.key) : []
 }
 
-/** 按勾选的可发货行生成快照 */
+/** 按勾选的可发货行生成快照；拆分行须已同步到订单中心子行 orderItemId */
 function buildCheckedShipSnapshot(order: OMSOrder) {
   const base = omsOrderToSnapshot(order)
-  const goods = selectedPickRows.value.map((r) => ({
-    orderItemId: r.orderItemId || 0,
-    planLineId: r.planLineId || 0,
-    title: r.skuName,
-    skuName: r.skuName,
-    num: Math.max(1, r.qty || 1),
-    outerId: '',
-    price: 0,
-  }))
+  const goods: {
+    orderItemId: number
+    planLineId: number
+    title: string
+    skuName: string
+    num: number
+    outerId: string
+    price: number
+  }[] = []
+
+  for (const r of selectedPickRows.value) {
+    const spec = (r.skuName || '').trim()
+    const need = Math.min(Math.max(1, r.shipQty || 1), Math.max(1, r.maxQty || 1))
+    const planLineId = r.planLineId || 0
+    if (!(r.orderItemId > 0)) {
+      throw new Error(`「${spec || '规格'}」尚未同步订单中心子行，请重新保存拆分后再打单`)
+    }
+    goods.push({
+      orderItemId: r.orderItemId,
+      planLineId,
+      title: spec,
+      skuName: spec,
+      num: need,
+      outerId: '',
+      price: 0,
+    })
+  }
+
   return { ...base, goods }
 }
 
@@ -662,6 +797,15 @@ function ensureShipItemsSelected(): boolean {
       ElMessage.warning('发货规格名称不能为空')
       return false
     }
+    if (!(r.orderItemId > 0)) {
+      ElMessage.warning('拆分规格尚未同步订单中心子行，请重新保存拆分后再打单')
+      return false
+    }
+    const maxQty = Math.max(1, r.maxQty || 1)
+    if (!(r.shipQty > 0) || r.shipQty > maxQty) {
+      ElMessage.warning(`发货件数须在 1～${maxQty} 之间`)
+      return false
+    }
   }
   return true
 }
@@ -671,6 +815,9 @@ function goSFOrder(order: OMSOrder) {
   saveSFOrderHandoff({
     orderId: order.id,
     sourceSystem: 'ordercore',
+    carrierAccountId: shipForm.carrierAccountId,
+    shipperProfileId: shipForm.shipperProfileId,
+    useMonthly: shipForm.useMonthly,
     order: snap,
   })
   router.push('/sf-order')
@@ -1148,7 +1295,7 @@ async function submitKdzsConfirm() {
         return {
           orderItemId: r.orderItemId || 0,
           planLineId: r.planLineId || 0,
-          qty: r.qty,
+          qty: Math.min(Math.max(1, r.shipQty || 1), Math.max(1, r.maxQty || 1)),
           expressNo: (r.expressNo || '').trim(),
           title: spec,
           skuName: spec,
@@ -1292,16 +1439,19 @@ onMounted(async () => {
         <el-table-column prop="shopName" label="店铺" min-width="120" show-overflow-tooltip />
         <el-table-column label="商品信息" min-width="280">
           <template #default="{ row }">
-            <div v-if="row.items?.length" class="goods-list">
+            <div v-if="goodsRowsWithShipMark(row).length" class="goods-list">
               <div
                 v-for="entry in goodsRowsWithShipMark(row)"
-                :key="entry.idx"
+                :key="entry.key"
                 class="goods-cell"
                 :class="{ 'is-shipped': entry.fullyShipped }"
               >
-                <img v-if="entry.g.picUrl" :src="entry.g.picUrl" class="goods-thumb" alt="" />
+                <img v-if="entry.picUrl" :src="entry.picUrl" class="goods-thumb" alt="" />
                 <div class="goods-text">
-                  <span>{{ formatGoodsLine(entry.g) || '-' }}</span>
+                  <span>{{ entry.title || '-' }}</span>
+                  <el-tag v-if="entry.isSplit && !entry.fullyShipped" size="small" type="success" class="ship-tag">
+                    拆分
+                  </el-tag>
                   <el-tag
                     v-if="entry.shipped > 0"
                     size="small"
@@ -1311,7 +1461,7 @@ onMounted(async () => {
                     {{
                       entry.fullyShipped
                         ? '已发货'
-                        : `已发 ${entry.shipped}/${entry.g.quantity || 0}`
+                        : `已发 ${entry.shipped}/${entry.total || 0}`
                     }}
                   </el-tag>
                 </div>
@@ -1384,10 +1534,20 @@ onMounted(async () => {
               <img v-if="row.picUrl" :src="row.picUrl" class="goods-thumb" alt="" />
               <div class="ship-item-text">
                 <div>
-                  {{ row.label || '-' }}
+                  {{ row.label || row.skuName || '-' }}
                   <el-tag v-if="row.kind === 'plan'" size="small" type="success" class="ml8">拆分</el-tag>
                 </div>
-                <div class="muted" style="font-size: 12px; margin-top: 2px">待发 ×{{ row.qty }}</div>
+                <div class="ship-item-qty" @click.stop>
+                  <span class="muted">本次</span>
+                  <el-input-number
+                    v-model="row.shipQty"
+                    :min="1"
+                    :max="row.maxQty"
+                    size="small"
+                    controls-position="right"
+                  />
+                  <span class="muted">待发 ×{{ row.maxQty }}</span>
+                </div>
               </div>
             </label>
           </el-checkbox-group>
@@ -1593,7 +1753,7 @@ onMounted(async () => {
           <div v-for="row in selectedPickRows" :key="row.key" class="batch-row split-confirm-row">
             <div class="batch-order">
               {{ row.label || row.skuName }}
-              <span class="muted">×{{ row.qty }}</span>
+              <span class="muted">×{{ row.shipQty }}</span>
             </div>
             <el-input v-model="row.expressNo" placeholder="运单号" />
           </div>
@@ -1839,6 +1999,16 @@ onMounted(async () => {
   font-size: 13px;
   line-height: 1.4;
   color: #303133;
+}
+.ship-item-qty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+.ship-item-qty .el-input-number {
+  width: 110px;
 }
 .ship-form { margin-top: 8px; }
 .print-mode-radios {
