@@ -63,6 +63,8 @@ type ShipmentListQuery struct {
 	Goods          string // 商品名称
 	PrintedAtStart *time.Time
 	PrintedAtEnd   *time.Time
+	ShippedAtStart *time.Time
+	ShippedAtEnd   *time.Time
 	Page           int
 	PageSize       int
 }
@@ -128,6 +130,13 @@ func (s *ShipmentService) List(q ShipmentListQuery) ([]model.Shipment, int64, er
 	if q.PrintedAtEnd != nil {
 		dbq = dbq.Where("COALESCE(printed_at, created_at) <= ?", q.PrintedAtEnd)
 	}
+	// 发货时间：优先 shipped_at，空则回退 created_at（与列表展示一致）
+	if q.ShippedAtStart != nil {
+		dbq = dbq.Where("COALESCE(shipped_at, created_at) >= ?", q.ShippedAtStart)
+	}
+	if q.ShippedAtEnd != nil {
+		dbq = dbq.Where("COALESCE(shipped_at, created_at) <= ?", q.ShippedAtEnd)
+	}
 
 	var total int64
 	if err := dbq.Count(&total).Error; err != nil {
@@ -135,7 +144,9 @@ func (s *ShipmentService) List(q ShipmentListQuery) ([]model.Shipment, int64, er
 	}
 	var list []model.Shipment
 	offset := (page - 1) * pageSize
-	if err := dbq.Preload("Items").Order("id DESC").Offset(offset).Limit(pageSize).Find(&list).Error; err != nil {
+	if err := dbq.Preload("Items").
+		Order("COALESCE(shipped_at, created_at) DESC, id DESC").
+		Offset(offset).Limit(pageSize).Find(&list).Error; err != nil {
 		return nil, 0, err
 	}
 	s.rewriteShipmentList(list)

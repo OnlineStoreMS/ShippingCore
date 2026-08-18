@@ -297,6 +297,8 @@ func (h *Handlers) ListShipments(c *gin.Context) {
 		Goods:          firstQuery(c, "goods", "goods_name"),
 		PrintedAtStart: parseQueryTime(firstQuery(c, "printedAtStart", "printed_at_start")),
 		PrintedAtEnd:   parseQueryTimeEnd(firstQuery(c, "printedAtEnd", "printed_at_end")),
+		ShippedAtStart: parseQueryTime(firstQuery(c, "shippedAtStart", "shipped_at_start")),
+		ShippedAtEnd:   parseQueryTimeEnd(firstQuery(c, "shippedAtEnd", "shipped_at_end")),
 		Page:           page,
 		PageSize:       pageSize,
 	})

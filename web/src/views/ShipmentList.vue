@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Printer, Refresh, Search } from '@element-plus/icons-vue'
@@ -11,7 +11,7 @@ import {
   type Shipment,
 } from '../api/shipping'
 import { printShipmentByChannel } from '../utils/sfPrintLabel'
-import { formatDateTime } from '../utils/date'
+import { dateRangeDefaultTime, dateShortcuts, defaultDateRange, formatDateTime } from '../utils/date'
 import {
   getSavedPrinterIndex,
   listLocalPrinters,
@@ -25,6 +25,7 @@ import {
   renderLabelPdfToPng,
 } from '../utils/labelPdfPreview'
 import { isKdzsShipment, isSFManagedShipment } from '../utils/shipmentFlags'
+import { bindTableShiftWheel, useTableFillHeight } from '../composables/useTableFillHeight'
 
 const router = useRouter()
 
@@ -33,6 +34,26 @@ const list = ref<Shipment[]>([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
+
+const pageRef = ref<HTMLElement | null>(null)
+const headerRef = ref<HTMLElement | null>(null)
+const filtersRef = ref<HTMLElement | null>(null)
+const pagerRef = ref<HTMLElement | null>(null)
+const tableRef = ref<{ $el?: HTMLElement } | null>(null)
+const { tableHeight, updateTableHeight } = useTableFillHeight(pageRef, [headerRef, filtersRef, pagerRef], {
+  min: 280,
+  gap: 24,
+})
+
+let unbindWheel: (() => void) | undefined
+onUnmounted(() => unbindWheel?.())
+
+async function rebindWheel() {
+  await nextTick()
+  unbindWheel?.()
+  unbindWheel = bindTableShiftWheel(tableRef.value?.$el ?? null)
+  updateTableHeight()
+}
 
 type DisplayRow = {
   key: string
@@ -77,6 +98,7 @@ const filters = reactive({
   receiver: '',
   platform: '',
   goods: '',
+  shippedRange: defaultDateRange() as [string, string] | null,
 })
 
 const detailVisible = ref(false)
@@ -243,7 +265,7 @@ function printTimeOf(row: Pick<Shipment, 'shipVia' | 'printedAt' | 'mailNo' | 's
 async function load() {
   loading.value = true
   try {
-    const res = await shippingApi.listShipments({
+    const params: Record<string, unknown> = {
       page: page.value,
       pageSize: pageSize.value,
       status: filters.status || undefined,
@@ -254,9 +276,15 @@ async function load() {
       receiver: filters.receiver.trim() || undefined,
       platform: filters.platform || undefined,
       goods: filters.goods.trim() || undefined,
-    })
+    }
+    if (filters.shippedRange?.length === 2) {
+      params.shippedAtStart = filters.shippedRange[0]
+      params.shippedAtEnd = filters.shippedRange[1]
+    }
+    const res = await shippingApi.listShipments(params)
     list.value = res.list
     total.value = res.total
+    await rebindWheel()
   } catch (e) {
     ElMessage.error((e as Error).message || '加载失败')
   } finally {
@@ -278,6 +306,7 @@ function resetFilters() {
   filters.receiver = ''
   filters.platform = ''
   filters.goods = ''
+  filters.shippedRange = defaultDateRange()
   search()
 }
 
@@ -506,10 +535,10 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="page">
-    <el-card v-loading="loading">
+  <div ref="pageRef" class="page">
+    <el-card v-loading="loading" class="list-card">
       <template #header>
-        <div class="card-hd">
+        <div ref="headerRef" class="card-hd">
           <span>发货单列表</span>
           <div class="printer-bar">
             <el-select
@@ -528,7 +557,7 @@ onMounted(() => {
         </div>
       </template>
 
-      <div class="filters">
+      <div ref="filtersRef" class="filters">
         <el-input
           v-model="filters.keyword"
           clearable
@@ -536,6 +565,18 @@ onMounted(() => {
           :prefix-icon="Search"
           style="width: 280px"
           @keyup.enter="search"
+        />
+        <el-date-picker
+          v-model="filters.shippedRange"
+          type="datetimerange"
+          range-separator="至"
+          start-placeholder="发货开始"
+          end-placeholder="发货结束"
+          value-format="YYYY-MM-DD HH:mm:ss"
+          :shortcuts="dateShortcuts"
+          :default-time="dateRangeDefaultTime"
+          style="width: 360px"
+          @change="search"
         />
         <el-select v-model="filters.status" placeholder="状态" clearable style="width: 120px" @change="search">
           <el-option v-for="opt in statusOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
@@ -582,7 +623,15 @@ onMounted(() => {
         <el-button @click="resetFilters">重置</el-button>
       </div>
 
-      <el-table :data="displayRows" border stripe empty-text="暂无发货单" row-key="key">
+      <el-table
+        ref="tableRef"
+        :data="displayRows"
+        :height="tableHeight"
+        border
+        stripe
+        empty-text="暂无发货单"
+        row-key="key"
+      >
         <el-table-column label="订单号" min-width="160" show-overflow-tooltip>
           <template #default="{ row }">
             <div class="order-cell">
@@ -707,7 +756,7 @@ onMounted(() => {
         </el-table-column>
       </el-table>
 
-      <div class="pager">
+      <div ref="pagerRef" class="pager">
         <el-pagination
           v-model:current-page="page"
           :page-size="pageSize"
@@ -843,6 +892,26 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.page {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 56px - 32px);
+  min-height: 0;
+  overflow: hidden;
+}
+.list-card {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.list-card :deep(.el-card__body) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
 .card-hd {
   display: flex;
   align-items: center;
@@ -859,9 +928,16 @@ onMounted(() => {
 .filters {
   display: flex;
   gap: 8px;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
   flex-wrap: wrap;
   align-items: center;
+  flex-shrink: 0;
+}
+.pager {
+  display: flex;
+  justify-content: flex-end;
+  flex-shrink: 0;
+  padding-top: 12px;
 }
 .cell-stack {
   line-height: 1.4;
@@ -881,7 +957,6 @@ onMounted(() => {
   white-space: normal;
   word-break: break-all;
 }
-.pager { margin-top: 16px; display: flex; justify-content: flex-end; }
 .goods-list { display: flex; flex-direction: column; gap: 6px; }
 .goods-cell { display: flex; gap: 8px; align-items: flex-start; }
 .order-cell { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
