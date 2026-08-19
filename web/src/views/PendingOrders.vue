@@ -390,6 +390,35 @@ function rootOMSItems(order?: OMSOrder | null) {
   return (order?.items || []).filter((it) => !isOMSSplitChild(it))
 }
 
+/** 订单同步后根行 id 可能变化，拆分计划上的 orderItemId 会失效；尽量重绑到当前根行 */
+function rematchPlanParentId(
+  order: OMSOrder,
+  orderItemId?: number,
+  splitOrderItemId?: number,
+): number {
+  const roots = rootOMSItems(order)
+  const want = Number(orderItemId || 0)
+  if (want > 0 && roots.some((r) => r.id === want)) return want
+  if (splitOrderItemId) {
+    const child = (order.items || []).find((it) => it.id === splitOrderItemId)
+    const parentId = Number(child?.parentOrderItemId || 0)
+    if (parentId > 0 && roots.some((r) => r.id === parentId)) return parentId
+  }
+  // 单商品单：旧 id 失效时整批挂到唯一根行
+  if (roots.length === 1 && roots[0].id) return roots[0].id
+  return 0
+}
+
+function healShipPlanLines(order: OMSOrder, lines: ShipPlanLine[]): ShipPlanLine[] {
+  if (!lines?.length) return lines || []
+  return lines.map((l) => {
+    if (!l.orderItemId) return l
+    const next = rematchPlanParentId(order, l.orderItemId, l.splitOrderItemId)
+    if (!next || next === l.orderItemId) return l
+    return { ...l, orderItemId: next }
+  })
+}
+
 /** 付款时间：YYYY-MM-DD HH:mm:ss */
 function formatPayTime(v?: string) {
   if (!v) return '-'
@@ -612,8 +641,8 @@ async function attachPendingPlanCounts(orders: OMSOrder[]) {
       needPlans.map(async (o) => {
         try {
           const { list } = await shippingApi.getShipPlan(o.id)
-          o.shipPlanLines = list || []
-          o.pendingPlanCount = (list || []).filter((l) => l.status === 'pending').length
+          o.shipPlanLines = healShipPlanLines(o, list || [])
+          o.pendingPlanCount = (o.shipPlanLines || []).filter((l) => l.status === 'pending').length
         } catch {
           o.shipPlanLines = []
         }
@@ -919,9 +948,11 @@ async function openSplitDialog(order: OMSOrder) {
   splitEditMode.value = 'partial'
   try {
     const { list } = await shippingApi.getShipPlan(order.id)
-    const pending = (list || []).filter((l) => l.status === 'pending')
+    const pending = healShipPlanLines(order, (list || []).filter((l) => l.status === 'pending'))
     const isFull = pending.length > 0 && pending.every((l) => !l.orderItemId)
     splitEditMode.value = isFull ? 'full' : 'partial'
+    const roots = rootOMSItems(order)
+    let needsPersistHeal = false
     for (const line of pending) {
       if (isFull || !line.orderItemId) {
         splitDraftSeq += 1
@@ -934,16 +965,38 @@ async function openSplitDialog(order: OMSOrder) {
         })
         continue
       }
-      const itemIndex = rootOMSItems(order).findIndex((it) => it.id === line.orderItemId)
-      if (itemIndex < 0) continue
+      const rawId = Number(line.orderItemId || 0)
+      const parentId = rematchPlanParentId(order, rawId, line.splitOrderItemId)
+      const itemIndex = roots.findIndex((it) => it.id === parentId)
+      if (itemIndex < 0 || !parentId) continue
+      if (parentId !== rawId) needsPersistHeal = true
       splitDraftSeq += 1
       splitDraftLines.value.push({
         key: `d${splitDraftSeq}`,
         itemIndex,
-        orderItemId: line.orderItemId,
+        orderItemId: parentId,
         skuName: line.skuName,
         qty: Math.max(1, line.qty || 1),
       })
+    }
+    // 过期父行 id 写回计划并重新同步订单中心子行，避免编辑空白、列表重复显示原商品
+    if (needsPersistHeal && splitDraftLines.value.length && splitEditMode.value === 'partial') {
+      try {
+        await shippingApi.putShipPlan(
+          order.id,
+          splitDraftLines.value.map((l, i) => ({
+            orderItemId: l.orderItemId,
+            skuName: l.skuName.trim(),
+            qty: l.qty,
+            sortNo: i + 1,
+          })),
+        )
+        const { list: refreshed } = await shippingApi.getShipPlan(order.id)
+        order.shipPlanLines = healShipPlanLines(order, refreshed || [])
+        order.pendingPlanCount = (order.shipPlanLines || []).filter((l) => l.status === 'pending').length
+      } catch {
+        /* 展示草稿优先；持久化失败不阻断编辑 */
+      }
     }
   } catch (e) {
     ElMessage.error((e as Error).message || '加载拆分计划失败')
