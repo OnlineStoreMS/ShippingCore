@@ -62,7 +62,7 @@ type DisplayRow = {
   peers: Shipment[]
 }
 
-/** 同页内按 groupId 折叠拆分发货 */
+/** 同页内按 groupId 折叠拆分发货；同组仅 1 票时按普通单展示（不标拆分） */
 const displayRows = computed<DisplayRow[]>(() => {
   const seen = new Set<number>()
   const out: DisplayRow[] = []
@@ -72,6 +72,11 @@ const displayRows = computed<DisplayRow[]>(() => {
       if (seen.has(gid)) continue
       seen.add(gid)
       const peers = list.value.filter((x) => Number(x.groupId || 0) === gid)
+      if (peers.length <= 1) {
+        const only = peers[0] || s
+        out.push({ kind: 'single', key: `s${only.id}`, primary: only, peers: [only] })
+        continue
+      }
       out.push({ kind: 'group', key: `g${gid}`, primary: peers[0], peers })
       continue
     }
