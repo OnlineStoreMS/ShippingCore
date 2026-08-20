@@ -1651,7 +1651,7 @@ onMounted(async () => {
               type="info"
               :closable="false"
               :title="selectedTemplate
-                ? `将打开快递助手并上传打单任务到云端；安装插件（extensions/kdzs-print-helper v1.0.2+）后自动选单/选模板「${selectedTemplate.templateName}」。请人工点打印，再回填运单号。`
+                ? `将打开快递助手并上传打单任务到云端；安装插件（extensions/kdzs-print-helper 电脑版）后自动选单/选模板「${selectedTemplate.templateName}」。请人工点打印，再回填运单号。`
                 : '请先选择快递模板'"
             />
           </template>

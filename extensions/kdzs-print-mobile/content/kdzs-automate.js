@@ -1,10 +1,9 @@
 /**
- * 快递助手批打页自动化（电脑版）：
- * - 发货中心「打开快递助手」handoff
- * - 勾选订单 / 模板；默认不自动打印
+ * 快递助手批打页自动化（手机远程版）：
+ * - OpsMobile 下发任务 → 勾选 → 选打印机 → 自动打印并发货
  */
 ;(() => {
-  const PANEL_ID = 'osms-kdzs-desktop-panel'
+  const PANEL_ID = 'osms-kdzs-mobile-panel'
   const HANDOFF_MAX_AGE_MS = 30 * 60 * 1000
 
   /** @type {any} */
@@ -15,7 +14,7 @@
   function log(msg, level = 'info') {
     const line = `[${new Date().toLocaleTimeString()}] ${msg}`
     lastLog = [...lastLog.slice(-40), line]
-    console[level === 'error' ? 'error' : 'log']('[OSMS-KDZS-Desktop]', msg)
+    console[level === 'error' ? 'error' : 'log']('[OSMS-KDZS-Mobile]', msg)
     renderPanel()
   }
 
@@ -798,12 +797,252 @@
     const exact = findButtonsByText(['选择发货', '选中发货', '确认选择'])
     const btn = exact.find((el) => /选择发货|选中发货/.test(textOf(el))) || exact[0]
     if (!btn) {
-      log('批打页无「选择发货」，跳过')
+      log('批打页无「选择发货」，继续打印快递单')
       return false
     }
     log(`点击：${textOf(btn)}`)
     clickEl(btn)
     await sleep(1200)
+    return true
+  }
+
+  function findVisibleExact(texts) {
+    const want = texts.map((t) => String(t).replace(/\s/g, ''))
+    return [...document.querySelectorAll('button, a, span, div, label')].find((el) => {
+      if (!visible(el)) return false
+      // 不要误点页脚绿色大按钮
+      if (el.matches?.('button.bg-green') || /btn-big-bold.*bg-green|bg-green.*btn-big-bold/.test(String(el.className))) {
+        return false
+      }
+      const t = textOf(el).replace(/\s/g, '')
+      return want.includes(t)
+    })
+  }
+
+  /** 按配置名选中打印机（完整名优先，其次包含匹配） */
+  function selectConfiguredPrinter() {
+    const want = String(handoff?.printerName || '').trim()
+    if (!want) {
+      log('未配置打印机名称，使用弹窗当前默认打印机')
+      return false
+    }
+    const wantNorm = want.replace(/\s+/g, ' ').trim().toLowerCase()
+    const nodes = [...document.querySelectorAll('label, .ant-radio-wrapper, li, div, span')]
+    const candidates = nodes.filter((el) => {
+      if (!visible(el)) return false
+      const t = textOf(el).replace(/\s+/g, ' ').trim()
+      if (!t || t.length > 120) return false
+      // 排除整块弹窗容器
+      if (t.includes('选择打印机') && t.includes('打印快递单')) return false
+      return true
+    })
+
+    let best = null
+    let bestScore = 0
+    for (const el of candidates) {
+      const t = textOf(el).replace(/\s+/g, ' ').trim()
+      const low = t.toLowerCase()
+      let score = 0
+      if (low === wantNorm) score = 100
+      else if (low.includes(wantNorm)) score = 80 + Math.min(15, wantNorm.length)
+      else if (wantNorm.includes(low) && low.length >= 4) score = 50 + low.length
+      if (score > bestScore) {
+        bestScore = score
+        best = el
+      }
+    }
+    if (!best || bestScore < 50) {
+      log(`未找到打印机「${want}」，请核对配置名称是否与弹窗一致`, 'error')
+      return false
+    }
+    log(`选择打印机：${textOf(best)}`)
+    clickEl(best)
+    // 再点一次 radio input 更稳
+    const input = best.querySelector?.('input[type="radio"]') || best.closest('label')?.querySelector('input')
+    if (input instanceof HTMLElement) clickEl(input)
+    return true
+  }
+
+  /** 打印机弹窗内的确认：点「打印快递单」（勿再点页脚绿色大按钮） */
+  function findPrinterDialogPrintButton() {
+    // 弹窗专用 a.print-btn
+    const link = document.querySelector('a.print-btn')
+    if (link && visible(link)) return link
+    // 文案精确匹配，且排除页脚 bg-green
+    const nodes = [...document.querySelectorAll('button, a, span')]
+    return (
+      nodes.find((el) => {
+        if (!visible(el)) return false
+        if (/bg-green|btn-big-bold/i.test(String(el.className || ''))) return false
+        return textOf(el).replace(/\s/g, '') === '打印快递单'
+      }) || null
+    )
+  }
+
+  /** 当前任务订单行 */
+  function findTargetOrderRow() {
+    const orders = handoff?.orders || []
+    for (const order of orders) {
+      for (const k of preferSearchKeys(order)) {
+        const row = findRowContaining(k)
+        if (row) return row
+      }
+    }
+    return null
+  }
+
+  /** 行上是否已出现快递单号（打印成功标志） */
+  function rowHasExpressNo(row) {
+    if (!row) return false
+    const t = textOf(row)
+    // 常见：快递单号 / 运单号 + 一串数字
+    if (/快递单号|运单号/.test(t) && /\d{10,}/.test(t)) return true
+    // 部分列表用独立字段展示长单号
+    const m = t.match(/(?:快递单号|运单号)[:：\s]*([A-Za-z0-9-]{10,})/)
+    return !!m
+  }
+
+  /** 处理「已打印过 / 选单号 / 选打印机」等打印弹层 */
+  async function resolvePrintDialogs() {
+    for (let i = 0; i < 12; i++) {
+      const body = textOf(document.body)
+
+      if (body.includes('确认重新打印')) {
+        const orig = findVisibleExact(['原单号打印'])
+        if (orig) {
+          log('检测到已打印订单，选择「原单号打印」')
+          clickEl(orig)
+          await sleep(1200)
+          continue
+        }
+      }
+
+      if (body.includes('请选择要打印的单号')) {
+        const print = findVisibleExact(['打印'])
+        if (print) {
+          log('确认打印单号 → 打印')
+          clickEl(print)
+          await sleep(1200)
+          continue
+        }
+      }
+
+      if (body.includes('选择打印机') || document.querySelector('a.print-btn')) {
+        selectConfiguredPrinter()
+        await sleep(400)
+        const confirm = findPrinterDialogPrintButton()
+        if (confirm) {
+          log('打印机弹窗 → 打印快递单')
+          clickEl(confirm)
+          await sleep(2000)
+          continue
+        }
+        log('打印机弹窗未找到「打印快递单」', 'error')
+      }
+
+      // 弹层已收起
+      if (
+        !body.includes('确认重新打印') &&
+        !body.includes('请选择要打印的单号') &&
+        !body.includes('选择打印机') &&
+        !document.querySelector('a.print-btn')
+      ) {
+        return true
+      }
+      await sleep(500)
+    }
+    return (
+      !textOf(document.body).includes('选择打印机') && !document.querySelector('a.print-btn')
+    )
+  }
+
+  async function clickPrintExpress() {
+    // 页脚只点这一次「打印快递单」
+    const btn = [...document.querySelectorAll('button')].find(
+      (b) =>
+        visible(b) &&
+        /bg-green/i.test(String(b.className)) &&
+        textOf(b).replace(/\s/g, '') === '打印快递单',
+    )
+    if (!btn) {
+      log('未找到页脚「打印快递单」按钮', 'error')
+      return false
+    }
+    log('点击页脚「打印快递单」')
+    clickEl(btn)
+    await sleep(1000)
+    const dialogOk = await resolvePrintDialogs()
+    if (!dialogOk) {
+      log('打印弹层未消失，请人工确认', 'error')
+      return false
+    }
+    log('打印弹窗已关闭，等待订单显示快递单号…')
+
+    // 等行上出现快递单号
+    for (let i = 0; i < 20; i++) {
+      const row = findTargetOrderRow()
+      if (rowHasExpressNo(row)) {
+        const t = textOf(row)
+        const m = t.match(/(?:快递单号|运单号)[:：\s]*([A-Za-z0-9-]{10,})/) || t.match(/\b(\d{12,})\b/)
+        log(`订单已显示快递单号${m ? `：${m[1]}` : ''}`)
+        return true
+      }
+      await sleep(500)
+    }
+    // 弹窗已关但单号字段文案可能不同：若行仍选中则继续发货，仅警告
+    const row = findTargetOrderRow()
+    if (row && /pack_selected/.test(row.className || '')) {
+      log('未识别到快递单号文案，弹窗已关且订单仍选中，继续发货', 'error')
+      return true
+    }
+    log('打印后未看到快递单号，中止自动发货', 'error')
+    return false
+  }
+
+  async function clickShip() {
+    const btn = [...document.querySelectorAll('button')].find(
+      (b) => visible(b) && textOf(b).replace(/\s/g, '') === '发货',
+    )
+    if (!btn) {
+      log('未找到「发货」按钮', 'error')
+      return false
+    }
+    log('点击「发货」')
+    clickEl(btn)
+    await sleep(1200)
+
+    for (let i = 0; i < 6; i++) {
+      const body = textOf(document.body)
+      if (body.includes('请设置发货方式') || body.includes('发货方式')) {
+        const normal = findVisibleExact(['普通发货'])
+        if (normal) {
+          log('发货方式：普通发货')
+          clickEl(normal)
+          await sleep(300)
+        }
+        // 对话框右下「确定」
+        const oks = [...document.querySelectorAll('button')].filter(
+          (b) => visible(b) && textOf(b).replace(/\s/g, '') === '确定',
+        )
+        const okBtn =
+          oks.find((b) => b.closest('.ant-modal, .ant-modal-root, [class*=modal], [class*=Modal]')) ||
+          oks[oks.length - 1]
+        if (okBtn) {
+          log('确认发货')
+          clickEl(okBtn)
+          await sleep(2500)
+        }
+      }
+      if (!textOf(document.body).includes('请设置发货方式')) break
+      await sleep(500)
+    }
+
+    const still = textOf(document.body).includes('请设置发货方式')
+    if (still) {
+      log('发货确认弹层仍在，请人工确认', 'error')
+      return false
+    }
+    log('发货流程已提交')
     return true
   }
 
@@ -914,7 +1153,7 @@
     renderPanel()
     try {
       if (!handoff) {
-        log('没有待执行任务。请从发货中心点「打开快递助手」。', 'error')
+        log('没有待执行任务。请先绑定插件并由手机发送打单任务，或从发货中心打开快递助手。', 'error')
         return
       }
       const age = Date.now() - Number(handoff.createdAt || handoff.savedAt || 0)
@@ -923,7 +1162,7 @@
         return
       }
 
-      log('开始自动化（不会自动打印）…')
+      log('开始自动化（手机版：自动打印并发货）…')
 
       // 门户外壳只负责进「打单发货」+ 切平台；勾选在平台 iframe 内执行
       if (IS_DF_SHELL) {
@@ -959,15 +1198,94 @@
       await clickSelectShip()
 
       if (n <= 0) {
-        log('未勾选到订单。请确认平台已切换正确且订单在时间筛选内。', 'error')
+        log('未勾选到订单，任务记为失败。请确认平台已切换正确且订单在时间筛选内。', 'error')
+        if (handoff?.cloudTaskId) {
+          chrome.runtime.sendMessage(
+            {
+              type: 'KDZS_PRINT_REPORT_TASK',
+              taskId: handoff.cloudTaskId,
+              status: 'failed',
+              errorMessage: '未在批打列表中找到订单（请检查平台切换与时间筛选）',
+            },
+            () => {
+              /* ignore */
+            },
+          )
+        }
         return
       }
 
-      // 电脑版到此结束：不自动打印/发货，由人工操作
-      log('自动化完成：已勾选订单并选好模板。请人工点「打印快递单」。')
-      clearFinishedHandoff('已清除任务（选单完成，待人工打印）')
+      const doPrint = handoff.autoPrint !== false
+      if (doPrint) {
+        const printed = await clickPrintExpress()
+        if (!printed) {
+          if (handoff?.cloudTaskId) {
+            chrome.runtime.sendMessage(
+              {
+                type: 'KDZS_PRINT_REPORT_TASK',
+                taskId: handoff.cloudTaskId,
+                status: 'failed',
+                errorMessage: '打印快递单未完成',
+              },
+              () => {
+                /* ignore */
+              },
+            )
+          }
+          return
+        }
+        const shipped = await clickShip()
+        if (!shipped) {
+          if (handoff?.cloudTaskId) {
+            chrome.runtime.sendMessage(
+              {
+                type: 'KDZS_PRINT_REPORT_TASK',
+                taskId: handoff.cloudTaskId,
+                status: 'failed',
+                errorMessage: '发货未完成（面单可能已打印）',
+              },
+              () => {
+                /* ignore */
+              },
+            )
+          }
+          return
+        }
+        log('自动化完成：已打印快递单并提交发货。请回发货中心核对同步结果。')
+      } else {
+        log('自动化完成：已勾选订单（autoPrint=false，未自动打印/发货）。')
+      }
+
+      const doneTaskId = handoff?.cloudTaskId
+      if (doneTaskId) {
+        chrome.runtime.sendMessage(
+          {
+            type: 'KDZS_PRINT_REPORT_TASK',
+            taskId: doneTaskId,
+            status: 'done',
+          },
+          () => {
+            /* ignore */
+          },
+        )
+      }
+      // 清除本地任务，避免刷新/重进批打页再次执行
+      clearFinishedHandoff('已清除已完成任务')
     } catch (e) {
       log(`自动化异常：${e?.message || e}`, 'error')
+      if (handoff?.cloudTaskId) {
+        chrome.runtime.sendMessage(
+          {
+            type: 'KDZS_PRINT_REPORT_TASK',
+            taskId: handoff.cloudTaskId,
+            status: 'failed',
+            errorMessage: String(e?.message || e),
+          },
+          () => {
+            /* ignore */
+          },
+        )
+      }
     } finally {
       running = false
       renderPanel()
@@ -983,7 +1301,7 @@
       el.id = PANEL_ID
       el.innerHTML = `
         <div class="hd">
-          <strong>OSMS 打单助手·电脑版</strong>
+          <strong>OSMS 打单助手·手机版</strong>
           <button type="button" data-act="min">—</button>
         </div>
         <div class="bd">
@@ -994,7 +1312,7 @@
             <button type="button" data-act="reload">读取任务</button>
             <button type="button" data-act="clear">清除</button>
           </div>
-          <div class="tip">电脑版：勾选后请人工点打印（不自动打印）</div>
+          <div class="tip">手机版：按配置打印机自动打印并发货</div>
         </div>
       `
       const style = document.createElement('style')
@@ -1063,79 +1381,6 @@
     if (runBtn instanceof HTMLButtonElement) runBtn.disabled = running
   }
 
-  const OSMS_HANDOFF_QUERY = '_osms_ht'
-  const WINDOW_TOKEN_PREFIX = 'OSMS_HT:'
-  /** 首次从 URL/name 读出后缓存，避免重试时已被清掉 */
-  let pendingCloudToken = ''
-
-  function readTokenFromSearch(search) {
-    try {
-      return new URLSearchParams(search).get(OSMS_HANDOFF_QUERY) || ''
-    } catch {
-      return ''
-    }
-  }
-
-  /** 从 URL query / hash / window.name 取云端 token（只消费一次，之后用缓存） */
-  function peekCloudToken() {
-    if (pendingCloudToken) return pendingCloudToken
-
-    let token = ''
-    try {
-      token = readTokenFromSearch(location.search) || ''
-      if (!token && location.hash) {
-        const hash = location.hash.replace(/^#/, '')
-        const qIdx = hash.indexOf('?')
-        if (qIdx >= 0) token = readTokenFromSearch(hash.slice(qIdx)) || ''
-        if (!token) {
-          const m = hash.match(new RegExp(`[?&#]?${OSMS_HANDOFF_QUERY}=([^&]+)`))
-          if (m) token = decodeURIComponent(m[1])
-        }
-      }
-    } catch {
-      /* ignore */
-    }
-
-    if (!token) {
-      try {
-        const n = String(window.name || '')
-        if (n.startsWith(WINDOW_TOKEN_PREFIX)) {
-          token = n.slice(WINDOW_TOKEN_PREFIX.length).trim()
-          window.name = ''
-        }
-      } catch {
-        /* ignore */
-      }
-    }
-
-    token = String(token || '').trim()
-    if (!token) return ''
-
-    pendingCloudToken = token
-    try {
-      if (location.search.includes(OSMS_HANDOFF_QUERY)) {
-        const u = new URL(location.href)
-        u.searchParams.delete(OSMS_HANDOFF_QUERY)
-        history.replaceState(null, '', u.toString())
-      }
-    } catch {
-      /* ignore */
-    }
-    return pendingCloudToken
-  }
-
-  function fetchCloudHandoff(token) {
-    return new Promise((resolve) => {
-      chrome.runtime.sendMessage({ type: 'KDZS_HELPER_FETCH_CLOUD', token }, (res) => {
-        if (chrome.runtime.lastError) {
-          resolve({ ok: false, error: chrome.runtime.lastError.message })
-          return
-        }
-        resolve(res || { ok: false, error: 'empty response' })
-      })
-    })
-  }
-
   function applyHandoff(payload, source, manual) {
     handoff = { ...payload, savedAt: payload.savedAt || Date.now() }
     renderPanel()
@@ -1145,21 +1390,7 @@
 
   function loadHandoff(manual = false) {
     return (async () => {
-      // 云端 token 仅顶层消费，避免 iframe 抢先
-      if (IS_TOP) {
-        const cloudToken = peekCloudToken()
-        if (cloudToken) {
-          log(`正在从云端拉取任务…`)
-          const res = await fetchCloudHandoff(cloudToken)
-          if (res?.ok && res.payload) {
-            pendingCloudToken = ''
-            applyHandoff(res.payload, '云端', manual)
-            return true
-          }
-          log(`云端拉取失败：${res?.error || '未知错误'}`, 'error')
-        }
-      }
-
+      // 手机版只读扩展存储（由配对领任务写入）
       const local = await new Promise((resolve) => {
         chrome.runtime.sendMessage({ type: 'KDZS_HELPER_GET_HANDOFF' }, (res) => {
           if (chrome.runtime.lastError) {
@@ -1181,7 +1412,7 @@
       handoff = null
       renderPanel()
       if (manual) {
-        log('无任务：请从发货中心点「打开快递助手」')
+        log('无任务：请保持插件绑定在线，由手机 OpsMobile 发送打单')
       }
       return false
     })()
@@ -1219,5 +1450,11 @@
       applyHandoff(next, '队列任务', false)
     })
 
+    chrome.runtime.onMessage.addListener((msg) => {
+      if (msg?.type === 'KDZS_HELPER_QUEUE_TASK' && msg.payload) {
+        if (IS_PLATFORM_FRAME && !hostMatchesTask(msg.payload.platform)) return
+        applyHandoff(msg.payload, '队列推送', false)
+      }
+    })
   }
 })()

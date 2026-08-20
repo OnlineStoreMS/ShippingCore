@@ -1,11 +1,12 @@
 {
   "manifest_version": 3,
-  "name": "OSMS 快递助手·电脑版",
-  "version": "2.0.1",
-  "description": "发货中心「打开快递助手」：上传任务、自动勾选订单与模板，人工点打印。",
+  "name": "OSMS 快递助手·手机版",
+  "version": "1.4.2",
+  "description": "OpsMobile 远程打单：配对手机、领任务、按配置打印机自动打印并发货。",
   "permissions": [
     "storage",
-    "tabs"
+    "tabs",
+    "alarms"
   ],
   "host_permissions": [
     "https://*.kdzs.com/*",
@@ -24,7 +25,7 @@
     "service_worker": "background/service-worker.js"
   },
   "action": {
-    "default_title": "OSMS 快递助手·电脑版",
+    "default_title": "OSMS 快递助手·手机版",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon16.png",
@@ -38,24 +39,6 @@
     "128": "icons/icon128.png"
   },
   "content_scripts": [
-    {
-      "matches": [
-        "https://*.zfcycle.com/*",
-        "http://*.zfcycle.com/*",
-        "https://osms.zfcycle.com/*",
-        "http://localhost:5181/*",
-        "http://127.0.0.1:5181/*",
-        "http://192.168.3.41:5181/*",
-        "http://192.168.3.41:8080/*",
-        "http://192.168.3.41:8443/*",
-        "https://192.168.3.41:8443/*"
-      ],
-      "js": [
-        "content/shipping-bridge.js"
-      ],
-      "run_at": "document_start",
-      "all_frames": true
-    },
     {
       "matches": [
         "https://*.kdzs.com/*",
