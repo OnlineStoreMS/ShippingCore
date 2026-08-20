@@ -76,6 +76,7 @@ type KdzsPrintDeviceDTO struct {
 	DeviceKey  string  `json:"deviceKey"`
 	Name       string  `json:"name"`
 	Online     bool    `json:"online"`
+	Claimed    bool    `json:"claimed"` // TenantID>0 表示已被手机认领
 	LastSeenAt *string `json:"lastSeenAt,omitempty"`
 	Enabled    bool    `json:"enabled"`
 	CreatedAt  string  `json:"createdAt"`
@@ -94,6 +95,7 @@ func toDeviceDTO(d model.KdzsPrintDevice) KdzsPrintDeviceDTO {
 		DeviceKey: d.DeviceKey,
 		Name:      d.Name,
 		Online:    deviceOnline(d.LastSeenAt),
+		Claimed:   d.TenantID > 0,
 		Enabled:   d.Enabled,
 		CreatedAt: d.CreatedAt.Format(time.RFC3339),
 	}
@@ -104,46 +106,17 @@ func toDeviceDTO(d model.KdzsPrintDevice) KdzsPrintDeviceDTO {
 	return out
 }
 
-// CreatePairSession 手机端创建配对码。
-func (s *KdzsPrintAgentService) CreatePairSession(userID uint64) (pairCode string, expireAt time.Time, err error) {
-	if userID == 0 {
-		return "", time.Time{}, ErrBadRequest
-	}
-	expireAt = time.Now().Add(kdzsPairTTL)
-	var code string
-	for i := 0; i < 8; i++ {
-		code, err = randomPairCode()
-		if err != nil {
-			return "", time.Time{}, err
-		}
-		row := model.KdzsPrintPairSession{
-			TenantID: s.tenantID,
-			UserID:   userID,
-			PairCode: code,
-			ExpireAt: expireAt,
-		}
-		if err = s.repos.DB.Create(&row).Error; err == nil {
-			return code, expireAt, nil
-		}
-		// unique pair_code 冲突则重试
-	}
-	return "", time.Time{}, fmt.Errorf("生成配对码失败，请重试")
-}
-
-type CompletePairResult struct {
-	DeviceID    uint64 `json:"deviceId"`
-	DeviceKey   string `json:"deviceKey"`
+type CreatePairOfferResult struct {
+	PairCode     string `json:"pairCode"`
+	ExpireAt     string `json:"expireAt"`
+	DeviceID     uint64 `json:"deviceId"`
+	DeviceKey    string `json:"deviceKey"`
 	DeviceSecret string `json:"deviceSecret"`
-	Name        string `json:"name"`
-	TenantID    uint64 `json:"tenantId"`
+	Name         string `json:"name"`
 }
 
-// CompletePair 扩展输入配对码完成绑定（公开接口，凭配对码）。
-func (s *KdzsPrintAgentService) CompletePair(pairCode, deviceName string) (*CompletePairResult, error) {
-	code := strings.TrimSpace(pairCode)
-	if len(code) < 4 {
-		return nil, ErrPairCodeInvalid
-	}
+// CreatePairOffer 电脑扩展生成配对码：先创建设备凭证（待认领），手机再输入码认领。
+func (s *KdzsPrintAgentService) CreatePairOffer(deviceName string) (*CreatePairOfferResult, error) {
 	name := strings.TrimSpace(deviceName)
 	if name == "" {
 		name = "打单电脑"
@@ -151,16 +124,7 @@ func (s *KdzsPrintAgentService) CompletePair(pairCode, deviceName string) (*Comp
 	if len(name) > 64 {
 		name = name[:64]
 	}
-
-	var sess model.KdzsPrintPairSession
-	err := s.repos.DB.Where("pair_code = ? AND consumed = false", code).First(&sess).Error
-	if err != nil {
-		return nil, ErrPairCodeInvalid
-	}
-	if time.Now().After(sess.ExpireAt) {
-		return nil, ErrPairCodeInvalid
-	}
-
+	expireAt := time.Now().Add(kdzsPairTTL)
 	deviceKey, err := randomHex(16)
 	if err != nil {
 		return nil, err
@@ -170,47 +134,110 @@ func (s *KdzsPrintAgentService) CompletePair(pairCode, deviceName string) (*Comp
 		return nil, err
 	}
 	now := time.Now()
-	dev := model.KdzsPrintDevice{
-		TenantID:   sess.TenantID,
-		UserID:     sess.UserID,
-		DeviceKey:  deviceKey,
-		SecretHash: hashSecret(secret),
-		Name:       name,
-		LastSeenAt: &now,
-		Enabled:    true,
-	}
 
-	err = s.repos.DB.Transaction(func(tx *gorm.DB) error {
-		var locked model.KdzsPrintPairSession
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("id = ? AND consumed = false", sess.ID).First(&locked).Error; err != nil {
-			return ErrPairCodeInvalid
-		}
-		if time.Now().After(locked.ExpireAt) {
-			return ErrPairCodeInvalid
-		}
-		if err := tx.Create(&dev).Error; err != nil {
-			return err
-		}
-		return tx.Model(&locked).Updates(map[string]any{
-			"consumed":  true,
-			"device_id": dev.ID,
-		}).Error
-	})
-	if err != nil {
-		if errors.Is(err, ErrPairCodeInvalid) {
+	var code string
+	var dev model.KdzsPrintDevice
+	for i := 0; i < 8; i++ {
+		code, err = randomPairCode()
+		if err != nil {
 			return nil, err
 		}
-		return nil, err
+		err = s.repos.DB.Transaction(func(tx *gorm.DB) error {
+			dev = model.KdzsPrintDevice{
+				TenantID:   0,
+				UserID:     0,
+				DeviceKey:  deviceKey,
+				SecretHash: hashSecret(secret),
+				Name:       name,
+				LastSeenAt: &now,
+				Enabled:    true,
+			}
+			if err := tx.Create(&dev).Error; err != nil {
+				return err
+			}
+			did := dev.ID
+			sess := model.KdzsPrintPairSession{
+				TenantID: 0,
+				UserID:   0,
+				PairCode: code,
+				ExpireAt: expireAt,
+				DeviceID: &did,
+			}
+			return tx.Create(&sess).Error
+		})
+		if err == nil {
+			return &CreatePairOfferResult{
+				PairCode:     code,
+				ExpireAt:     expireAt.UTC().Format(time.RFC3339),
+				DeviceID:     dev.ID,
+				DeviceKey:    deviceKey,
+				DeviceSecret: secret,
+				Name:         name,
+			}, nil
+		}
+		// pair_code 唯一冲突则换码重试；其它错误直接返回
+		if !strings.Contains(strings.ToLower(err.Error()), "duplicate") &&
+			!strings.Contains(err.Error(), "unique") {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("生成配对码失败，请重试")
+}
+
+// ClaimPair 手机输入电脑显示的配对码，把待认领设备挂到当前账号。
+func (s *KdzsPrintAgentService) ClaimPair(userID uint64, pairCode string) (*KdzsPrintDeviceDTO, error) {
+	if s.tenantID == 0 || userID == 0 {
+		return nil, ErrBadRequest
+	}
+	code := strings.TrimSpace(pairCode)
+	if len(code) < 4 {
+		return nil, ErrPairCodeInvalid
 	}
 
-	return &CompletePairResult{
-		DeviceID:     dev.ID,
-		DeviceKey:    deviceKey,
-		DeviceSecret: secret,
-		Name:         name,
-		TenantID:     sess.TenantID,
-	}, nil
+	var out model.KdzsPrintDevice
+	err := s.repos.DB.Transaction(func(tx *gorm.DB) error {
+		var sess model.KdzsPrintPairSession
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("pair_code = ? AND consumed = false", code).First(&sess).Error; err != nil {
+			return ErrPairCodeInvalid
+		}
+		if time.Now().After(sess.ExpireAt) {
+			return ErrPairCodeInvalid
+		}
+		if sess.DeviceID == nil || *sess.DeviceID == 0 {
+			return ErrPairCodeInvalid
+		}
+		var dev model.KdzsPrintDevice
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND enabled = true", *sess.DeviceID).First(&dev).Error; err != nil {
+			return ErrPairCodeInvalid
+		}
+		if dev.TenantID > 0 {
+			return ErrPairCodeInvalid
+		}
+		if err := tx.Model(&dev).Updates(map[string]any{
+			"tenant_id": s.tenantID,
+			"user_id":   userID,
+		}).Error; err != nil {
+			return err
+		}
+		if err := tx.Model(&sess).Updates(map[string]any{
+			"consumed":  true,
+			"tenant_id": s.tenantID,
+			"user_id":   userID,
+		}).Error; err != nil {
+			return err
+		}
+		dev.TenantID = s.tenantID
+		dev.UserID = userID
+		out = dev
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	dto := toDeviceDTO(out)
+	return &dto, nil
 }
 
 func (s *KdzsPrintAgentService) AuthenticateDevice(deviceKey, secret string) (*model.KdzsPrintDevice, error) {
@@ -236,6 +263,10 @@ func (s *KdzsPrintAgentService) Heartbeat(deviceKey, secret string) (*KdzsPrintD
 	}
 	now := time.Now()
 	if err := s.repos.DB.Model(d).Update("last_seen_at", now).Error; err != nil {
+		return nil, err
+	}
+	// 重新读取，以便拿到手机认领后写入的 tenant_id
+	if err := s.repos.DB.First(d, d.ID).Error; err != nil {
 		return nil, err
 	}
 	d.LastSeenAt = &now

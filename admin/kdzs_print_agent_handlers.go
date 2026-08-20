@@ -61,17 +61,35 @@ func deviceCreds(c *gin.Context) (key, secret string) {
 	return key, secret
 }
 
-// CreatePairSession POST /admin/kdzs-print/pair-sessions
-func (h *KdzsPrintAgentHandler) CreatePairSession(c *gin.Context) {
-	code, exp, err := h.adminSvc(c).CreatePairSession(authcontext.UserID(c))
+// CreatePairOffer POST /mobile/kdzs-print/pair-sessions （扩展用，无需登录）
+func (h *KdzsPrintAgentHandler) CreatePairOffer(c *gin.Context) {
+	var body struct {
+		DeviceName string `json:"deviceName"`
+	}
+	_ = c.ShouldBindJSON(&body)
+	res, err := h.svc.CreatePairOffer(body.DeviceName)
 	if err != nil {
 		writePrintAgentErr(c, err)
 		return
 	}
-	response.OK(c, gin.H{
-		"pairCode": code,
-		"expireAt": exp.UTC().Format("2006-01-02T15:04:05Z07:00"),
-	})
+	response.OK(c, res)
+}
+
+// ClaimPair POST /admin/kdzs-print/pair-claim （手机登录后输入电脑配对码）
+func (h *KdzsPrintAgentHandler) ClaimPair(c *gin.Context) {
+	var body struct {
+		PairCode string `json:"pairCode"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		response.Fail(c, http.StatusBadRequest, "invalid body")
+		return
+	}
+	dto, err := h.adminSvc(c).ClaimPair(authcontext.UserID(c), body.PairCode)
+	if err != nil {
+		writePrintAgentErr(c, err)
+		return
+	}
+	response.OK(c, dto)
 }
 
 // ListDevices GET /admin/kdzs-print/devices
@@ -137,22 +155,9 @@ func (h *KdzsPrintAgentHandler) ListTasks(c *gin.Context) {
 	response.OK(c, gin.H{"list": list, "total": len(list)})
 }
 
-// CompletePair POST /mobile/kdzs-print/pair （扩展用，无需登录）
+// CompletePair 已废弃：配对改为电脑出码、手机认领。
 func (h *KdzsPrintAgentHandler) CompletePair(c *gin.Context) {
-	var body struct {
-		PairCode   string `json:"pairCode"`
-		DeviceName string `json:"deviceName"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		response.Fail(c, http.StatusBadRequest, "invalid body")
-		return
-	}
-	res, err := h.svc.CompletePair(body.PairCode, body.DeviceName)
-	if err != nil {
-		writePrintAgentErr(c, err)
-		return
-	}
-	response.OK(c, res)
+	response.Fail(c, http.StatusGone, "请升级扩展：由电脑生成配对码，手机输入绑定")
 }
 
 // Heartbeat POST /mobile/kdzs-print/heartbeat

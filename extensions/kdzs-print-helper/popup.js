@@ -3,11 +3,33 @@ const deviceEl = document.getElementById('device')
 const taskEl = document.getElementById('task')
 const pairBlock = document.getElementById('pairBlock')
 const boundBlock = document.getElementById('boundBlock')
+const pairShow = document.getElementById('pairShow')
+const pairCodeShow = document.getElementById('pairCodeShow')
+const pairExpireShow = document.getElementById('pairExpireShow')
 const apiBaseEl = document.getElementById('apiBase')
+
+let pollTimer = null
 
 function setStatus(text, cls) {
   statusEl.className = cls || 'warn'
   statusEl.textContent = text
+}
+
+function formatExpire(v) {
+  if (!v) return ''
+  const d = new Date(v)
+  if (Number.isNaN(d.getTime())) return `有效至 ${v}`
+  return `有效至 ${d.toLocaleTimeString()}`
+}
+
+function showPendingPair(pending) {
+  if (!pending?.pairCode) {
+    pairShow.hidden = true
+    return
+  }
+  pairShow.hidden = false
+  pairCodeShow.textContent = pending.pairCode
+  pairExpireShow.textContent = formatExpire(pending.expireAt)
 }
 
 function refresh() {
@@ -21,21 +43,37 @@ function refresh() {
       return
     }
     apiBaseEl.value = st.apiBase || ''
+
     if (!st.device) {
       pairBlock.hidden = false
       boundBlock.hidden = true
+      showPendingPair(null)
       setStatus(`未绑定 · v${st.version}`, 'warn')
-      deviceEl.textContent = '请先在手机 OpsMobile 生成配对码并在此绑定'
-    } else {
-      pairBlock.hidden = true
-      boundBlock.hidden = false
-      if (st.online) {
-        setStatus(`在线 · ${st.device.name || '打单电脑'} · v${st.version}`, 'ok')
-      } else {
-        setStatus(`离线 · ${st.device.name || '打单电脑'} · ${st.heartbeatError || '心跳失败'}`, 'bad')
-      }
-      deviceEl.textContent = `设备 Key：${st.device.deviceKey || '-'} · ID ${st.device.deviceId || '-'}`
+      deviceEl.textContent = '点「生成配对码」，再在手机输入绑定'
+      stopPoll()
+      return
     }
+
+    if (st.waitingClaim || !st.device.claimed) {
+      pairBlock.hidden = false
+      boundBlock.hidden = true
+      showPendingPair(st.pendingPair)
+      setStatus(`等待手机绑定 · v${st.version}`, 'warn')
+      deviceEl.textContent = `设备已就绪 · ${st.device.name || '打单电脑'} · 请在手机输入配对码`
+      startPoll()
+      return
+    }
+
+    stopPoll()
+    pairBlock.hidden = true
+    boundBlock.hidden = false
+    showPendingPair(null)
+    if (st.online) {
+      setStatus(`在线 · ${st.device.name || '打单电脑'} · v${st.version}`, 'ok')
+    } else {
+      setStatus(`离线 · ${st.device.name || '打单电脑'} · ${st.heartbeatError || '心跳失败'}`, 'bad')
+    }
+    deviceEl.textContent = `设备 Key：${st.device.deviceKey || '-'} · ID ${st.device.deviceId || '-'}`
   })
 
   chrome.runtime.sendMessage({ type: 'KDZS_HELPER_GET_HANDOFF' }, (res) => {
@@ -63,19 +101,26 @@ function refresh() {
   })
 }
 
-document.getElementById('pairBtn').addEventListener('click', () => {
-  const pairCode = document.getElementById('pairCode').value.trim()
-  if (!pairCode) {
-    setStatus('请输入配对码', 'warn')
-    return
-  }
-  setStatus('绑定中…', 'warn')
-  chrome.runtime.sendMessage({ type: 'KDZS_PRINT_PAIR', pairCode, deviceName: '打单电脑' }, (res) => {
+function startPoll() {
+  if (pollTimer) return
+  pollTimer = window.setInterval(() => refresh(), 3000)
+}
+
+function stopPoll() {
+  if (!pollTimer) return
+  window.clearInterval(pollTimer)
+  pollTimer = null
+}
+
+document.getElementById('createPairBtn').addEventListener('click', () => {
+  setStatus('生成配对码中…', 'warn')
+  chrome.runtime.sendMessage({ type: 'KDZS_PRINT_CREATE_PAIR', deviceName: '打单电脑' }, (res) => {
     if (!res?.ok) {
-      setStatus(res?.error || '绑定失败', 'bad')
+      setStatus(res?.error || '生成失败', 'bad')
       return
     }
-    setStatus('绑定成功', 'ok')
+    showPendingPair({ pairCode: res.pairCode, expireAt: res.expireAt })
+    setStatus('请在手机输入配对码', 'warn')
     refresh()
   })
 })
@@ -93,7 +138,8 @@ document.getElementById('claimBtn').addEventListener('click', () => {
       setStatus(res?.reason || '领取失败', 'bad')
       return
     }
-    if (!res.task) setStatus('暂无新任务（仍在线）', 'ok')
+    if (res.waitingClaim) setStatus('仍在等待手机绑定', 'warn')
+    else if (!res.task) setStatus('暂无新任务（仍在线）', 'ok')
     else setStatus(`已领取任务 #${res.task.id}`, 'ok')
     refresh()
   })
@@ -110,4 +156,5 @@ document.getElementById('saveApi').addEventListener('click', () => {
   })
 })
 
+window.addEventListener('unload', stopPoll)
 refresh()

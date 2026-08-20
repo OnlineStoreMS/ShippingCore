@@ -376,7 +376,7 @@ function formatGoodsLine(g?: { productName?: string; skuSpecs?: string; quantity
   const name = g.productName?.trim() || ''
   const title = spec || name
   if (!title) return ''
-  const num = g.quantity && g.quantity > 0 ? g.quantity : 1
+      const num = g.quantity && g.quantity > 0 ? g.quantity : 1
   return `${title} x${num}`
 }
 
@@ -1258,11 +1258,11 @@ async function syncWaybillsFromKdzs() {
     }
     if (filled > 0) {
       ElMessage.success(`已从快递助手同步 ${filled} 笔运单号`)
-    } else {
+      } else {
       const detail = list.map((r) => r.message).find((m) => !!m)
       ElMessage.warning(detail || '暂未查到运单号，请确认已在快递助手打印完成后，再点「同步单号」')
-    }
-  } catch (e) {
+      }
+    } catch (e) {
     ElMessage.error((e as Error).message || '同步单号失败')
   } finally {
     loading.syncWaybill = false
@@ -1320,7 +1320,7 @@ async function submitShip() {
       mailNo: waybill.mailNo || '',
       carrier,
     })
-    await loadOmsOrders()
+      await loadOmsOrders()
   } catch (e) {
     ElMessage.error((e as Error).message || '打单失败')
   } finally {
@@ -1348,12 +1348,12 @@ async function submitKdzsConfirm() {
     const missing = picks.filter((r) => !(r.expressNo || '').trim())
     if (missing.length) {
       ElMessage.warning('请为每条勾选行填写运单号')
-      return
-    }
+    return
+  }
     const order = shipTargets.value[0]
     if (!order) return
-    loading.ship = true
-    try {
+  loading.ship = true
+  try {
       const lines = picks.map((r) => {
         const spec = r.skuName.trim()
         return {
@@ -1373,15 +1373,15 @@ async function submitKdzsConfirm() {
         lines,
       })
       ElMessage.success(`已确认发货 ${lines.length} 行`)
-      confirmKdzsVisible.value = false
-      closeShipDialog()
+    confirmKdzsVisible.value = false
+    closeShipDialog()
       selectedOrders.value = []
-      await loadOmsOrders()
-    } catch (e) {
-      ElMessage.error((e as Error).message || '确认发货失败')
-    } finally {
-      loading.ship = false
-    }
+    await loadOmsOrders()
+  } catch (e) {
+    ElMessage.error((e as Error).message || '确认发货失败')
+  } finally {
+    loading.ship = false
+  }
     return
   }
 
@@ -1456,24 +1456,24 @@ onMounted(async () => {
         </div>
       </template>
 
-      <div class="filter-panel">
-        <div class="filter-row">
-          <span class="filter-label">筛选</span>
-          <div class="filters">
+        <div class="filter-panel">
+          <div class="filter-row">
+            <span class="filter-label">筛选</span>
+            <div class="filters">
             <el-select v-model="omsFilters.sourceChannel" placeholder="订单类型" clearable style="width: 130px" @change="onOmsFilterChange">
               <el-option v-for="opt in sourceChannelOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
             </el-select>
-            <el-select v-model="omsFilters.platform" placeholder="平台" clearable style="width: 120px" @change="onOmsFilterChange">
-              <el-option v-for="opt in platformOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
-            </el-select>
-            <el-input v-model="omsFilters.keyword" clearable placeholder="订单号/买家" style="width: 200px" @change="onOmsFilterChange" />
-            <el-button type="primary" :icon="Search" :loading="loading.orders" @click="loadOmsOrders">查询</el-button>
+              <el-select v-model="omsFilters.platform" placeholder="平台" clearable style="width: 120px" @change="onOmsFilterChange">
+                <el-option v-for="opt in platformOptions" :key="opt.value" :label="opt.label" :value="opt.value" />
+              </el-select>
+              <el-input v-model="omsFilters.keyword" clearable placeholder="订单号/买家" style="width: 200px" @change="onOmsFilterChange" />
+              <el-button type="primary" :icon="Search" :loading="loading.orders" @click="loadOmsOrders">查询</el-button>
+            </div>
           </div>
-        </div>
         <div v-if="selectedOrders.length && !selectionGroup" class="warn-tip">
           已选订单平台不一致，无法批量打单发货
         </div>
-      </div>
+        </div>
 
       <el-table :data="omsOrders" border stripe empty-text="暂无待发货订单" @selection-change="onSelectionChange">
         <el-table-column type="selection" width="48" />
@@ -1494,13 +1494,13 @@ onMounted(async () => {
         <el-table-column label="平台" width="90">
           <template #default="{ row }">{{ labelPlatform(row.platform) }}</template>
         </el-table-column>
-        <el-table-column label="平台单号" min-width="180">
-          <template #default="{ row }">
-            <div v-if="row.platformOrderId">{{ row.platformOrderId }}</div>
-            <div v-if="row.platformSysTid" class="muted">系统：{{ row.platformSysTid }}</div>
-          </template>
-        </el-table-column>
-        <el-table-column prop="shopName" label="店铺" min-width="120" show-overflow-tooltip />
+          <el-table-column label="平台单号" min-width="180">
+            <template #default="{ row }">
+              <div v-if="row.platformOrderId">{{ row.platformOrderId }}</div>
+              <div v-if="row.platformSysTid" class="muted">系统：{{ row.platformSysTid }}</div>
+            </template>
+          </el-table-column>
+          <el-table-column prop="shopName" label="店铺" min-width="120" show-overflow-tooltip />
         <el-table-column label="商品信息" min-width="280">
           <template #default="{ row }">
             <div v-if="goodsRowsWithShipMark(row).length" class="goods-list">
@@ -1533,36 +1533,36 @@ onMounted(async () => {
             </div>
             <span v-else>-</span>
           </template>
-        </el-table-column>
+          </el-table-column>
         <el-table-column label="收件信息" min-width="220">
-          <template #default="{ row }">
-            <div>{{ row.address?.name || row.buyerName || '-' }}</div>
-            <div class="muted">{{ row.address?.phone || row.buyerPhone }}</div>
-            <div class="muted">{{ row.address?.fullText || row.address?.address }}</div>
-          </template>
-        </el-table-column>
+            <template #default="{ row }">
+              <div>{{ row.address?.name || row.buyerName || '-' }}</div>
+              <div class="muted">{{ row.address?.phone || row.buyerPhone }}</div>
+              <div class="muted">{{ row.address?.fullText || row.address?.address }}</div>
+            </template>
+          </el-table-column>
         <el-table-column label="付款时间" width="170">
           <template #default="{ row }">{{ formatPayTime(row.payTime || row.orderedAt) }}</template>
         </el-table-column>
         <el-table-column label="操作" width="160" fixed="right">
-          <template #default="{ row }">
+            <template #default="{ row }">
             <el-button link type="primary" size="small" @click="openSplitDialog(row)">
               {{ row.pendingPlanCount ? '编辑拆分' : '拆分' }}
             </el-button>
             <el-button link type="primary" size="small" @click="openShipDialogOms(row)">打单发货</el-button>
-          </template>
-        </el-table-column>
-      </el-table>
+            </template>
+          </el-table-column>
+        </el-table>
 
-      <div class="pager">
-        <el-pagination
-          v-model:current-page="omsFilters.page"
-          :page-size="omsFilters.pageSize"
-          :total="omsTotal"
-          layout="total, prev, pager, next"
-          @current-change="onOmsPageChange"
-        />
-      </div>
+        <div class="pager">
+          <el-pagination
+            v-model:current-page="omsFilters.page"
+            :page-size="omsFilters.pageSize"
+            :total="omsTotal"
+            layout="total, prev, pager, next"
+            @current-change="onOmsPageChange"
+          />
+        </div>
     </el-card>
 
     <el-dialog
@@ -1576,7 +1576,7 @@ onMounted(async () => {
           <span v-if="!isBatchShip">订单中心 #{{ shipTargets[0].orderNo }}</span>
           <span v-else>已选 {{ shipTargets.length }} 笔订单</span>
           <el-tag size="small" type="info" class="ml8">{{ labelPlatform(shipTargets[0].platform) }}</el-tag>
-        </div>
+          </div>
 
         <div v-if="!isBatchShip && shipPickRows.length" class="ship-items-block">
           <div class="ship-items-hd">
@@ -1600,18 +1600,18 @@ onMounted(async () => {
                 <div>
                   {{ row.label || row.skuName || '-' }}
                   <el-tag v-if="row.kind === 'plan'" size="small" type="success" class="ml8">拆分</el-tag>
-                </div>
+            </div>
                 <div class="ship-item-qty" @click.stop>
                   <span class="muted">本次</span>
                   <el-input-number
                     v-model="row.shipQty"
                     :min="1"
                     :max="row.maxQty"
-                    size="small"
+                size="small"
                     controls-position="right"
                   />
                   <span class="muted">待发 ×{{ row.maxQty }}</span>
-                </div>
+        </div>
               </div>
             </label>
           </el-checkbox-group>
@@ -1700,12 +1700,12 @@ onMounted(async () => {
               :closable="false"
               title="将快速取号，随后选择面单模板与本机打印机完成打印。"
             />
-            <el-alert
-              v-else
-              type="info"
-              :closable="false"
+          <el-alert
+            v-else
+            type="info"
+            :closable="false"
               title="将按所选物流账号取号并进入打印。"
-            />
+          />
           </template>
         </el-form>
 
@@ -1823,9 +1823,9 @@ onMounted(async () => {
           </div>
         </template>
         <template v-else-if="!isBatchShip">
-          <el-form-item label="运单号" required>
+        <el-form-item label="运单号" required>
             <el-input v-model="kdzsExpressRows[0].expressNo" placeholder="快递助手打单后的运单号" />
-          </el-form-item>
+        </el-form-item>
         </template>
         <template v-else>
           <div class="batch-confirm-hint muted">请为每笔订单填写运单号</div>
@@ -1857,7 +1857,7 @@ onMounted(async () => {
             <el-radio-button value="partial">按商品拆分</el-radio-button>
             <el-radio-button value="full">整单拆分</el-radio-button>
           </el-radio-group>
-        </div>
+  </div>
         <div class="muted" style="margin-bottom: 10px">
           <template v-if="splitEditMode === 'full'">
             整单拆分：只填规格名称，不对应原商品；保存后打单发货全部按这些规格行勾选。

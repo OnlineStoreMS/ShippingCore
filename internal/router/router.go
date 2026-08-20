@@ -59,7 +59,7 @@ func Setup(db *gorm.DB, cfg *config.Config) *gin.Engine {
 	adminGroup.GET("/photo-upload-sessions/:token", photoH.GetSession)
 	adminGroup.POST("/kdzs/helper-handoff-sessions", kdzsHandoffH.CreateSession)
 
-	adminGroup.POST("/kdzs-print/pair-sessions", kdzsPrintAgentH.CreatePairSession)
+	adminGroup.POST("/kdzs-print/pair-claim", kdzsPrintAgentH.ClaimPair)
 	adminGroup.GET("/kdzs-print/devices", kdzsPrintAgentH.ListDevices)
 	adminGroup.PUT("/kdzs-print/devices/:id", kdzsPrintAgentH.RenameDevice)
 	adminGroup.DELETE("/kdzs-print/devices/:id", kdzsPrintAgentH.UnbindDevice)
@@ -70,7 +70,8 @@ func Setup(db *gorm.DB, cfg *config.Config) *gin.Engine {
 	mobile.GET("/photo-upload/:token", photoH.MobileGet)
 	mobile.POST("/photo-upload/:token", photoH.MobileUpload)
 	mobile.GET("/kdzs-helper-handoff/:token", kdzsHandoffH.MobileGet)
-	mobile.POST("/kdzs-print/pair", kdzsPrintAgentH.CompletePair)
+	mobile.POST("/kdzs-print/pair-sessions", kdzsPrintAgentH.CreatePairOffer)
+	mobile.POST("/kdzs-print/pair", kdzsPrintAgentH.CompletePair) // 旧扩展兼容提示
 	mobile.POST("/kdzs-print/heartbeat", kdzsPrintAgentH.Heartbeat)
 	mobile.POST("/kdzs-print/tasks/claim", kdzsPrintAgentH.ClaimTask)
 	mobile.POST("/kdzs-print/tasks/:id/report", kdzsPrintAgentH.ReportTask)

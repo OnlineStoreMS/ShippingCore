@@ -287,25 +287,27 @@ const (
 	KdzsPrintTaskCancelled = "cancelled"
 )
 
-// KdzsPrintPairSession 手机端发起的配对会话（扩展输入配对码完成绑定）。
+// KdzsPrintPairSession 电脑扩展发起的配对会话（手机输入配对码认领）。
+// 未认领前 TenantID/UserID 为 0；认领后写入手机账号并标记 Consumed。
 type KdzsPrintPairSession struct {
-	ID        uint64     `gorm:"primaryKey" json:"id"`
-	TenantID  uint64     `gorm:"index;not null" json:"tenantId"`
-	UserID    uint64     `gorm:"index;not null" json:"userId"`
-	PairCode  string     `gorm:"size:16;uniqueIndex;not null" json:"pairCode"`
-	ExpireAt  time.Time  `gorm:"index;not null" json:"expireAt"`
-	Consumed  bool       `gorm:"default:false" json:"consumed"`
-	DeviceID  *uint64    `gorm:"index" json:"deviceId,omitempty"`
-	CreatedAt time.Time  `json:"createdAt"`
+	ID        uint64    `gorm:"primaryKey" json:"id"`
+	TenantID  uint64    `gorm:"index;not null;default:0" json:"tenantId"`
+	UserID    uint64    `gorm:"index;not null;default:0" json:"userId"`
+	PairCode  string    `gorm:"size:16;uniqueIndex;not null" json:"pairCode"`
+	ExpireAt  time.Time `gorm:"index;not null" json:"expireAt"`
+	Consumed  bool      `gorm:"default:false" json:"consumed"`
+	DeviceID  *uint64   `gorm:"index" json:"deviceId,omitempty"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
 func (KdzsPrintPairSession) TableName() string { return "kdzs_print_pair_sessions" }
 
 // KdzsPrintDevice 已绑定的快递助手浏览器扩展实例。
+// 配对码生成时先落库（TenantID=0 表示待认领）；手机认领后写入真实租户。
 type KdzsPrintDevice struct {
 	ID         uint64     `gorm:"primaryKey" json:"id"`
-	TenantID   uint64     `gorm:"index;not null" json:"tenantId"`
-	UserID     uint64     `gorm:"index;not null" json:"userId"`
+	TenantID   uint64     `gorm:"index;not null;default:0" json:"tenantId"`
+	UserID     uint64     `gorm:"index;not null;default:0" json:"userId"`
 	DeviceKey  string     `gorm:"size:64;uniqueIndex;not null" json:"deviceKey"`
 	SecretHash string     `gorm:"size:128;not null" json:"-"`
 	Name       string     `gorm:"size:128;not null" json:"name"`

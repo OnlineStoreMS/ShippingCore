@@ -3,6 +3,7 @@ const STORAGE = {
   handoff: 'kdzsHandoff',
   device: 'kdzsPrintDevice',
   apiBase: 'kdzsPrintApiBase',
+  pendingPair: 'kdzsPendingPair',
 }
 
 const DEFAULT_API_BASE = 'https://osms.zfcycle.com/apps/shipping/api/v1'
@@ -68,15 +69,24 @@ async function heartbeat() {
       headers: deviceHeaders(dev),
       body: {},
     })
-    return { ok: true, device: dto }
+    const claimed = !!dto?.claimed
+    if (claimed && !dev.claimed) {
+      await setDevice({ ...dev, claimed: true, name: dto.name || dev.name, tenantId: dto.tenantId })
+      await chrome.storage.local.remove([STORAGE.pendingPair])
+    }
+    return { ok: true, device: dto, claimed }
   } catch (e) {
     return { ok: false, reason: e.message || String(e) }
   }
 }
 
 async function claimAndDispatch() {
+  const hb = await heartbeat()
   const dev = await getDevice()
   if (!dev?.deviceKey || !dev?.deviceSecret) return { ok: false, reason: 'unpaired' }
+  if (!(dev.claimed || hb.claimed)) {
+    return { ok: true, task: null, waitingClaim: true }
+  }
   try {
     const data = await apiJSON('/mobile/kdzs-print/tasks/claim', {
       method: 'POST',
@@ -128,11 +138,11 @@ async function reportTask(taskId, status, errorMessage) {
   })
 }
 
-async function completePair(pairCode, deviceName) {
-  const data = await apiJSON('/mobile/kdzs-print/pair', {
+/** 电脑生成配对码；手机认领后 heartbeat.claimed=true */
+async function createPairOffer(deviceName) {
+  const data = await apiJSON('/mobile/kdzs-print/pair-sessions', {
     method: 'POST',
     body: {
-      pairCode: String(pairCode || '').trim(),
       deviceName: String(deviceName || '').trim() || '打单电脑',
     },
   })
@@ -141,13 +151,25 @@ async function completePair(pairCode, deviceName) {
     deviceKey: data.deviceKey,
     deviceSecret: data.deviceSecret,
     name: data.name,
-    tenantId: data.tenantId,
+    claimed: false,
     pairedAt: Date.now(),
   }
   await setDevice(dev)
+  await chrome.storage.local.set({
+    [STORAGE.pendingPair]: {
+      pairCode: data.pairCode,
+      expireAt: data.expireAt,
+      createdAt: Date.now(),
+    },
+  })
   await ensureAlarms()
   await heartbeat()
-  return dev
+  return { device: dev, pairCode: data.pairCode, expireAt: data.expireAt }
+}
+
+async function getPendingPair() {
+  const data = await chrome.storage.local.get([STORAGE.pendingPair])
+  return data[STORAGE.pendingPair] || null
 }
 
 async function ensureAlarms() {
@@ -182,16 +204,25 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
 
   if (msg.type === 'KDZS_PRINT_GET_STATUS') {
-    Promise.all([getDevice(), getApiBase(), heartbeat()])
-      .then(([dev, apiBase, hb]) => {
+    Promise.all([getDevice(), getApiBase(), getPendingPair(), heartbeat()])
+      .then(([dev, apiBase, pending, hb]) => {
+        const claimed = !!(dev?.claimed || hb.claimed || hb.device?.claimed)
         sendResponse({
           ok: true,
           version: chrome.runtime.getManifest().version,
           device: dev
-            ? { deviceId: dev.deviceId, deviceKey: dev.deviceKey, name: dev.name, pairedAt: dev.pairedAt }
+            ? {
+                deviceId: dev.deviceId,
+                deviceKey: dev.deviceKey,
+                name: (hb.device && hb.device.name) || dev.name,
+                pairedAt: dev.pairedAt,
+                claimed,
+              }
             : null,
+          pendingPair: claimed ? null : pending,
           apiBase,
-          online: !!hb.ok,
+          online: !!hb.ok && claimed,
+          waitingClaim: !!dev && !claimed,
           heartbeatError: hb.ok ? '' : hb.reason || '',
         })
       })
@@ -207,15 +238,24 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true
   }
 
-  if (msg.type === 'KDZS_PRINT_PAIR' && msg.pairCode) {
-    completePair(msg.pairCode, msg.deviceName)
-      .then((dev) => sendResponse({ ok: true, device: { deviceId: dev.deviceId, name: dev.name } }))
+  if (msg.type === 'KDZS_PRINT_CREATE_PAIR') {
+    createPairOffer(msg.deviceName)
+      .then((r) =>
+        sendResponse({
+          ok: true,
+          pairCode: r.pairCode,
+          expireAt: r.expireAt,
+          device: { deviceId: r.device.deviceId, name: r.device.name },
+        }),
+      )
       .catch((e) => sendResponse({ ok: false, error: e.message || String(e) }))
     return true
   }
 
   if (msg.type === 'KDZS_PRINT_UNPAIR') {
-    clearDevice().then(() => sendResponse({ ok: true }))
+    clearDevice()
+      .then(() => chrome.storage.local.remove([STORAGE.pendingPair]))
+      .then(() => sendResponse({ ok: true }))
     return true
   }
 
