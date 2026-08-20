@@ -42,6 +42,8 @@ func Setup(db *gorm.DB, cfg *config.Config) *gin.Engine {
 	uploadH := admin.NewUploadHandler(store)
 	photoH := admin.NewPhotoUploadHandler(store)
 	kdzsHandoffH := admin.NewKdzsHelperHandoffHandler()
+	kdzsPrintAgentSvc := service.NewKdzsPrintAgentService(repos)
+	kdzsPrintAgentH := admin.NewKdzsPrintAgentHandler(kdzsPrintAgentSvc)
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok", "service": "shippingcore"})
@@ -57,10 +59,21 @@ func Setup(db *gorm.DB, cfg *config.Config) *gin.Engine {
 	adminGroup.GET("/photo-upload-sessions/:token", photoH.GetSession)
 	adminGroup.POST("/kdzs/helper-handoff-sessions", kdzsHandoffH.CreateSession)
 
+	adminGroup.POST("/kdzs-print/pair-sessions", kdzsPrintAgentH.CreatePairSession)
+	adminGroup.GET("/kdzs-print/devices", kdzsPrintAgentH.ListDevices)
+	adminGroup.PUT("/kdzs-print/devices/:id", kdzsPrintAgentH.RenameDevice)
+	adminGroup.DELETE("/kdzs-print/devices/:id", kdzsPrintAgentH.UnbindDevice)
+	adminGroup.POST("/kdzs-print/tasks", kdzsPrintAgentH.CreateTask)
+	adminGroup.GET("/kdzs-print/tasks", kdzsPrintAgentH.ListTasks)
+
 	mobile := v1.Group("/mobile")
 	mobile.GET("/photo-upload/:token", photoH.MobileGet)
 	mobile.POST("/photo-upload/:token", photoH.MobileUpload)
 	mobile.GET("/kdzs-helper-handoff/:token", kdzsHandoffH.MobileGet)
+	mobile.POST("/kdzs-print/pair", kdzsPrintAgentH.CompletePair)
+	mobile.POST("/kdzs-print/heartbeat", kdzsPrintAgentH.Heartbeat)
+	mobile.POST("/kdzs-print/tasks/claim", kdzsPrintAgentH.ClaimTask)
+	mobile.POST("/kdzs-print/tasks/:id/report", kdzsPrintAgentH.ReportTask)
 
 	return r
 }
@@ -80,7 +93,7 @@ func corsMiddleware(cfg *config.Config) gin.HandlerFunc {
 			c.Header("Access-Control-Allow-Origin", origin)
 		}
 		c.Header("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Content-Type,Authorization")
+		c.Header("Access-Control-Allow-Headers", "Content-Type,Authorization,X-KDZS-Device-Key,X-KDZS-Device-Secret")
 		c.Header("Access-Control-Allow-Credentials", "true")
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)

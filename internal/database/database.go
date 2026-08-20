@@ -49,6 +49,9 @@ func AutoMigrate(db *gorm.DB) error {
 		&model.KdzsAccount{},
 		&model.KdzsSetting{},
 		&model.ShipPlanLine{},
+		&model.KdzsPrintPairSession{},
+		&model.KdzsPrintDevice{},
+		&model.KdzsPrintTask{},
 	); err != nil {
 		return err
 	}

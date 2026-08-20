@@ -278,3 +278,58 @@ type ShipPlanLine struct {
 }
 
 func (ShipPlanLine) TableName() string { return "ship_plan_lines" }
+
+const (
+	KdzsPrintTaskPending   = "pending"
+	KdzsPrintTaskClaimed   = "claimed"
+	KdzsPrintTaskDone      = "done"
+	KdzsPrintTaskFailed    = "failed"
+	KdzsPrintTaskCancelled = "cancelled"
+)
+
+// KdzsPrintPairSession 手机端发起的配对会话（扩展输入配对码完成绑定）。
+type KdzsPrintPairSession struct {
+	ID        uint64     `gorm:"primaryKey" json:"id"`
+	TenantID  uint64     `gorm:"index;not null" json:"tenantId"`
+	UserID    uint64     `gorm:"index;not null" json:"userId"`
+	PairCode  string     `gorm:"size:16;uniqueIndex;not null" json:"pairCode"`
+	ExpireAt  time.Time  `gorm:"index;not null" json:"expireAt"`
+	Consumed  bool       `gorm:"default:false" json:"consumed"`
+	DeviceID  *uint64    `gorm:"index" json:"deviceId,omitempty"`
+	CreatedAt time.Time  `json:"createdAt"`
+}
+
+func (KdzsPrintPairSession) TableName() string { return "kdzs_print_pair_sessions" }
+
+// KdzsPrintDevice 已绑定的快递助手浏览器扩展实例。
+type KdzsPrintDevice struct {
+	ID         uint64     `gorm:"primaryKey" json:"id"`
+	TenantID   uint64     `gorm:"index;not null" json:"tenantId"`
+	UserID     uint64     `gorm:"index;not null" json:"userId"`
+	DeviceKey  string     `gorm:"size:64;uniqueIndex;not null" json:"deviceKey"`
+	SecretHash string     `gorm:"size:128;not null" json:"-"`
+	Name       string     `gorm:"size:128;not null" json:"name"`
+	LastSeenAt *time.Time `gorm:"index" json:"lastSeenAt,omitempty"`
+	Enabled    bool       `gorm:"default:true" json:"enabled"`
+	CreatedAt  time.Time  `json:"createdAt"`
+	UpdatedAt  time.Time  `json:"updatedAt"`
+}
+
+func (KdzsPrintDevice) TableName() string { return "kdzs_print_devices" }
+
+// KdzsPrintTask 远程打单任务（手机下发，扩展领取执行）。
+type KdzsPrintTask struct {
+	ID           uint64     `gorm:"primaryKey" json:"id"`
+	TenantID     uint64     `gorm:"index;not null" json:"tenantId"`
+	DeviceID     uint64     `gorm:"index;not null" json:"deviceId"`
+	Status       string     `gorm:"size:16;index;not null;default:pending" json:"status"`
+	Payload      string     `gorm:"type:text;not null" json:"payload"` // JSON
+	ErrorMessage string     `gorm:"size:1024" json:"errorMessage,omitempty"`
+	CreatedBy    uint64     `gorm:"index;not null" json:"createdBy"`
+	ClaimedAt    *time.Time `json:"claimedAt,omitempty"`
+	FinishedAt   *time.Time `json:"finishedAt,omitempty"`
+	CreatedAt    time.Time  `json:"createdAt"`
+	UpdatedAt    time.Time  `json:"updatedAt"`
+}
+
+func (KdzsPrintTask) TableName() string { return "kdzs_print_tasks" }

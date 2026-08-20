@@ -779,7 +779,7 @@
     renderPanel()
     try {
       if (!handoff) {
-        log('没有待执行任务。请先在发货中心点「打开快递助手」。', 'error')
+        log('没有待执行任务。请先绑定插件并由手机发送打单任务，或从发货中心打开快递助手。', 'error')
         return
       }
       const age = Date.now() - Number(handoff.createdAt || handoff.savedAt || 0)
@@ -803,8 +803,33 @@
       await clickSelectShip()
 
       log('自动化完成：请人工核对勾选与模板后点击「打印快递单」。打印后回发货中心「同步单号→确认发货」。')
+      if (handoff?.cloudTaskId) {
+        chrome.runtime.sendMessage(
+          {
+            type: 'KDZS_PRINT_REPORT_TASK',
+            taskId: handoff.cloudTaskId,
+            status: 'done',
+          },
+          () => {
+            /* ignore */
+          },
+        )
+      }
     } catch (e) {
       log(`自动化异常：${e?.message || e}`, 'error')
+      if (handoff?.cloudTaskId) {
+        chrome.runtime.sendMessage(
+          {
+            type: 'KDZS_PRINT_REPORT_TASK',
+            taskId: handoff.cloudTaskId,
+            status: 'failed',
+            errorMessage: String(e?.message || e),
+          },
+          () => {
+            /* ignore */
+          },
+        )
+      }
     } finally {
       running = false
       renderPanel()
@@ -1009,7 +1034,7 @@
       handoff = null
       renderPanel()
       if (manual) {
-        log('无任务：请从发货中心点「打开快递助手」（会带云端 token）')
+        log('无任务：请保持插件绑定在线，由手机发送打单；或从发货中心点「打开快递助手」')
       }
       return false
     })()
@@ -1037,8 +1062,14 @@
       if (area !== 'local' || !changes.kdzsHandoff) return
       const next = changes.kdzsHandoff.newValue
       if (!next) return
-      if (handoff && handoff.createdAt === next.createdAt) return
-      applyHandoff(next, '存储更新', false)
+      if (handoff && handoff.createdAt === next.createdAt && handoff.cloudTaskId === next.cloudTaskId) return
+      applyHandoff(next, '队列任务', false)
+    })
+
+    chrome.runtime.onMessage.addListener((msg) => {
+      if (msg?.type === 'KDZS_HELPER_QUEUE_TASK' && msg.payload) {
+        applyHandoff(msg.payload, '队列推送', false)
+      }
     })
   }
 })()
