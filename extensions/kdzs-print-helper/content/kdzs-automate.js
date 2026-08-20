@@ -800,12 +800,154 @@
     const exact = findButtonsByText(['选择发货', '选中发货', '确认选择'])
     const btn = exact.find((el) => /选择发货|选中发货/.test(textOf(el))) || exact[0]
     if (!btn) {
-      log('批打页无「选择发货」，请人工核对后点「打印快递单」')
+      log('批打页无「选择发货」，继续打印快递单')
       return false
     }
     log(`点击：${textOf(btn)}`)
     clickEl(btn)
     await sleep(1200)
+    return true
+  }
+
+  function findVisibleExact(texts) {
+    const want = texts.map((t) => String(t).replace(/\s/g, ''))
+    return [...document.querySelectorAll('button, a, span, div, label')].find((el) => {
+      if (!visible(el)) return false
+      // 不要误点页脚绿色大按钮
+      if (el.matches?.('button.bg-green') || /btn-big-bold.*bg-green|bg-green.*btn-big-bold/.test(String(el.className))) {
+        return false
+      }
+      const t = textOf(el).replace(/\s/g, '')
+      return want.includes(t)
+    })
+  }
+
+  /** 打印机弹窗内的确认：只要点「打印」，不改打印机，也不再点页脚「打印快递单」 */
+  function findPrinterDialogPrintButton() {
+    // 1) 文案就是「打印」
+    const exactPrint = findVisibleExact(['打印'])
+    if (exactPrint) return exactPrint
+    // 2) 弹窗专用 a.print-btn（有的版本文案仍写「打印快递单」，但是弹窗内确认键）
+    const link = document.querySelector('a.print-btn')
+    if (link && visible(link)) return link
+    return null
+  }
+
+  /** 处理「已打印过 / 选单号 / 选打印机」等打印弹层 */
+  async function resolvePrintDialogs() {
+    for (let i = 0; i < 10; i++) {
+      const body = textOf(document.body)
+
+      if (body.includes('确认重新打印')) {
+        const orig = findVisibleExact(['原单号打印'])
+        if (orig) {
+          log('检测到已打印订单，选择「原单号打印」')
+          clickEl(orig)
+          await sleep(1200)
+          continue
+        }
+      }
+
+      if (body.includes('请选择要打印的单号')) {
+        const print = findVisibleExact(['打印'])
+        if (print) {
+          log('确认打印单号 → 打印')
+          clickEl(print)
+          await sleep(1200)
+          continue
+        }
+      }
+
+      if (body.includes('选择打印机')) {
+        // 不改打印机，直接点「打印」
+        const confirm = findPrinterDialogPrintButton()
+        if (confirm) {
+          log(`打印机弹窗确认 → ${textOf(confirm) || '打印'}（不更换打印机）`)
+          clickEl(confirm)
+          await sleep(2500)
+          continue
+        }
+        log('打印机弹窗未找到「打印」按钮', 'error')
+      }
+
+      // 弹层已收起
+      if (
+        !body.includes('确认重新打印') &&
+        !body.includes('请选择要打印的单号') &&
+        !body.includes('选择打印机')
+      ) {
+        return true
+      }
+      await sleep(600)
+    }
+    return !textOf(document.body).includes('选择打印机')
+  }
+
+  async function clickPrintExpress() {
+    // 页脚只点这一次「打印快递单」
+    const btn = [...document.querySelectorAll('button')].find(
+      (b) =>
+        visible(b) &&
+        /bg-green/i.test(String(b.className)) &&
+        textOf(b).replace(/\s/g, '') === '打印快递单',
+    )
+    if (!btn) {
+      log('未找到页脚「打印快递单」按钮', 'error')
+      return false
+    }
+    log('点击页脚「打印快递单」')
+    clickEl(btn)
+    await sleep(1000)
+    const ok = await resolvePrintDialogs()
+    if (ok) log('打印已确认，接着发货')
+    else log('打印弹层可能未完成，请人工确认', 'error')
+    return ok
+  }
+
+  async function clickShip() {
+    const btn = [...document.querySelectorAll('button')].find(
+      (b) => visible(b) && textOf(b).replace(/\s/g, '') === '发货',
+    )
+    if (!btn) {
+      log('未找到「发货」按钮', 'error')
+      return false
+    }
+    log('点击「发货」')
+    clickEl(btn)
+    await sleep(1200)
+
+    for (let i = 0; i < 6; i++) {
+      const body = textOf(document.body)
+      if (body.includes('请设置发货方式') || body.includes('发货方式')) {
+        const normal = findVisibleExact(['普通发货'])
+        if (normal) {
+          log('发货方式：普通发货')
+          clickEl(normal)
+          await sleep(300)
+        }
+        // 对话框右下「确定」
+        const oks = [...document.querySelectorAll('button')].filter(
+          (b) => visible(b) && textOf(b).replace(/\s/g, '') === '确定',
+        )
+        const okBtn =
+          oks.find((b) => b.closest('.ant-modal, .ant-modal-root, [class*=modal], [class*=Modal]')) ||
+          oks[oks.length - 1]
+        if (okBtn) {
+          log('确认发货')
+          clickEl(okBtn)
+          await sleep(2500)
+        }
+      }
+      if (!textOf(document.body).includes('请设置发货方式')) break
+      await sleep(500)
+    }
+
+    const still = textOf(document.body).includes('请设置发货方式')
+    if (still) {
+      log('发货确认弹层仍在，请人工确认', 'error')
+      return false
+    }
+    log('发货流程已提交')
     return true
   }
 
@@ -970,7 +1112,47 @@
         return
       }
 
-      log('自动化完成：请人工核对勾选与模板后点击「打印快递单」。打印后回发货中心「同步单号→确认发货」。')
+      const doPrint = handoff.autoPrint !== false
+      if (doPrint) {
+        const printed = await clickPrintExpress()
+        if (!printed) {
+          if (handoff?.cloudTaskId) {
+            chrome.runtime.sendMessage(
+              {
+                type: 'KDZS_PRINT_REPORT_TASK',
+                taskId: handoff.cloudTaskId,
+                status: 'failed',
+                errorMessage: '打印快递单未完成',
+              },
+              () => {
+                /* ignore */
+              },
+            )
+          }
+          return
+        }
+        const shipped = await clickShip()
+        if (!shipped) {
+          if (handoff?.cloudTaskId) {
+            chrome.runtime.sendMessage(
+              {
+                type: 'KDZS_PRINT_REPORT_TASK',
+                taskId: handoff.cloudTaskId,
+                status: 'failed',
+                errorMessage: '发货未完成（面单可能已打印）',
+              },
+              () => {
+                /* ignore */
+              },
+            )
+          }
+          return
+        }
+        log('自动化完成：已打印快递单并提交发货。请回发货中心核对同步结果。')
+      } else {
+        log('自动化完成：已勾选订单（autoPrint=false，未自动打印/发货）。')
+      }
+
       if (handoff?.cloudTaskId) {
         chrome.runtime.sendMessage(
           {

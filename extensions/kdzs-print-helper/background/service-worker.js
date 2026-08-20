@@ -269,20 +269,32 @@ async function getPendingPair() {
 }
 
 async function ensureAlarms() {
-  // Chrome 正式环境闹钟最短约 1 分钟；开发者模式可更短
+  // Chrome 闹钟最短约 1 分钟；另外用内存定时器加快领任务
   await chrome.alarms.create(HEARTBEAT_ALARM, { periodInMinutes: 1 })
   await chrome.alarms.create(CLAIM_ALARM, { periodInMinutes: 1 })
 }
 
+let claimTimer = null
+function ensureFastClaimLoop() {
+  if (claimTimer) return
+  // SW 存活期间约 12s 领一次；被挂起后靠 alarm 唤醒
+  claimTimer = setInterval(() => {
+    void claimAndDispatch()
+  }, 12000)
+}
+
 chrome.runtime.onInstalled.addListener(() => {
   void ensureAlarms()
+  ensureFastClaimLoop()
 })
 
 chrome.runtime.onStartup.addListener(() => {
   void ensureAlarms()
+  ensureFastClaimLoop()
 })
 
 chrome.alarms.onAlarm.addListener((alarm) => {
+  ensureFastClaimLoop()
   if (alarm.name === HEARTBEAT_ALARM) {
     void heartbeat().then(() => claimAndDispatch())
   }
@@ -434,4 +446,5 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 })
 
 void ensureAlarms()
-void heartbeat()
+ensureFastClaimLoop()
+void heartbeat().then(() => claimAndDispatch())
