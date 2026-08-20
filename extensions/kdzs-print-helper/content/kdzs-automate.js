@@ -822,7 +822,51 @@
     })
   }
 
-  /** 打印机弹窗内的确认：点「打印快递单」（不改打印机；勿再点页脚绿色大按钮） */
+  /** 按配置名选中打印机（完整名优先，其次包含匹配） */
+  function selectConfiguredPrinter() {
+    const want = String(handoff?.printerName || '').trim()
+    if (!want) {
+      log('未配置打印机名称，使用弹窗当前默认打印机')
+      return false
+    }
+    const wantNorm = want.replace(/\s+/g, ' ').trim().toLowerCase()
+    const nodes = [...document.querySelectorAll('label, .ant-radio-wrapper, li, div, span')]
+    const candidates = nodes.filter((el) => {
+      if (!visible(el)) return false
+      const t = textOf(el).replace(/\s+/g, ' ').trim()
+      if (!t || t.length > 120) return false
+      // 排除整块弹窗容器
+      if (t.includes('选择打印机') && t.includes('打印快递单')) return false
+      return true
+    })
+
+    let best = null
+    let bestScore = 0
+    for (const el of candidates) {
+      const t = textOf(el).replace(/\s+/g, ' ').trim()
+      const low = t.toLowerCase()
+      let score = 0
+      if (low === wantNorm) score = 100
+      else if (low.includes(wantNorm)) score = 80 + Math.min(15, wantNorm.length)
+      else if (wantNorm.includes(low) && low.length >= 4) score = 50 + low.length
+      if (score > bestScore) {
+        bestScore = score
+        best = el
+      }
+    }
+    if (!best || bestScore < 50) {
+      log(`未找到打印机「${want}」，请核对配置名称是否与弹窗一致`, 'error')
+      return false
+    }
+    log(`选择打印机：${textOf(best)}`)
+    clickEl(best)
+    // 再点一次 radio input 更稳
+    const input = best.querySelector?.('input[type="radio"]') || best.closest('label')?.querySelector('input')
+    if (input instanceof HTMLElement) clickEl(input)
+    return true
+  }
+
+  /** 打印机弹窗内的确认：点「打印快递单」（勿再点页脚绿色大按钮） */
   function findPrinterDialogPrintButton() {
     // 弹窗专用 a.print-btn
     const link = document.querySelector('a.print-btn')
@@ -887,10 +931,11 @@
       }
 
       if (body.includes('选择打印机') || document.querySelector('a.print-btn')) {
-        // 不改打印机，点弹窗「打印快递单」
+        selectConfiguredPrinter()
+        await sleep(400)
         const confirm = findPrinterDialogPrintButton()
         if (confirm) {
-          log('打印机弹窗 → 打印快递单（不更换打印机）')
+          log('打印机弹窗 → 打印快递单')
           clickEl(confirm)
           await sleep(2000)
           continue
