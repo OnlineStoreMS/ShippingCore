@@ -311,6 +311,16 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     return true
   }
 
+  // iframe → 顶层：转发日志 / 提醒监视弹窗
+  if (msg.type === 'KDZS_HELPER_FRAME_LOG' || msg.type === 'KDZS_PRINT_NEED_SHELL_DIALOGS') {
+    const tabId = _sender.tab?.id
+    if (tabId) {
+      chrome.tabs.sendMessage(tabId, msg).catch(() => {})
+    }
+    sendResponse({ ok: true })
+    return true
+  }
+
   if (msg.type === 'KDZS_PRINT_GET_STATUS') {
     Promise.all([getDevice(), getApiBase(), getPendingPair(), heartbeat()])
       .then(([dev, apiBase, pending, hb]) => {

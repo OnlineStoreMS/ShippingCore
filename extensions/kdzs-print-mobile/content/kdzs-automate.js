@@ -15,6 +15,16 @@
     const line = `[${new Date().toLocaleTimeString()}] ${msg}`
     lastLog = [...lastLog.slice(-40), line]
     console[level === 'error' ? 'error' : 'log']('[OSMS-KDZS-Mobile]', msg)
+    // iframe 日志转发到门户顶层面板
+    if (!IS_TOP) {
+      try {
+        chrome.runtime.sendMessage({ type: 'KDZS_HELPER_FRAME_LOG', line, level, host: HOST }, () => {
+          void chrome.runtime.lastError
+        })
+      } catch {
+        /* ignore */
+      }
+    }
     renderPanel()
   }
 
@@ -902,58 +912,105 @@
     return !!m
   }
 
-  /** 处理「已打印过 / 选单号 / 选打印机」等打印弹层 */
+  /** 本 document 内是否有打印相关弹层 */
+  function hasPrintDialogInDoc() {
+    const body = textOf(document.body)
+    return (
+      body.includes('确认重新打印') ||
+      body.includes('请选择要打印的单号') ||
+      body.includes('选择打印机') ||
+      !!document.querySelector('a.print-btn')
+    )
+  }
+
+  /** 处理本页「已打印过 / 选单号 / 选打印机」弹层；返回是否本轮点过确认打印 */
+  async function handlePrintDialogsOnce() {
+    const body = textOf(document.body)
+    let acted = false
+
+    if (body.includes('确认重新打印')) {
+      const orig = findVisibleExact(['原单号打印'])
+      if (orig) {
+        log('检测到已打印订单，选择「原单号打印」')
+        clickEl(orig)
+        acted = true
+        await sleep(800)
+      }
+    }
+
+    if (textOf(document.body).includes('请选择要打印的单号')) {
+      const print = findVisibleExact(['打印'])
+      if (print) {
+        log('确认打印单号 → 打印')
+        clickEl(print)
+        acted = true
+        await sleep(800)
+      }
+    }
+
+    if (textOf(document.body).includes('选择打印机') || document.querySelector('a.print-btn')) {
+      selectConfiguredPrinter()
+      await sleep(350)
+      const confirm = findPrinterDialogPrintButton()
+      if (confirm) {
+        log('打印机弹窗 → 点击「打印快递单」')
+        clickEl(confirm)
+        acted = true
+        await sleep(1500)
+      } else {
+        log('打印机弹窗未找到「打印快递单」按钮', 'error')
+      }
+    }
+    return acted
+  }
+
+  /**
+   * 等待并处理打印弹层。
+   * 关键点：弹窗未出现时不能当成「已关闭成功」（此前会立刻 return true 导致跳过打印直接发货）。
+   */
   async function resolvePrintDialogs() {
-    for (let i = 0; i < 12; i++) {
-      const body = textOf(document.body)
+    let sawDialog = false
+    let confirmedClick = false
 
-      if (body.includes('确认重新打印')) {
-        const orig = findVisibleExact(['原单号打印'])
-        if (orig) {
-          log('检测到已打印订单，选择「原单号打印」')
-          clickEl(orig)
-          await sleep(1200)
-          continue
-        }
-      }
+    // 通知门户页协助（打印机弹窗常挂在 df.kdzs.com 顶层，iframe 跨域看不到）
+    try {
+      chrome.runtime.sendMessage({ type: 'KDZS_PRINT_NEED_SHELL_DIALOGS' }, () => {
+        void chrome.runtime.lastError
+      })
+    } catch {
+      /* ignore */
+    }
 
-      if (body.includes('请选择要打印的单号')) {
-        const print = findVisibleExact(['打印'])
-        if (print) {
-          log('确认打印单号 → 打印')
-          clickEl(print)
-          await sleep(1200)
-          continue
-        }
-      }
-
-      if (body.includes('选择打印机') || document.querySelector('a.print-btn')) {
-        selectConfiguredPrinter()
+    for (let i = 0; i < 40; i++) {
+      if (hasPrintDialogInDoc()) {
+        sawDialog = true
+        const acted = await handlePrintDialogsOnce()
+        if (acted) confirmedClick = true
         await sleep(400)
-        const confirm = findPrinterDialogPrintButton()
-        if (confirm) {
-          log('打印机弹窗 → 打印快递单')
-          clickEl(confirm)
-          await sleep(2000)
-          continue
-        }
-        log('打印机弹窗未找到「打印快递单」', 'error')
+        continue
       }
 
-      // 弹层已收起
-      if (
-        !body.includes('确认重新打印') &&
-        !body.includes('请选择要打印的单号') &&
-        !body.includes('选择打印机') &&
-        !document.querySelector('a.print-btn')
-      ) {
+      // 弹层已消失
+      if (sawDialog) {
+        log(confirmedClick ? '打印弹窗已关闭（本页已点确认）' : '打印弹窗已关闭')
         return true
+      }
+
+      // 尚未见到弹窗：继续等（可能在门户顶层）
+      if (i === 0 || i % 5 === 0) {
+        log(`等待打印弹窗出现…（${i + 1}/40，含门户页）`)
       }
       await sleep(500)
     }
-    return (
-      !textOf(document.body).includes('选择打印机') && !document.querySelector('a.print-btn')
-    )
+
+    // 弹窗始终未在本页出现：若订单已有单号，视为门户页已帮点完
+    if (rowHasExpressNo(findTargetOrderRow())) {
+      log('本页未见打印弹窗，但订单已有快递单号，视为打印成功')
+      return true
+    }
+
+    log('等待打印弹窗超时：未在批打页看到打印机弹窗，也未出现快递单号', 'error')
+    return false
   }
 
   async function clickPrintExpress() {
@@ -970,16 +1027,16 @@
     }
     log('点击页脚「打印快递单」')
     clickEl(btn)
-    await sleep(1000)
+    await sleep(800)
     const dialogOk = await resolvePrintDialogs()
     if (!dialogOk) {
-      log('打印弹层未消失，请人工确认', 'error')
+      log('打印弹层未完成，中止发货', 'error')
       return false
     }
-    log('打印弹窗已关闭，等待订单显示快递单号…')
+    log('打印确认完成，等待订单显示快递单号…')
 
-    // 等行上出现快递单号
-    for (let i = 0; i < 20; i++) {
+    // 等行上出现快递单号（必须看到单号才发货）
+    for (let i = 0; i < 30; i++) {
       const row = findTargetOrderRow()
       if (rowHasExpressNo(row)) {
         const t = textOf(row)
@@ -989,13 +1046,32 @@
       }
       await sleep(500)
     }
-    // 弹窗已关但单号字段文案可能不同：若行仍选中则继续发货，仅警告
-    const row = findTargetOrderRow()
-    if (row && /pack_selected/.test(row.className || '')) {
-      log('未识别到快递单号文案，弹窗已关且订单仍选中，继续发货', 'error')
+    log('打印后未看到快递单号，中止自动发货', 'error')
+    return false
+  }
+
+  /** 处理本页发货方式弹层 */
+  async function handleShipDialogOnce() {
+    const body = textOf(document.body)
+    if (!(body.includes('请设置发货方式') || body.includes('发货方式'))) return false
+    const normal = findVisibleExact(['普通发货'])
+    if (normal) {
+      log('发货方式：普通发货')
+      clickEl(normal)
+      await sleep(300)
+    }
+    const oks = [...document.querySelectorAll('button')].filter(
+      (b) => visible(b) && textOf(b).replace(/\s/g, '') === '确定',
+    )
+    const okBtn =
+      oks.find((b) => b.closest('.ant-modal, .ant-modal-root, [class*=modal], [class*=Modal]')) ||
+      oks[oks.length - 1]
+    if (okBtn) {
+      log('确认发货')
+      clickEl(okBtn)
+      await sleep(1500)
       return true
     }
-    log('打印后未看到快递单号，中止自动发货', 'error')
     return false
   }
 
@@ -1009,41 +1085,44 @@
     }
     log('点击「发货」')
     clickEl(btn)
-    await sleep(1200)
+    await sleep(1000)
 
-    for (let i = 0; i < 6; i++) {
-      const body = textOf(document.body)
-      if (body.includes('请设置发货方式') || body.includes('发货方式')) {
-        const normal = findVisibleExact(['普通发货'])
-        if (normal) {
-          log('发货方式：普通发货')
-          clickEl(normal)
-          await sleep(300)
-        }
-        // 对话框右下「确定」
-        const oks = [...document.querySelectorAll('button')].filter(
-          (b) => visible(b) && textOf(b).replace(/\s/g, '') === '确定',
-        )
-        const okBtn =
-          oks.find((b) => b.closest('.ant-modal, .ant-modal-root, [class*=modal], [class*=Modal]')) ||
-          oks[oks.length - 1]
-        if (okBtn) {
-          log('确认发货')
-          clickEl(okBtn)
-          await sleep(2500)
-        }
-      }
+    try {
+      chrome.runtime.sendMessage({ type: 'KDZS_PRINT_NEED_SHELL_DIALOGS' }, () => {
+        void chrome.runtime.lastError
+      })
+    } catch {
+      /* ignore */
+    }
+
+    for (let i = 0; i < 12; i++) {
+      await handleShipDialogOnce()
       if (!textOf(document.body).includes('请设置发货方式')) break
       await sleep(500)
     }
 
     const still = textOf(document.body).includes('请设置发货方式')
     if (still) {
-      log('发货确认弹层仍在，请人工确认', 'error')
-      return false
+      log('发货确认弹层仍在（可能在门户页），继续等待门户协助…', 'error')
+      await sleep(3000)
     }
     log('发货流程已提交')
     return true
+  }
+
+  /** 门户顶层：监视并点击打印/发货弹窗（跨子域 iframe 点不到） */
+  async function watchShellDialogs(timeoutMs = 120000) {
+    const t0 = Date.now()
+    log('门户页监视打印/发货弹窗中…')
+    while (handoff && Date.now() - t0 < timeoutMs) {
+      if (hasPrintDialogInDoc()) {
+        await handlePrintDialogsOnce()
+      }
+      if (textOf(document.body).includes('请设置发货方式') || textOf(document.body).includes('发货方式')) {
+        await handleShipDialogOnce()
+      }
+      await sleep(400)
+    }
   }
 
   async function selectTemplate() {
@@ -1164,10 +1243,11 @@
 
       log('开始自动化（手机版：自动打印并发货）…')
 
-      // 门户外壳只负责进「打单发货」+ 切平台；勾选在平台 iframe 内执行
+      // 门户外壳只负责进「打单发货」+ 切平台 + 监视顶层打印/发货弹窗
       if (IS_DF_SHELL) {
         await ensureDfShellBatchPrint(handoff)
-        log('已切换打单发货与电商平台，批打页将自动勾选订单…')
+        log('已切换打单发货与电商平台；批打 iframe 将勾选，本页监视打印弹窗…')
+        await watchShellDialogs(120000)
         return
       }
 
@@ -1451,6 +1531,23 @@
     })
 
     chrome.runtime.onMessage.addListener((msg) => {
+      if (msg?.type === 'KDZS_HELPER_FRAME_LOG' && IS_TOP && msg.line) {
+        lastLog = [...lastLog.slice(-40), msg.line]
+        renderPanel()
+        return
+      }
+      if (msg?.type === 'KDZS_PRINT_NEED_SHELL_DIALOGS' && IS_DF_SHELL) {
+        void (async () => {
+          if (hasPrintDialogInDoc()) await handlePrintDialogsOnce()
+          if (
+            textOf(document.body).includes('请设置发货方式') ||
+            textOf(document.body).includes('发货方式')
+          ) {
+            await handleShipDialogOnce()
+          }
+        })()
+        return
+      }
       if (msg?.type === 'KDZS_HELPER_QUEUE_TASK' && msg.payload) {
         if (IS_PLATFORM_FRAME && !hostMatchesTask(msg.payload.platform)) return
         applyHandoff(msg.payload, '队列推送', false)

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "OSMS 快递助手·手机版",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "description": "OpsMobile 远程打单：配对手机、领任务、按配置打印机自动打印并发货。",
   "permissions": [
     "storage",
