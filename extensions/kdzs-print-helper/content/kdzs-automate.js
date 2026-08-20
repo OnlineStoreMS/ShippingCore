@@ -822,20 +822,48 @@
     })
   }
 
-  /** 打印机弹窗内的确认：只要点「打印」，不改打印机，也不再点页脚「打印快递单」 */
+  /** 打印机弹窗内的确认：点「打印快递单」（不改打印机；勿再点页脚绿色大按钮） */
   function findPrinterDialogPrintButton() {
-    // 1) 文案就是「打印」
-    const exactPrint = findVisibleExact(['打印'])
-    if (exactPrint) return exactPrint
-    // 2) 弹窗专用 a.print-btn（有的版本文案仍写「打印快递单」，但是弹窗内确认键）
+    // 弹窗专用 a.print-btn
     const link = document.querySelector('a.print-btn')
     if (link && visible(link)) return link
+    // 文案精确匹配，且排除页脚 bg-green
+    const nodes = [...document.querySelectorAll('button, a, span')]
+    return (
+      nodes.find((el) => {
+        if (!visible(el)) return false
+        if (/bg-green|btn-big-bold/i.test(String(el.className || ''))) return false
+        return textOf(el).replace(/\s/g, '') === '打印快递单'
+      }) || null
+    )
+  }
+
+  /** 当前任务订单行 */
+  function findTargetOrderRow() {
+    const orders = handoff?.orders || []
+    for (const order of orders) {
+      for (const k of preferSearchKeys(order)) {
+        const row = findRowContaining(k)
+        if (row) return row
+      }
+    }
     return null
+  }
+
+  /** 行上是否已出现快递单号（打印成功标志） */
+  function rowHasExpressNo(row) {
+    if (!row) return false
+    const t = textOf(row)
+    // 常见：快递单号 / 运单号 + 一串数字
+    if (/快递单号|运单号/.test(t) && /\d{10,}/.test(t)) return true
+    // 部分列表用独立字段展示长单号
+    const m = t.match(/(?:快递单号|运单号)[:：\s]*([A-Za-z0-9-]{10,})/)
+    return !!m
   }
 
   /** 处理「已打印过 / 选单号 / 选打印机」等打印弹层 */
   async function resolvePrintDialogs() {
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 12; i++) {
       const body = textOf(document.body)
 
       if (body.includes('确认重新打印')) {
@@ -858,29 +886,32 @@
         }
       }
 
-      if (body.includes('选择打印机')) {
-        // 不改打印机，直接点「打印」
+      if (body.includes('选择打印机') || document.querySelector('a.print-btn')) {
+        // 不改打印机，点弹窗「打印快递单」
         const confirm = findPrinterDialogPrintButton()
         if (confirm) {
-          log(`打印机弹窗确认 → ${textOf(confirm) || '打印'}（不更换打印机）`)
+          log('打印机弹窗 → 打印快递单（不更换打印机）')
           clickEl(confirm)
-          await sleep(2500)
+          await sleep(2000)
           continue
         }
-        log('打印机弹窗未找到「打印」按钮', 'error')
+        log('打印机弹窗未找到「打印快递单」', 'error')
       }
 
       // 弹层已收起
       if (
         !body.includes('确认重新打印') &&
         !body.includes('请选择要打印的单号') &&
-        !body.includes('选择打印机')
+        !body.includes('选择打印机') &&
+        !document.querySelector('a.print-btn')
       ) {
         return true
       }
-      await sleep(600)
+      await sleep(500)
     }
-    return !textOf(document.body).includes('选择打印机')
+    return (
+      !textOf(document.body).includes('选择打印机') && !document.querySelector('a.print-btn')
+    )
   }
 
   async function clickPrintExpress() {
@@ -898,10 +929,32 @@
     log('点击页脚「打印快递单」')
     clickEl(btn)
     await sleep(1000)
-    const ok = await resolvePrintDialogs()
-    if (ok) log('打印已确认，接着发货')
-    else log('打印弹层可能未完成，请人工确认', 'error')
-    return ok
+    const dialogOk = await resolvePrintDialogs()
+    if (!dialogOk) {
+      log('打印弹层未消失，请人工确认', 'error')
+      return false
+    }
+    log('打印弹窗已关闭，等待订单显示快递单号…')
+
+    // 等行上出现快递单号
+    for (let i = 0; i < 20; i++) {
+      const row = findTargetOrderRow()
+      if (rowHasExpressNo(row)) {
+        const t = textOf(row)
+        const m = t.match(/(?:快递单号|运单号)[:：\s]*([A-Za-z0-9-]{10,})/) || t.match(/\b(\d{12,})\b/)
+        log(`订单已显示快递单号${m ? `：${m[1]}` : ''}`)
+        return true
+      }
+      await sleep(500)
+    }
+    // 弹窗已关但单号字段文案可能不同：若行仍选中则继续发货，仅警告
+    const row = findTargetOrderRow()
+    if (row && /pack_selected/.test(row.className || '')) {
+      log('未识别到快递单号文案，弹窗已关且订单仍选中，继续发货', 'error')
+      return true
+    }
+    log('打印后未看到快递单号，中止自动发货', 'error')
+    return false
   }
 
   async function clickShip() {
@@ -1044,6 +1097,14 @@
     return 0
   }
 
+  function clearFinishedHandoff(reason) {
+    handoff = null
+    chrome.runtime.sendMessage({ type: 'KDZS_HELPER_CLEAR_HANDOFF' }, () => {
+      log(reason || '已清除已完成任务')
+      renderPanel()
+    })
+  }
+
   async function runAutomation() {
     if (running) return
     running = true
@@ -1153,11 +1214,12 @@
         log('自动化完成：已勾选订单（autoPrint=false，未自动打印/发货）。')
       }
 
-      if (handoff?.cloudTaskId) {
+      const doneTaskId = handoff?.cloudTaskId
+      if (doneTaskId) {
         chrome.runtime.sendMessage(
           {
             type: 'KDZS_PRINT_REPORT_TASK',
-            taskId: handoff.cloudTaskId,
+            taskId: doneTaskId,
             status: 'done',
           },
           () => {
@@ -1165,6 +1227,8 @@
           },
         )
       }
+      // 清除本地任务，避免刷新/重进批打页再次执行
+      clearFinishedHandoff('已清除已完成任务')
     } catch (e) {
       log(`自动化异常：${e?.message || e}`, 'error')
       if (handoff?.cloudTaskId) {
@@ -1419,7 +1483,11 @@
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== 'local' || !changes.kdzsHandoff) return
       const next = changes.kdzsHandoff.newValue
-      if (!next) return
+      if (!next) {
+        handoff = null
+        renderPanel()
+        return
+      }
       if (handoff && handoff.createdAt === next.createdAt && handoff.cloudTaskId === next.cloudTaskId) return
       if (IS_PLATFORM_FRAME && !hostMatchesTask(next.platform)) return
       applyHandoff(next, '队列任务', false)
