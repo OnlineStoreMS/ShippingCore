@@ -1472,7 +1472,7 @@ onMounted(async () => {
           </div>
         <div v-if="selectedOrders.length && !selectionGroup" class="warn-tip">
           已选订单平台不一致，无法批量打单发货
-        </div>
+          </div>
         </div>
 
       <el-table :data="omsOrders" border stripe empty-text="暂无待发货订单" @selection-change="onSelectionChange">

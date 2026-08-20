@@ -89,6 +89,135 @@
     return keys
   }
 
+  /** 快递助手分销门户：df.kdzs.com 顶栏切平台，批打 DOM 在平台 iframe 内 */
+  const PLATFORM_HOST = {
+    FXG: 'dydf.kdzs.com',
+    DY: 'dydf.kdzs.com',
+    TB: 'tbdf.kdzs.com',
+    TAOBAO: 'tbdf.kdzs.com',
+    XHS: 'xhsdf.kdzs.com',
+    PDD: 'pdddf.kdzs.com',
+    KSXD: 'ksdf.kdzs.com',
+    DFHAND: 'hand.kdzs.com',
+    HAND: 'hand.kdzs.com',
+    MANUAL: 'hand.kdzs.com',
+  }
+
+  /** hash ?platform= 与顶栏文案 */
+  const PLATFORM_UI = {
+    FXG: { query: 'fxg', label: '抖音' },
+    TB: { query: 'tb', label: '淘宝' },
+    TAOBAO: { query: 'tb', label: '淘宝' },
+    XHS: { query: 'xhs', label: '小红书' },
+    PDD: { query: 'pdd', label: '拼多多' },
+    KSXD: { query: 'ks', label: '快手' },
+    DFHAND: { query: 'dfhand', label: '手工订单' },
+  }
+
+  const IS_TOP = window === window.top
+  const HOST = location.hostname.toLowerCase()
+  const IS_DF_SHELL = HOST === 'df.kdzs.com'
+  const IS_PLATFORM_FRAME = /^(dydf|tbdf|xhsdf|pdddf|ksdf|hand)\.kdzs\.com$/i.test(HOST)
+
+  function normalizePlatform(code) {
+    const p = String(code || '').trim().toUpperCase()
+    if (p === 'DY') return 'FXG'
+    if (p === 'HAND' || p === 'MANUAL') return 'DFHAND'
+    return p || 'FXG'
+  }
+
+  function hostForPlatform(code) {
+    return PLATFORM_HOST[normalizePlatform(code)] || PLATFORM_HOST.FXG
+  }
+
+  function platformUi(code) {
+    const p = normalizePlatform(code)
+    return PLATFORM_UI[p] || PLATFORM_UI.FXG
+  }
+
+  function dfBatchPrintUrl(platform) {
+    const q = platformUi(platform).query
+    return `https://df.kdzs.com/#/batchPrint?platform=${q}`
+  }
+
+  function currentDfPlatformQuery() {
+    const m = String(location.hash || '').match(/[?&]platform=([^&]+)/i)
+    return (m?.[1] || '').toLowerCase()
+  }
+
+  function isDfBatchPrintRoute() {
+    return /batchPrint/i.test(location.hash || '')
+  }
+
+  /** 顶栏电商平台：抖音 / 淘宝 / 手工订单 … */
+  async function clickPlatformTab(label) {
+    const want = String(label || '').trim()
+    if (!want) return false
+    const nodes = [...document.querySelectorAll('div, span')]
+    const candidates = nodes.filter((n) => {
+      if (!visible(n)) return false
+      return textOf(n) === want
+    })
+    if (!candidates.length) {
+      log(`未找到平台入口「${want}」`, 'error')
+      return false
+    }
+    // 优先顶栏平台条（实测 class 含 rp3kVd8Oxl0zNW7I4eCm）
+    const el =
+      candidates.find((n) => /rp3kVd8Oxl0zNW7I4eCm/.test(String(n.className || ''))) ||
+      candidates.find((n) => n.children.length === 0) ||
+      candidates[0]
+    const cls = String(el.className || '')
+    if (/pcjqLrA4Lw3fHkcLPgCU/.test(cls)) {
+      log(`平台已是「${want}」`)
+      return true
+    }
+    log(`切换电商平台 → ${want}`)
+    clickEl(el)
+    await sleep(1200)
+    return true
+  }
+
+  /**
+   * 门户外壳：进入「打单发货」并切到目标电商平台。
+   * @returns {'shell-ready'|'navigating'|'not-shell'}
+   */
+  async function ensureDfShellBatchPrint(payload) {
+    if (!IS_DF_SHELL) return 'not-shell'
+    const ui = platformUi(payload?.platform)
+    const needQ = ui.query
+    const onBatch = isDfBatchPrintRoute()
+    const curQ = currentDfPlatformQuery()
+    if (!onBatch || curQ !== needQ) {
+      log(`进入打单发货 · 平台 ${ui.label}（${needQ}）…`)
+      location.hash = `#/batchPrint?platform=${needQ}`
+      await sleep(800)
+    }
+    await clickPlatformTab(ui.label)
+    // 等平台 iframe 挂载批打页
+    for (let i = 0; i < 20; i++) {
+      const frame = [...document.querySelectorAll('iframe')].find((f) => {
+        try {
+          const h = new URL(f.src || '').hostname
+          return h === hostForPlatform(payload?.platform) && f.offsetHeight > 80
+        } catch {
+          return false
+        }
+      })
+      if (frame) {
+        log(`已就绪：${ui.label} 批打 iframe`)
+        return 'shell-ready'
+      }
+      await sleep(400)
+    }
+    log('平台 iframe 加载较慢，将继续等待批打页脚本…', 'error')
+    return 'shell-ready'
+  }
+
+  function hostMatchesTask(platform) {
+    return HOST === hostForPlatform(platform)
+  }
+
   function goodsKeywords(order) {
     const out = []
     for (const g of order.goods || []) {
@@ -789,6 +918,27 @@
       }
 
       log('开始自动化（不会自动打印）…')
+
+      // 门户外壳只负责进「打单发货」+ 切平台；勾选在平台 iframe 内执行
+      if (IS_DF_SHELL) {
+        await ensureDfShellBatchPrint(handoff)
+        log('已切换打单发货与电商平台，批打页将自动勾选订单…')
+        return
+      }
+
+      // 错误平台的旧 iframe 直接忽略，等正确 iframe 加载
+      if (IS_PLATFORM_FRAME && !hostMatchesTask(handoff.platform)) {
+        log(`当前 iframe 为 ${HOST}，任务需要 ${hostForPlatform(handoff.platform)}，跳过`)
+        return
+      }
+
+      // 若误开到子站但非批打路由，尽量回到门户走标准路径
+      if (IS_TOP && IS_PLATFORM_FRAME && !/printBatch|batchPrint|newIndex/i.test(location.href)) {
+        log('不在批打页，改走快递助手门户打单发货…')
+        location.href = dfBatchPrintUrl(handoff.platform)
+        return
+      }
+
       await sleep(500)
       await waitForPrintBatchReady()
 
@@ -801,6 +951,24 @@
       log(`订单勾选结果：${n}/${(handoff.orders || []).length}`)
       await selectTemplate()
       await clickSelectShip()
+
+      if (n <= 0) {
+        log('未勾选到订单，任务记为失败。请确认平台已切换正确且订单在时间筛选内。', 'error')
+        if (handoff?.cloudTaskId) {
+          chrome.runtime.sendMessage(
+            {
+              type: 'KDZS_PRINT_REPORT_TASK',
+              taskId: handoff.cloudTaskId,
+              status: 'failed',
+              errorMessage: '未在批打列表中找到订单（请检查平台切换与时间筛选）',
+            },
+            () => {
+              /* ignore */
+            },
+          )
+        }
+        return
+      }
 
       log('自动化完成：请人工核对勾选与模板后点击「打印快递单」。打印后回发货中心「同步单号→确认发货」。')
       if (handoff?.cloudTaskId) {
@@ -999,22 +1167,25 @@
   function applyHandoff(payload, source, manual) {
     handoff = { ...payload, savedAt: payload.savedAt || Date.now() }
     renderPanel()
-    log(`已加载任务（${source}）：${(handoff.orders || []).length} 单`)
+    log(`已加载任务（${source}）：${(handoff.orders || []).length} 单 · 平台 ${platformUi(handoff.platform).label}`)
     if (!manual && !running) void runAutomation()
   }
 
   function loadHandoff(manual = false) {
     return (async () => {
-      const cloudToken = peekCloudToken()
-      if (cloudToken) {
-        log(`正在从云端拉取任务…`)
-        const res = await fetchCloudHandoff(cloudToken)
-        if (res?.ok && res.payload) {
-          pendingCloudToken = ''
-          applyHandoff(res.payload, '云端', manual)
-          return true
+      // 云端 token 仅顶层消费，避免 iframe 抢先
+      if (IS_TOP) {
+        const cloudToken = peekCloudToken()
+        if (cloudToken) {
+          log(`正在从云端拉取任务…`)
+          const res = await fetchCloudHandoff(cloudToken)
+          if (res?.ok && res.payload) {
+            pendingCloudToken = ''
+            applyHandoff(res.payload, '云端', manual)
+            return true
+          }
+          log(`云端拉取失败：${res?.error || '未知错误'}`, 'error')
         }
-        log(`云端拉取失败：${res?.error || '未知错误'}`, 'error')
       }
 
       const local = await new Promise((resolve) => {
@@ -1027,6 +1198,10 @@
         })
       })
       if (local) {
+        // 错误平台的旧 iframe 不抢跑
+        if (IS_PLATFORM_FRAME && !hostMatchesTask(local.platform)) {
+          return false
+        }
         applyHandoff(local, '扩展存储', manual)
         return true
       }
@@ -1040,13 +1215,14 @@
     })()
   }
 
-  // 仅顶层页执行，避免 iframe 抢先一次性消费 token
-  if (window !== window.top) return
+  // 门户顶层 + 平台批打 iframe 都注入；其它无关 frame 退出
+  if (!IS_TOP && !IS_PLATFORM_FRAME) return
 
-  // 仅在批打相关页显示面板；其它页也允许手动读取
   const href = location.href
   const likelyPrint =
-    /printBatch|batchPrint|print/i.test(href) || /newIndex|df\.kdzs|kdzs\.com/i.test(href)
+    IS_DF_SHELL ||
+    IS_PLATFORM_FRAME ||
+    /printBatch|batchPrint|print|newIndex/i.test(href)
 
   if (likelyPrint) {
     renderPanel()
@@ -1063,11 +1239,13 @@
       const next = changes.kdzsHandoff.newValue
       if (!next) return
       if (handoff && handoff.createdAt === next.createdAt && handoff.cloudTaskId === next.cloudTaskId) return
+      if (IS_PLATFORM_FRAME && !hostMatchesTask(next.platform)) return
       applyHandoff(next, '队列任务', false)
     })
 
     chrome.runtime.onMessage.addListener((msg) => {
       if (msg?.type === 'KDZS_HELPER_QUEUE_TASK' && msg.payload) {
+        if (IS_PLATFORM_FRAME && !hostMatchesTask(msg.payload.platform)) return
         applyHandoff(msg.payload, '队列推送', false)
       }
     })

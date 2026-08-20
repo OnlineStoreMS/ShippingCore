@@ -1312,8 +1312,8 @@ func (s *ShipmentService) Cancel(ctx context.Context, token string, id uint64) (
 
 	// 有物流账号且已取号：向顺丰取消；手动填单号（无账号）仅本地作废
 	if shipment.CarrierAccountID > 0 && (mailNo != "" || strings.TrimSpace(shipment.SFOrderID) != "") {
-		carrier, err := s.carrier.GetRaw(shipment.CarrierAccountID)
-		if err != nil {
+	carrier, err := s.carrier.GetRaw(shipment.CarrierAccountID)
+	if err != nil {
 			return nil, fmt.Errorf("%w: 物流账号无效，无法取消顺丰单", ErrBadRequest)
 		}
 		client := newSFClient(carrier)

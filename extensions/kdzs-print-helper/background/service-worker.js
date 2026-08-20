@@ -10,6 +10,110 @@ const DEFAULT_API_BASE = 'https://osms.zfcycle.com/apps/shipping/api/v1'
 const HEARTBEAT_ALARM = 'kdzs-print-heartbeat'
 const CLAIM_ALARM = 'kdzs-print-claim'
 
+/** 门户 hash platform= 参数 */
+const PLATFORM_QUERY = {
+  FXG: 'fxg',
+  DY: 'fxg',
+  TB: 'tb',
+  TAOBAO: 'tb',
+  XHS: 'xhs',
+  PDD: 'pdd',
+  KSXD: 'ks',
+  DFHAND: 'dfhand',
+  HAND: 'dfhand',
+  MANUAL: 'dfhand',
+}
+
+function normalizePlatform(code) {
+  const p = String(code || '').trim().toUpperCase()
+  if (p === 'DY') return 'FXG'
+  if (p === 'HAND' || p === 'MANUAL') return 'DFHAND'
+  return p || 'FXG'
+}
+
+function platformQuery(code) {
+  const p = normalizePlatform(code)
+  return PLATFORM_QUERY[p] || 'fxg'
+}
+
+/** 走快递助手门户：打单发货 + 顶栏切平台（批打在 iframe） */
+function dfBatchPrintUrl(platform) {
+  return `https://df.kdzs.com/#/batchPrint?platform=${platformQuery(platform)}`
+}
+
+function tabIsDfPortal(tab) {
+  try {
+    return new URL(tab.url || '').hostname === 'df.kdzs.com'
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 打开/聚焦 df.kdzs.com 打单发货页；由页面脚本切平台并在 iframe 勾选。
+ */
+async function ensurePlatformPrintTab(platform, handoff) {
+  const targetUrl = dfBatchPrintUrl(platform)
+  const all = await chrome.tabs.query({ url: ['https://*.kdzs.com/*', 'http://*.kdzs.com/*'] })
+  let tab = all.find((t) => tabIsDfPortal(t))
+
+  if (tab?.id) {
+    await chrome.tabs.update(tab.id, { url: targetUrl, active: true })
+    await waitTabComplete(tab.id, 15000)
+  } else {
+    tab = await chrome.tabs.create({ url: targetUrl, active: true })
+    if (tab?.id) await waitTabComplete(tab.id, 20000)
+  }
+
+  if (tab?.id) {
+    for (let i = 0; i < 10; i++) {
+      try {
+        await chrome.tabs.sendMessage(tab.id, { type: 'KDZS_HELPER_QUEUE_TASK', payload: handoff })
+        return { ok: true, tabId: tab.id, url: targetUrl }
+      } catch {
+        await sleep(500)
+      }
+    }
+  }
+  return { ok: true, tabId: tab?.id, url: targetUrl, warned: 'content-script-pending' }
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms))
+}
+
+function waitTabComplete(tabId, timeoutMs) {
+  return new Promise((resolve) => {
+    let done = false
+    const finish = () => {
+      if (done) return
+      done = true
+      chrome.tabs.onUpdated.removeListener(onUpdated)
+      resolve()
+    }
+    const timer = setTimeout(finish, timeoutMs)
+    function onUpdated(id, info) {
+      if (id === tabId && info.status === 'complete') {
+        clearTimeout(timer)
+        // SPA hash 路由还需一点时间挂载
+        setTimeout(finish, 800)
+      }
+    }
+    chrome.tabs.onUpdated.addListener(onUpdated)
+    chrome.tabs.get(tabId, (t) => {
+      if (chrome.runtime.lastError) {
+        clearTimeout(timer)
+        finish()
+        return
+      }
+      if (t?.status === 'complete') {
+        clearTimeout(timer)
+        setTimeout(finish, 800)
+      }
+    })
+  })
+}
+
 async function getApiBase() {
   const data = await chrome.storage.local.get([STORAGE.apiBase])
   return String(data[STORAGE.apiBase] || DEFAULT_API_BASE).replace(/\/$/, '')
@@ -112,17 +216,9 @@ async function claimAndDispatch() {
     }
     await chrome.storage.local.set({ [STORAGE.handoff]: handoff })
 
-    // 通知已打开的快递助手页执行
-    const tabs = await chrome.tabs.query({ url: ['https://*.kdzs.com/*', 'http://*.kdzs.com/*'] })
-    for (const tab of tabs) {
-      if (!tab.id) continue
-      try {
-        await chrome.tabs.sendMessage(tab.id, { type: 'KDZS_HELPER_QUEUE_TASK', payload: handoff })
-      } catch {
-        /* tab 可能无 content script */
-      }
-    }
-    return { ok: true, task }
+    // 打开快递助手门户打单发货页（顶栏切平台，iframe 内勾选）
+    const nav = await ensurePlatformPrintTab(handoff.platform, handoff)
+    return { ok: true, task, nav }
   } catch (e) {
     return { ok: false, reason: e.message || String(e) }
   }
