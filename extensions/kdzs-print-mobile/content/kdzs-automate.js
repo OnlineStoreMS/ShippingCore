@@ -954,12 +954,35 @@
   /** 行上是否已出现快递单号（打印成功标志） */
   function rowHasExpressNo(row) {
     if (!row) return false
+    // 手工单/抖音批打：单号常在 input._express_input_* 的 value，不在 innerText
+    const inputs = [
+      ...row.querySelectorAll('input[class*="express_input"], input[class*="express"], input[disabled]'),
+    ]
+    for (const inp of inputs) {
+      const v = String(inp.value || '').trim()
+      if (/^[A-Za-z0-9-]{10,}$/.test(v) && /\d{8,}/.test(v)) return true
+    }
     const t = textOf(row)
     // 常见：快递单号 / 运单号 + 一串数字
     if (/快递单号|运单号/.test(t) && /\d{10,}/.test(t)) return true
     // 部分列表用独立字段展示长单号
     const m = t.match(/(?:快递单号|运单号)[:：\s]*([A-Za-z0-9-]{10,})/)
     return !!m
+  }
+
+  /** 从订单行读取快递单号（优先 input value） */
+  function readRowExpressNo(row) {
+    if (!row) return ''
+    const inputs = [
+      ...row.querySelectorAll('input[class*="express_input"], input[class*="express"], input[disabled]'),
+    ]
+    for (const inp of inputs) {
+      const v = String(inp.value || '').trim()
+      if (/^[A-Za-z0-9-]{10,}$/.test(v) && /\d{8,}/.test(v)) return v
+    }
+    const t = textOf(row)
+    const m = t.match(/(?:快递单号|运单号)[:：\s]*([A-Za-z0-9-]{10,})/) || t.match(/\b(\d{12,})\b/)
+    return m ? m[1] : ''
   }
 
   /** 本 document 内是否有打印相关弹层 */
@@ -1091,9 +1114,8 @@
     for (let i = 0; i < 30; i++) {
       const row = findTargetOrderRow()
       if (rowHasExpressNo(row)) {
-        const t = textOf(row)
-        const m = t.match(/(?:快递单号|运单号)[:：\s]*([A-Za-z0-9-]{10,})/) || t.match(/\b(\d{12,})\b/)
-        log(`订单已显示快递单号${m ? `：${m[1]}` : ''}`)
+        const no = readRowExpressNo(row)
+        log(`订单已显示快递单号${no ? `：${no}` : ''}`)
         return true
       }
       await sleep(500)
