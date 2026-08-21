@@ -357,16 +357,24 @@
     return keys
   }
 
-  async function queryByOrderNo(orderNo) {
-    const platformInput = findInputByPlaceholder(['平台订单编号'])
-    const sysInput = findInputByPlaceholder(['系统订单编号'])
-    // 系统编号字段对「系统编号：27118…」更准；平台订单编号对「订单编号：692…」更准
-    const looksSys = /^\d{16,}$/.test(String(orderNo)) && String(orderNo).startsWith('2')
-    const input = looksSys
-      ? sysInput || platformInput
-      : platformInput || sysInput
+  /** @param {'sys'|'platform'|'auto'} fieldHint */
+  async function queryByOrderNo(orderNo, fieldHint = 'auto') {
+    const platformInput =
+      findInputByPlaceholder(['平台订单编号', '订单编号']) || null
+    const sysInput = findInputByPlaceholder(['系统订单编号', '系统编号']) || null
+    const no = String(orderNo || '').trim()
+    if (!no) return false
+
+    let input = null
+    if (fieldHint === 'sys') input = sysInput || platformInput
+    else if (fieldHint === 'platform') input = platformInput || sysInput
+    else {
+      // 手工单系统编号常不以 2 开头；优先长数字走系统编号框
+      const looksSys = /^\d{15,}$/.test(no)
+      input = looksSys ? sysInput || platformInput : platformInput || sysInput
+    }
     if (!input) return false
-    setInputValue(input, orderNo)
+    setInputValue(input, no)
     await sleep(200)
     const btn = findMainQueryButton()
     if (btn) {
@@ -378,8 +386,6 @@
       if (fallback) {
         clickEl(fallback.closest('button') || fallback)
         await sleep(1400)
-      } else {
-        await sleep(600)
       }
     }
     return true
@@ -535,8 +541,8 @@
         for (const k of keys) {
           await queryByOrderNo(k)
           let hit = findRowContaining(k)
-          if (!hit && listPackageItems().length === 1) hit = listPackageItems()[0]
-          if (hit) {
+          // 探测时间也必须精确命中，禁止「仅一单就当目标」
+          if (hit && textOf(hit).includes(k)) {
             const y = extractCreateTimeYmd(hit)
             if (y) {
               range = { fromYmd: y, toYmd: y, source: '列表下单时间列' }
@@ -717,48 +723,63 @@
     let selected = 0
     for (const order of orders) {
       const keys = preferSearchKeys(order)
-      if (!keys.length) continue
-      const label = order.orderNo || keys[0]
-      log(`查找订单 ${keys.join(' / ')}`)
+      if (!keys.length) {
+        log('任务缺少可匹配单号（系统编号/订单编号），拒绝选单，避免误打其它单', 'error')
+        continue
+      }
+      const label = order.platformSysTid || order.platformOrderId || order.orderNo || keys[0]
+      log(`精确查找订单：${keys.join(' / ')}`)
+
+      /** 行必须包含某个完整 key，禁止「列表仅一单就勾选」 */
+      function findExactRow(keyList) {
+        for (const k of keyList) {
+          const row = findRowContaining(k)
+          if (row && textOf(row).includes(k)) return { row, key: k }
+        }
+        return null
+      }
 
       let hit = null
-      // 时间筛选查询后列表里通常已有目标单：先直接找，避免再点查询刷新
+      let matchedKey = ''
+
       if (preferListFirst) {
-        for (const k of keys) {
-          hit = findRowContaining(k)
-          if (hit) break
-        }
-        if (!hit && listPackageItems().length === 1) {
-          hit = listPackageItems()[0]
-        }
-        if (hit) {
-          log(`列表中已找到：${label}（跳过单号查询）`)
+        const found = findExactRow(keys)
+        if (found) {
+          hit = found.row
+          matchedKey = found.key
+          log(`列表精确命中「${matchedKey}」（跳过单号查询）`)
         }
       }
 
       if (!hit) {
         for (const k of keys) {
-          await queryByOrderNo(k)
-          for (const kk of keys) {
-            hit = findRowContaining(kk)
-            if (hit) break
+          const hint =
+            k === order.platformSysTid || k === order.sysTid
+              ? 'sys'
+              : k === order.platformOrderId || k === order.tid
+                ? 'platform'
+                : 'auto'
+          await queryByOrderNo(k, hint)
+          const found = findExactRow(keys)
+          if (found) {
+            hit = found.row
+            matchedKey = found.key
+            log(`查询后精确命中「${matchedKey}」`)
+            break
           }
-          if (!hit) {
-            const rows = listPackageItems()
-            if (rows.length === 1) hit = rows[0]
-          }
-          if (hit) break
         }
       }
 
       if (!hit) {
-        for (const k of keys) {
-          hit = findRowContaining(k)
-          if (hit) break
+        const found = findExactRow(keys)
+        if (found) {
+          hit = found.row
+          matchedKey = found.key
         }
       }
+
       if (!hit) {
-        log(`未在列表中找到：${label}`, 'error')
+        log(`未精确匹配到订单「${label}」，已跳过（不会勾选其它单）`, 'error')
         continue
       }
 
@@ -768,7 +789,7 @@
 
       if (checkOrderRow(hit)) {
         selected += 1
-        log(`已勾选整单：${label}`)
+        log(`已勾选整单：${label}（匹配 ${matchedKey || keys[0]}）`)
         await selectGoodsInRow(hit, order)
       } else {
         log(`勾选失败：${label}`, 'error')
