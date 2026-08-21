@@ -829,20 +829,66 @@
     })
   }
 
-  /** 按配置名选中打印机（完整名优先，其次包含匹配） */
+  /** 按配置名选中打印机（真实弹窗是 select.select_system_printer，不是 radio） */
   function selectConfiguredPrinter() {
     const want = String(handoff?.printerName || '').trim()
+    const dialog = document.querySelector('.choosePrinterDialog')
+    const sel =
+      document.querySelector('select.select_system_printer') ||
+      dialog?.querySelector?.('select') ||
+      null
+
+    if (sel instanceof HTMLSelectElement) {
+      const options = [...sel.options]
+      if (!want) {
+        log(`未配置打印机名称，使用当前：${options.find((o) => o.selected)?.text || sel.value || '默认'}`)
+        return true
+      }
+      const wantNorm = want.replace(/\s+/g, ' ').trim().toLowerCase()
+      let best = null
+      let bestScore = 0
+      for (const o of options) {
+        const t = String(o.text || o.value || '').replace(/\s+/g, ' ').trim()
+        const low = t.toLowerCase()
+        let score = 0
+        if (low === wantNorm) score = 100
+        else if (low.includes(wantNorm) || wantNorm.includes(low)) score = 80 + Math.min(15, Math.min(low.length, wantNorm.length))
+        if (score > bestScore) {
+          bestScore = score
+          best = o
+        }
+      }
+      if (!best || bestScore < 50) {
+        log(
+          `下拉未找到打印机「${want}」。可选：${options
+            .slice(0, 8)
+            .map((o) => o.text)
+            .join(' / ')}`,
+          'error',
+        )
+        return false
+      }
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set
+      if (setter) setter.call(sel, best.value)
+      else sel.value = best.value
+      sel.dispatchEvent(new Event('input', { bubbles: true }))
+      sel.dispatchEvent(new Event('change', { bubbles: true }))
+      log(`选择打印机（下拉）：${best.text}`)
+      return true
+    }
+
+    // 兼容旧版 radio/label 列表
     if (!want) {
       log('未配置打印机名称，使用弹窗当前默认打印机')
       return false
     }
     const wantNorm = want.replace(/\s+/g, ' ').trim().toLowerCase()
-    const nodes = [...document.querySelectorAll('label, .ant-radio-wrapper, li, div, span')]
+    const root = dialog || document
+    const nodes = [...root.querySelectorAll('label, .ant-radio-wrapper, li, div, span')]
     const candidates = nodes.filter((el) => {
       if (!visible(el)) return false
       const t = textOf(el).replace(/\s+/g, ' ').trim()
       if (!t || t.length > 120) return false
-      // 排除整块弹窗容器
       if (t.includes('选择打印机') && t.includes('打印快递单')) return false
       return true
     })
@@ -867,18 +913,21 @@
     }
     log(`选择打印机：${textOf(best)}`)
     clickEl(best)
-    // 再点一次 radio input 更稳
     const input = best.querySelector?.('input[type="radio"]') || best.closest('label')?.querySelector('input')
     if (input instanceof HTMLElement) clickEl(input)
     return true
   }
 
-  /** 打印机弹窗内的确认：点「打印快递单」（勿再点页脚绿色大按钮） */
+  /** 打印机弹窗内的确认：优先 .choosePrinterDialog a.print-btn */
   function findPrinterDialogPrintButton() {
-    // 弹窗专用 a.print-btn
+    const inDialog =
+      document.querySelector('.choosePrinterDialog a.print-btn') ||
+      document.querySelector('.choosePrinterDialog a, .choosePrinterDialog button')
+    if (inDialog && visible(inDialog) && textOf(inDialog).replace(/\s/g, '') === '打印快递单') {
+      return inDialog
+    }
     const link = document.querySelector('a.print-btn')
     if (link && visible(link)) return link
-    // 文案精确匹配，且排除页脚 bg-green
     const nodes = [...document.querySelectorAll('button, a, span')]
     return (
       nodes.find((el) => {
@@ -889,6 +938,7 @@
     )
   }
 
+  /** 当前任务订单行 */
   /** 当前任务订单行 */
   function findTargetOrderRow() {
     const orders = handoff?.orders || []
@@ -918,8 +968,10 @@
     return (
       body.includes('确认重新打印') ||
       body.includes('请选择要打印的单号') ||
+      !!document.querySelector('.choosePrinterDialog') ||
       body.includes('选择打印机') ||
-      !!document.querySelector('a.print-btn')
+      !!document.querySelector('a.print-btn') ||
+      !!document.querySelector('select.select_system_printer')
     )
   }
 
@@ -1050,28 +1102,42 @@
     return false
   }
 
-  /** 处理本页发货方式弹层 */
+  /** 处理本页发货方式弹层（ant-modal：发货方式为下拉，已默认普通发货；点「确 定」） */
   async function handleShipDialogOnce() {
     const body = textOf(document.body)
     if (!(body.includes('请设置发货方式') || body.includes('发货方式'))) return false
-    const normal = findVisibleExact(['普通发货'])
-    if (normal) {
-      log('发货方式：普通发货')
-      clickEl(normal)
-      await sleep(300)
-    }
-    const oks = [...document.querySelectorAll('button')].filter(
-      (b) => visible(b) && textOf(b).replace(/\s/g, '') === '确定',
+
+    // 发货方式是 ant-select，通常已是「普通发货」；仅当文案不是普通发货时再点选
+    const methodShown = document.querySelector(
+      '.ant-modal-confirm-content .ant-select-selection-item, .ant-modal .ant-select-selection-item',
     )
+    if (methodShown && textOf(methodShown).replace(/\s/g, '') !== '普通发货') {
+      const normal = findVisibleExact(['普通发货'])
+      if (normal) {
+        log('发货方式：普通发货')
+        clickEl(normal)
+        await sleep(300)
+      }
+    } else {
+      log('发货方式已是普通发货')
+    }
+
     const okBtn =
-      oks.find((b) => b.closest('.ant-modal, .ant-modal-root, [class*=modal], [class*=Modal]')) ||
-      oks[oks.length - 1]
+      document.querySelector('.ant-modal-confirm-btns button.ant-btn-primary') ||
+      [...document.querySelectorAll('button.modal-confirm-footer-btn')].find(
+        (b) => visible(b) && textOf(b).replace(/\s/g, '') === '确定',
+      ) ||
+      [...document.querySelectorAll('.ant-modal button')].find(
+        (b) => visible(b) && /ant-btn-primary/.test(String(b.className)) && textOf(b).replace(/\s/g, '') === '确定',
+      )
+
     if (okBtn) {
-      log('确认发货')
+      log('确认发货（弹窗确定）')
       clickEl(okBtn)
       await sleep(1500)
       return true
     }
+    log('发货弹窗未找到「确定」', 'error')
     return false
   }
 
