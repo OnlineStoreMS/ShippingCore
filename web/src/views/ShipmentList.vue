@@ -30,7 +30,7 @@ import {
 } from '../utils/labelPdfPreview'
 import { isKdzsShipment, isSFManagedShipment } from '../utils/shipmentFlags'
 import { bindTableShiftWheel, useTableFillHeight } from '../composables/useTableFillHeight'
-import { parseChineseRegion, parsePastedContact, saveSFOrderHandoff } from '../utils/sfOrderHandoff'
+import { extractAddressBody, parseChineseRegion, parsePastedContact, saveSFOrderHandoff } from '../utils/sfOrderHandoff'
 import {
   openKdzsWithCloudToken,
   type KdzsHandoffOrder,
@@ -357,26 +357,32 @@ function prefillsReshipDraft(order: OMSOrder, shipment: Shipment) {
   const addr = order.address
   reshipDraft.receiverName = (addr?.name || order.buyerName || shipment.receiverName || '').trim()
   reshipDraft.receiverMobile = (addr?.phone || order.buyerPhone || shipment.receiverMobile || '').trim()
-  reshipDraft.receiverProvince = (addr?.province || shipment.receiverProvince || '').trim()
-  reshipDraft.receiverCity = (addr?.city || shipment.receiverCity || '').trim()
-  reshipDraft.receiverCounty = (addr?.district || shipment.receiverCounty || '').trim()
-  reshipDraft.receiverAddress = (addr?.address || shipment.receiverAddress || '').trim()
-  if ((!reshipDraft.receiverProvince || !reshipDraft.receiverCity) && addr?.fullText) {
-    const parsed = parseChineseRegion(addr.fullText)
-    if (!reshipDraft.receiverProvince) reshipDraft.receiverProvince = parsed.province
-    if (!reshipDraft.receiverCity) reshipDraft.receiverCity = parsed.city
-    if (!reshipDraft.receiverCounty) reshipDraft.receiverCounty = parsed.county
-    if (!reshipDraft.receiverAddress) reshipDraft.receiverAddress = parsed.address
+
+  let province = (addr?.province || shipment.receiverProvince || '').trim()
+  let city = (addr?.city || shipment.receiverCity || '').trim()
+  let county = (addr?.district || shipment.receiverCounty || '').trim()
+  let detail = (addr?.address || shipment.receiverAddress || '').trim()
+  const fullBody = extractAddressBody(addr?.fullText)
+  // 电商单常只落 fullText，结构化省市区为空、address 仅门牌；从 fullText 拆完整地址
+  if ((!province || !city || !county) && (fullBody || detail)) {
+    const parsed = parseChineseRegion(fullBody || detail)
+    if (!province) province = parsed.province
+    if (!city) city = parsed.city
+    if (!county) county = parsed.county
+    if (parsed.province && parsed.address) {
+      if (!detail || detail.length <= parsed.address.length) detail = parsed.address
+    }
   }
-  if (!reshipDraft.receiverAddress && addr?.fullText) {
-    reshipDraft.receiverAddress = addr.fullText.trim()
-  }
+  if (!detail) detail = fullBody || (addr?.fullText || '').trim() || shipment.receiverAddress || ''
+
+  reshipDraft.receiverProvince = province
+  reshipDraft.receiverCity = city
+  reshipDraft.receiverCounty = county
+  reshipDraft.receiverAddress = detail
   reshipDraft.pasteText = [
     reshipDraft.receiverName,
     reshipDraft.receiverMobile,
-    [reshipDraft.receiverProvince, reshipDraft.receiverCity, reshipDraft.receiverCounty, reshipDraft.receiverAddress]
-      .filter(Boolean)
-      .join(''),
+    [province, city, county, detail].filter(Boolean).join(''),
   ]
     .filter(Boolean)
     .join(' ')

@@ -94,6 +94,24 @@ export function parseChineseRegion(raw: string): {
   }
 }
 
+/**
+ * 订单 fullText 常为「姓名,手机,省市区详细地址」；解析前去掉姓名手机，只留地址正文。
+ */
+export function extractAddressBody(fullText?: string): string {
+  let s = (fullText || '').trim()
+  if (!s) return ''
+  const byComma = s.split(/[,，]/).map((x) => x.trim()).filter(Boolean)
+  if (byComma.length >= 3) {
+    const maybePhone = byComma[1].replace(/\s+/g, '')
+    if (/^1[3-9]\d{9}(?:-\d+)?$/.test(maybePhone) || /^[\d\-*#+]{6,}$/.test(maybePhone)) {
+      return byComma.slice(2).join('')
+    }
+  }
+  s = s.replace(/^[\u4e00-\u9fa5A-Za-z·]{1,20}[,，\s]+/, '')
+  s = s.replace(/^1[3-9]\d{9}(?:-\d+)?[,，\s]*/, '')
+  return s.trim() || (fullText || '').trim()
+}
+
 function resolveReceiverAddress(addr?: {
   province?: string
   city?: string
@@ -106,14 +124,19 @@ function resolveReceiverAddress(addr?: {
   let county = (addr?.district || '').trim()
   let detail = (addr?.address || '').trim()
   const full = (addr?.fullText || '').trim()
-  if ((!province || !city) && full) {
-    const parsed = parseChineseRegion(full)
+  const fullBody = extractAddressBody(full)
+  const needParse = !province || !city || !county || !detail
+  if (needParse && (fullBody || detail)) {
+    const parsed = parseChineseRegion(fullBody || detail)
     if (!province) province = parsed.province
     if (!city) city = parsed.city
     if (!county) county = parsed.county
-    if (!detail) detail = parsed.address
+    // 结构化 address 常只有门牌；有省市区时优先用解析出的明细
+    if (parsed.province && parsed.address) {
+      if (!detail || detail.length <= parsed.address.length) detail = parsed.address
+    }
   }
-  if (!detail) detail = full
+  if (!detail) detail = fullBody || full
   return { province, city, county, address: detail }
 }
 
