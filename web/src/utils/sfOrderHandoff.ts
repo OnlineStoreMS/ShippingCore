@@ -10,6 +10,8 @@ export interface SFOrderHandoff {
   /** 打单发货页已选寄件人 */
   shipperProfileId?: number
   useMonthly?: boolean
+  /** 重新发货：回写 OC 空明细追加包裹 */
+  reship?: boolean
   order: OrderSnapshot
 }
 

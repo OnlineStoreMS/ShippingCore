@@ -683,6 +683,7 @@ func (s *ShipmentService) CreateFromOrder(in *dto.CreateShipmentFromOrderDTO) (*
 		TotalVolume:      volume,
 		PickupMode:       pickupMode,
 		SendStartTm:      sendStartTm,
+		Reship:           in.Reship,
 		Items:            items,
 	}
 
@@ -790,7 +791,11 @@ func (s *ShipmentService) CreateWaybill(ctx context.Context, token string, id ui
 	}
 
 	if shipment.OrderCoreOrderID > 0 && shipment.MailNo != "" {
-		if _, err := s.shipOrderCore(ctx, token, shipment.OrderCoreOrderID, "顺丰", shipment.MailNo, shipment.Items, true); err != nil {
+		coreItems := shipment.Items
+		if shipment.Reship {
+			coreItems = nil
+		}
+		if _, err := s.shipOrderCore(ctx, token, shipment.OrderCoreOrderID, "顺丰", shipment.MailNo, coreItems, true); err != nil {
 			return nil, fmt.Errorf("运单已出(%s)，回写订单中心失败: %w", shipment.MailNo, err)
 		}
 	}
@@ -1389,6 +1394,41 @@ func (s *ShipmentService) ListPendingOMSOrders(ctx context.Context, token string
 	return s.orderCore.ListOrders(ctx, token, query)
 }
 
+// ReshipContext 返回重新发货预填上下文（原发货单 + OrderCore 订单）。
+func (s *ShipmentService) ReshipContext(ctx context.Context, token string, shipmentID uint64) (map[string]any, error) {
+	sh, err := s.Get(shipmentID)
+	if err != nil {
+		return nil, err
+	}
+	if sh == nil {
+		return nil, ErrNotFound
+	}
+	if strings.TrimSpace(sh.MailNo) == "" {
+		return nil, fmt.Errorf("%w: 尚未出运单号，请用待发货打单", ErrBadRequest)
+	}
+	if sh.Status == model.ShipmentStatusCancelled {
+		return nil, fmt.Errorf("%w: 已取消发货单不可重新发货", ErrBadRequest)
+	}
+	if sh.OrderCoreOrderID == 0 {
+		return nil, fmt.Errorf("%w: 发货单未绑定订单中心，无法重新发货", ErrBadRequest)
+	}
+	if s.orderCore == nil {
+		return nil, fmt.Errorf("ordercore 未配置")
+	}
+	raw, err := s.orderCore.GetOrder(ctx, token, sh.OrderCoreOrderID)
+	if err != nil {
+		return nil, fmt.Errorf("拉取订单中心订单失败: %w", err)
+	}
+	var order any
+	if err := json.Unmarshal(raw, &order); err != nil {
+		return nil, fmt.Errorf("解析订单中心订单失败: %w", err)
+	}
+	return map[string]any{
+		"shipment": sh,
+		"order":    order,
+	}, nil
+}
+
 func (s *ShipmentService) ConfirmKdzsShip(ctx context.Context, token string, in *dto.ConfirmKdzsShipDTO) (*model.Shipment, error) {
 	if in == nil || in.OrderID == 0 || strings.TrimSpace(in.ExpressNo) == "" {
 		return nil, ErrBadRequest
@@ -1401,7 +1441,14 @@ func (s *ShipmentService) ConfirmKdzsShip(ctx context.Context, token string, in 
 
 	// 幂等：同订单同运单号已有未取消发货单时复用，避免网关失败/重试产生重复单
 	if existing, ok := s.findActiveKdzsShipment(in.OrderID, expressNo); ok {
-		shippedAt, err := s.shipOrderCore(ctx, token, in.OrderID, firstNonEmptyTrim(expressCompany, existing.ExpressCompany), expressNo, existing.Items, false)
+		if in.Reship {
+			return nil, fmt.Errorf("%w: 新运单号不能与已有运单号相同", ErrBadRequest)
+		}
+		coreItems := existing.Items
+		if existing.Reship {
+			coreItems = nil
+		}
+		shippedAt, err := s.shipOrderCore(ctx, token, in.OrderID, firstNonEmptyTrim(expressCompany, existing.ExpressCompany), expressNo, coreItems, false)
 		if err != nil {
 			return nil, fmt.Errorf("发货单已存在，回写订单中心失败: %w", err)
 		}
@@ -1456,7 +1503,11 @@ func (s *ShipmentService) ConfirmKdzsShip(ctx context.Context, token string, in 
 		sourceRef = firstNonEmptyTrim(orderNo, sourceTid)
 	}
 	// 先回写订单中心（同号已同步则幂等成功），成功后再建发货中心记录，避免孤儿单
-	shippedAt, err := s.shipOrderCore(ctx, token, in.OrderID, expressCompany, expressNo, items, false)
+	coreItems := items
+	if in.Reship {
+		coreItems = nil // 已发完追加包裹：OrderCore 仅接受空明细
+	}
+	shippedAt, err := s.shipOrderCore(ctx, token, in.OrderID, expressCompany, expressNo, coreItems, false)
 	if err != nil {
 		return nil, fmt.Errorf("回写订单中心失败: %w", err)
 	}
@@ -1490,9 +1541,10 @@ func (s *ShipmentService) ConfirmKdzsShip(ctx context.Context, token string, in 
 		Status:           model.ShipmentStatusPrinted,
 		ShippedAt:        shippedAt,
 		// 快递助手打单不在本系统打印，不记 printedAt（避免把确认时间误当成打印时间）
-		CargoName:        cargoName,
-		ParcelQty:        1,
-		Items:            items,
+		CargoName: cargoName,
+		ParcelQty: 1,
+		Reship:    in.Reship,
+		Items:     items,
 	}
 	if err := s.db().Create(&shipment).Error; err != nil {
 		return nil, fmt.Errorf("订单中心已发货，创建发货单失败: %w", err)

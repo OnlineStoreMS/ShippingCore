@@ -8,6 +8,10 @@ import {
   shipmentStatusMap,
   parseShipmentRemarkImages,
   type CarrierAccount,
+  type ExpressTemplate,
+  type OMSOrder,
+  type OrderSnapshot,
+  type ShipperProfile,
   type Shipment,
 } from '../api/shipping'
 import { printShipmentByChannel } from '../utils/sfPrintLabel'
@@ -26,6 +30,12 @@ import {
 } from '../utils/labelPdfPreview'
 import { isKdzsShipment, isSFManagedShipment } from '../utils/shipmentFlags'
 import { bindTableShiftWheel, useTableFillHeight } from '../composables/useTableFillHeight'
+import { parseChineseRegion, parsePastedContact, saveSFOrderHandoff } from '../utils/sfOrderHandoff'
+import {
+  openKdzsWithCloudToken,
+  type KdzsHandoffOrder,
+  type KdzsHandoffPayload,
+} from '../utils/kdzsExtension'
 
 const router = useRouter()
 
@@ -118,6 +128,66 @@ const printerIndex = ref<number | null>(getSavedPrinterIndex())
 const printersLoading = ref(false)
 const carrierById = ref<Record<number, CarrierAccount>>({})
 
+/** —— 重新发货 —— */
+type PrintMode = 'kdzs' | 'sf'
+type ReshipStep = 'edit' | 'ship'
+type ReshipGoodsLine = {
+  key: string
+  orderItemId: number
+  productName: string
+  skuSpecs: string
+  outerId: string
+  quantity: number
+}
+
+const reshipVisible = ref(false)
+const reshipLoading = ref(false)
+const reshipSubmitting = ref(false)
+const reshipStep = ref<ReshipStep>('edit')
+const reshipSource = ref<Shipment | null>(null)
+const reshipOrder = ref<OMSOrder | null>(null)
+const reshipPrintMode = ref<PrintMode>('kdzs')
+const reshipSfAction = ref<'standard' | 'quick'>('standard')
+const reshipForm = reactive({
+  carrierAccountId: undefined as number | undefined,
+  shipperProfileId: undefined as number | undefined,
+  useMonthly: false,
+})
+const reshipDraft = reactive({
+  pasteText: '',
+  receiverName: '',
+  receiverMobile: '',
+  receiverProvince: '',
+  receiverCity: '',
+  receiverCounty: '',
+  receiverAddress: '',
+})
+const reshipGoods = ref<ReshipGoodsLine[]>([])
+const carrierAccounts = ref<CarrierAccount[]>([])
+const shipperProfiles = ref<ShipperProfile[]>([])
+const allTemplates = ref<ExpressTemplate[]>([])
+const selectedTemplateId = ref('')
+const kdzsExpressCompany = ref('')
+const kdzsExpressNo = ref('')
+const confirmKdzsVisible = ref(false)
+
+/** 重新发货默认按手工单（DFHAND / 菜鸟模板）打单 */
+const RESHIP_KDZS_PLATFORM = 'DFHAND'
+const RESHIP_TEMPLATE_GROUP = '菜鸟'
+
+const expressCompanyOptions = [
+  '圆通速递',
+  '中通快递',
+  '申通快递',
+  '韵达快递',
+  '极兔速递',
+  '顺丰速运',
+  '京东快递',
+  '德邦快递',
+  '邮政快递包裹',
+  'EMS',
+]
+
 function printChannelOf(row: Shipment): string {
   return (carrierById.value[row.carrierAccountId]?.printChannel || 'plugin').toLowerCase()
 }
@@ -201,6 +271,506 @@ function formatOrderSource(row: Shipment) {
   if (shop) return shop
   return plat || '-'
 }
+
+function inferExpressCompany(templateName?: string): string {
+  const n = (templateName || '').trim()
+  if (!n) return ''
+  const codeMap: Record<string, string> = {
+    YTO: '圆通速递',
+    ZTO: '中通快递',
+    STO: '申通快递',
+    YUNDA: '韵达快递',
+    YD: '韵达快递',
+    JTSD: '极兔速递',
+    JT: '极兔速递',
+    SF: '顺丰速运',
+    JD: '京东快递',
+    DBL: '德邦快递',
+    EMS: 'EMS',
+  }
+  const byCode = codeMap[n.toUpperCase()]
+  if (byCode) return byCode
+  const hit = expressCompanyOptions.find((c) => n.includes(c.replace(/速递|快递|速运/g, '')) || n.includes(c))
+  if (hit) return hit
+  if (n.includes('圆通')) return '圆通速递'
+  if (n.includes('中通')) return '中通快递'
+  if (n.includes('申通')) return '申通快递'
+  if (n.includes('韵达')) return '韵达快递'
+  if (n.includes('极兔')) return '极兔速递'
+  if (n.includes('顺丰')) return '顺丰速运'
+  if (n.includes('京东')) return '京东快递'
+  if (n.includes('德邦')) return '德邦快递'
+  if (n.includes('邮政')) return '邮政快递包裹'
+  if (n.includes('EMS')) return 'EMS'
+  return ''
+}
+
+const filteredTemplates = computed(() =>
+  allTemplates.value.filter((t) => t.enabled !== false && t.platform === RESHIP_TEMPLATE_GROUP),
+)
+
+const selectedTemplate = computed(() =>
+  filteredTemplates.value.find((t) => t.templateId === selectedTemplateId.value),
+)
+
+const isSFCarrier = computed(() => {
+  const c = carrierAccounts.value.find((x) => x.id === reshipForm.carrierAccountId)
+  const code = (c?.carrierCode || '').trim().toUpperCase()
+  return !code || code === 'SF' || code === 'SHUNFENG'
+})
+
+const primaryReshipLabel = computed(() => {
+  if (reshipPrintMode.value === 'kdzs') return '打开快递助手'
+  if (isSFCarrier.value && reshipSfAction.value === 'standard') return '前往标准寄件'
+  return '快速下单打印'
+})
+
+const reshipDialogTitle = computed(() =>
+  reshipStep.value === 'edit' ? '重新发货 · 确认收件与商品' : '重新发货 · 打单',
+)
+
+const reshipDialogWidth = computed(() => (reshipStep.value === 'edit' ? '860px' : '560px'))
+
+function emptyReshipGoodsLine(): ReshipGoodsLine {
+  return {
+    key: `g${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    orderItemId: 0,
+    productName: '',
+    skuSpecs: '',
+    outerId: '',
+    quantity: 1,
+  }
+}
+
+function resetReshipDraft() {
+  reshipDraft.pasteText = ''
+  reshipDraft.receiverName = ''
+  reshipDraft.receiverMobile = ''
+  reshipDraft.receiverProvince = ''
+  reshipDraft.receiverCity = ''
+  reshipDraft.receiverCounty = ''
+  reshipDraft.receiverAddress = ''
+  reshipGoods.value = []
+}
+
+function prefillsReshipDraft(order: OMSOrder, shipment: Shipment) {
+  const addr = order.address
+  reshipDraft.receiverName = (addr?.name || order.buyerName || shipment.receiverName || '').trim()
+  reshipDraft.receiverMobile = (addr?.phone || order.buyerPhone || shipment.receiverMobile || '').trim()
+  reshipDraft.receiverProvince = (addr?.province || shipment.receiverProvince || '').trim()
+  reshipDraft.receiverCity = (addr?.city || shipment.receiverCity || '').trim()
+  reshipDraft.receiverCounty = (addr?.district || shipment.receiverCounty || '').trim()
+  reshipDraft.receiverAddress = (addr?.address || shipment.receiverAddress || '').trim()
+  if ((!reshipDraft.receiverProvince || !reshipDraft.receiverCity) && addr?.fullText) {
+    const parsed = parseChineseRegion(addr.fullText)
+    if (!reshipDraft.receiverProvince) reshipDraft.receiverProvince = parsed.province
+    if (!reshipDraft.receiverCity) reshipDraft.receiverCity = parsed.city
+    if (!reshipDraft.receiverCounty) reshipDraft.receiverCounty = parsed.county
+    if (!reshipDraft.receiverAddress) reshipDraft.receiverAddress = parsed.address
+  }
+  if (!reshipDraft.receiverAddress && addr?.fullText) {
+    reshipDraft.receiverAddress = addr.fullText.trim()
+  }
+  reshipDraft.pasteText = [
+    reshipDraft.receiverName,
+    reshipDraft.receiverMobile,
+    [reshipDraft.receiverProvince, reshipDraft.receiverCity, reshipDraft.receiverCounty, reshipDraft.receiverAddress]
+      .filter(Boolean)
+      .join(''),
+  ]
+    .filter(Boolean)
+    .join(' ')
+
+  const roots = (order.items || []).filter(
+    (it) => !(it.splitKind || (it.parentOrderItemId && it.parentOrderItemId > 0)),
+  )
+  if (roots.length) {
+    reshipGoods.value = roots.map((it) => ({
+      key: `oi${it.id || 0}_${Math.random().toString(36).slice(2, 6)}`,
+      orderItemId: it.id || 0,
+      productName: (it.productName || '').trim(),
+      skuSpecs: (it.skuSpecs || '').trim(),
+      outerId: '',
+      quantity: it.quantity && it.quantity > 0 ? it.quantity : 1,
+    }))
+  } else if (shipment.items?.length) {
+    reshipGoods.value = shipment.items.map((it) => ({
+      key: `si${it.id || 0}_${Math.random().toString(36).slice(2, 6)}`,
+      orderItemId: it.orderItemId || 0,
+      productName: (it.goodsName || '').trim(),
+      skuSpecs: (it.skuCode || '').trim(),
+      outerId: (it.outerId || '').trim(),
+      quantity: it.quantity || 1,
+    }))
+  } else if (shipment.cargoName) {
+    const line = emptyReshipGoodsLine()
+    line.productName = shipment.cargoName
+    line.skuSpecs = shipment.cargoName
+    reshipGoods.value = [line]
+  } else {
+    reshipGoods.value = [emptyReshipGoodsLine()]
+  }
+}
+
+function applyReshipPaste() {
+  const raw = reshipDraft.pasteText.trim()
+  if (!raw) {
+    ElMessage.warning('请先粘贴收件信息')
+    return
+  }
+  const contact = parsePastedContact(raw)
+  if (contact.name) reshipDraft.receiverName = contact.name
+  if (contact.mobile) reshipDraft.receiverMobile = contact.mobile
+  const addrRaw = (contact.address || raw).trim()
+  const parsed = parseChineseRegion(addrRaw)
+  if (parsed.province) reshipDraft.receiverProvince = parsed.province
+  if (parsed.city) reshipDraft.receiverCity = parsed.city
+  if (parsed.county) reshipDraft.receiverCounty = parsed.county
+  if (parsed.address) reshipDraft.receiverAddress = parsed.address
+  else if (addrRaw && !parsed.province) reshipDraft.receiverAddress = addrRaw
+  ElMessage.success('已填充收件信息')
+}
+
+function addReshipGoods() {
+  reshipGoods.value.push(emptyReshipGoodsLine())
+}
+
+function removeReshipGoods(idx: number) {
+  if (reshipGoods.value.length <= 1) {
+    ElMessage.warning('至少保留一行商品')
+    return
+  }
+  reshipGoods.value.splice(idx, 1)
+}
+
+function validateReshipEdit(): boolean {
+  if (!reshipDraft.receiverName.trim()) {
+    ElMessage.warning('请填写收件人')
+    return false
+  }
+  if (!reshipDraft.receiverMobile.trim()) {
+    ElMessage.warning('请填写收件手机')
+    return false
+  }
+  if (!reshipDraft.receiverAddress.trim() && !reshipDraft.receiverProvince.trim()) {
+    ElMessage.warning('请填写收件地址')
+    return false
+  }
+  const lines = reshipGoods.value.filter((g) => (g.skuSpecs || g.productName || '').trim())
+  if (!lines.length) {
+    ElMessage.warning('请至少填写一件商品或规格')
+    return false
+  }
+  for (const g of lines) {
+    if (!(g.quantity > 0)) {
+      ElMessage.warning('商品数量须大于 0')
+      return false
+    }
+  }
+  return true
+}
+
+function buildReshipSnapshot(order: OMSOrder): OrderSnapshot {
+  const goods = reshipGoods.value
+    .filter((g) => (g.skuSpecs || g.productName || '').trim())
+    .map((g) => {
+      const product = g.productName.trim()
+      const spec = g.skuSpecs.trim()
+      return {
+        orderItemId: g.orderItemId || 0,
+        title: product || spec,
+        skuName: spec || product,
+        num: Math.max(1, g.quantity || 1),
+        outerId: g.outerId.trim(),
+        price: 0,
+      }
+    })
+  return {
+    platform: RESHIP_KDZS_PLATFORM,
+    shopId: order.shopId || '',
+    shopName: order.shopName || order.manualSourceName || '',
+    sourceChannel: 'manual',
+    manualSourceName: order.manualSourceName || order.shopName || '重新发货',
+    orderNo: order.orderNo || '',
+    sysTid: order.platformSysTid || '',
+    sourceTid: order.platformOrderId || order.orderNo || '',
+    receiverName: reshipDraft.receiverName.trim(),
+    receiverMobile: reshipDraft.receiverMobile.trim(),
+    receiverProvince: reshipDraft.receiverProvince.trim(),
+    receiverCity: reshipDraft.receiverCity.trim(),
+    receiverCounty: reshipDraft.receiverCounty.trim(),
+    receiverAddress: reshipDraft.receiverAddress.trim(),
+    goods,
+  }
+}
+
+function canReship(row: Shipment) {
+  return !!row.mailNo?.trim() && row.status !== 'cancelled' && Number(row.orderCoreOrderId || 0) > 0
+}
+
+function selectDefaultReshipTemplate() {
+  const filtered = filteredTemplates.value
+  selectedTemplateId.value = filtered[0]?.templateId || ''
+  if (filtered[0]) {
+    kdzsExpressCompany.value = inferExpressCompany(filtered[0].templateName)
+  }
+}
+
+async function openReship(row: Shipment) {
+  if (!canReship(row)) {
+    ElMessage.warning('仅已发货且绑定订单中心的发货单可重新发货')
+    return
+  }
+  reshipLoading.value = true
+  reshipVisible.value = true
+  reshipStep.value = 'edit'
+  reshipSource.value = row
+  reshipOrder.value = null
+  confirmKdzsVisible.value = false
+  kdzsExpressNo.value = ''
+  kdzsExpressCompany.value = ''
+  selectedTemplateId.value = ''
+  reshipPrintMode.value = 'kdzs'
+  reshipSfAction.value = 'standard'
+  resetReshipDraft()
+  try {
+    const [ctx, carriers, shippers, tpls] = await Promise.all([
+      shippingApi.getReshipContext(row.id),
+      shippingApi.listCarrierAccounts({ page: 1, pageSize: 200, enabled: true }),
+      shippingApi.listShipperProfiles({ page: 1, pageSize: 200 }),
+      shippingApi.listExpressTemplates({ page: 1, pageSize: 500 }),
+    ])
+    const shipment = ctx.shipment || row
+    const order = ctx.order
+    reshipSource.value = shipment
+    reshipOrder.value = order
+    carrierAccounts.value = carriers.list || []
+    shipperProfiles.value = shippers.list || []
+    allTemplates.value = tpls.list || []
+    const defaultCarrier =
+      carrierAccounts.value.find((c) => {
+        const code = (c.carrierCode || '').trim().toUpperCase()
+        return !code || code === 'SF' || code === 'SHUNFENG'
+      }) || carrierAccounts.value[0]
+    const defaultShipper = shipperProfiles.value.find((s) => s.isDefault) || shipperProfiles.value[0]
+    reshipForm.carrierAccountId = defaultCarrier?.id
+    reshipForm.shipperProfileId = defaultShipper?.id
+    reshipForm.useMonthly = defaultCarrier?.useMonthly ?? false
+    prefillsReshipDraft(order, shipment)
+  } catch (e) {
+    ElMessage.error((e as Error).message || '加载重新发货信息失败')
+    reshipVisible.value = false
+  } finally {
+    reshipLoading.value = false
+  }
+}
+
+function goReshipShipStep() {
+  if (!validateReshipEdit()) return
+  reshipStep.value = 'ship'
+  selectDefaultReshipTemplate()
+}
+
+function backReshipEditStep() {
+  reshipStep.value = 'edit'
+  confirmKdzsVisible.value = false
+}
+
+function onReshipCarrierChange(id: number | undefined) {
+  const carrier = carrierAccounts.value.find((c) => c.id === id)
+  if (carrier) reshipForm.useMonthly = carrier.useMonthly
+  if (isSFCarrier.value) reshipSfAction.value = 'standard'
+}
+
+function onReshipTemplateChange() {
+  const tpl = selectedTemplate.value
+  const inferred = inferExpressCompany(tpl?.templateName)
+  if (inferred) kdzsExpressCompany.value = inferred
+}
+
+function closeReshipDialog() {
+  reshipVisible.value = false
+  confirmKdzsVisible.value = false
+  reshipStep.value = 'edit'
+  reshipSource.value = null
+  reshipOrder.value = null
+  selectedTemplateId.value = ''
+  kdzsExpressNo.value = ''
+  kdzsExpressCompany.value = ''
+  resetReshipDraft()
+}
+
+function goSFOrderReship(order: OMSOrder) {
+  const snap = buildReshipSnapshot(order)
+  saveSFOrderHandoff({
+    orderId: order.id,
+    sourceSystem: 'ordercore',
+    carrierAccountId: reshipForm.carrierAccountId,
+    shipperProfileId: reshipForm.shipperProfileId,
+    useMonthly: reshipForm.useMonthly,
+    reship: true,
+    order: snap,
+  })
+  closeReshipDialog()
+  detailVisible.value = false
+  router.push('/sf-order')
+}
+
+async function openKdzsReshipPrint() {
+  const order = reshipOrder.value
+  if (!order) return
+  if (!selectedTemplateId.value) {
+    ElMessage.warning('请选择快递模板')
+    return
+  }
+  reshipSubmitting.value = true
+  try {
+    const platform = RESHIP_KDZS_PLATFORM
+    const tpl = selectedTemplate.value
+    const snap = buildReshipSnapshot(order)
+    const handoffOrders: KdzsHandoffOrder[] = [
+      {
+        orderNo: order.orderNo || '',
+        platformSysTid: '',
+        platformOrderId: '',
+        sysTid: '',
+        tid: '',
+        payTime: order.payTime || '',
+        orderedAt: order.orderedAt || '',
+        goods: (snap.goods || []).map((g) => {
+          const name = (g.skuName || g.title || '').trim()
+          return {
+            title: name,
+            skuName: name,
+            outerId: g.outerId,
+            num: g.num,
+          }
+        }),
+      },
+    ]
+    const payload: KdzsHandoffPayload = {
+      v: 1,
+      createdAt: Date.now(),
+      platform,
+      templateName: tpl?.templateName || '',
+      templateId: tpl?.templateId,
+      orders: handoffOrders,
+      autoPrint: false,
+    }
+    const session = await shippingApi.createKdzsHelperHandoff(
+      payload as unknown as Record<string, unknown>,
+    )
+    if (!session?.token) throw new Error('创建打单任务失败')
+    const data = await shippingApi.getBatchPrintURL(platform)
+    const rawUrl = data?.url
+    if (!rawUrl) throw new Error('未获取到打单地址')
+    const win = openKdzsWithCloudToken(rawUrl, session.token)
+    if (!win) {
+      ElMessage.warning('浏览器拦截了新窗口，请允许弹窗后重试')
+      return
+    }
+    ElMessage.success(
+      '已按手工单打开快递助手并上传打单任务。请确认右下角「OSMS 打单助手」出现订单后，人工选模板/打印；完成后回填新运单号。',
+    )
+    confirmKdzsVisible.value = true
+  } catch (e) {
+    ElMessage.error((e as Error).message || '打开快递助手失败')
+  } finally {
+    reshipSubmitting.value = false
+  }
+}
+
+async function submitReship() {
+  const order = reshipOrder.value
+  if (!order) return
+  if (!validateReshipEdit()) {
+    reshipStep.value = 'edit'
+    return
+  }
+  if (reshipPrintMode.value === 'kdzs') {
+    await openKdzsReshipPrint()
+    return
+  }
+  if (isSFCarrier.value && reshipSfAction.value === 'standard') {
+    goSFOrderReship(order)
+    return
+  }
+  if (!reshipForm.carrierAccountId || !reshipForm.shipperProfileId) {
+    ElMessage.warning('请选择物流账号和寄件人')
+    return
+  }
+  reshipSubmitting.value = true
+  try {
+    const savedExpress = localStorage.getItem('shippingcore.sf.expressType')
+    const expressType = savedExpress === '1' || savedExpress === '2' ? savedExpress : undefined
+    const shipment = await shippingApi.createShipmentFromOrder({
+      carrierAccountId: reshipForm.carrierAccountId,
+      shipperProfileId: reshipForm.shipperProfileId,
+      useMonthly: reshipForm.useMonthly,
+      expressType,
+      orderId: order.id,
+      sourceSystem: 'ordercore',
+      reship: true,
+      order: buildReshipSnapshot(order),
+    })
+    const waybill = await shippingApi.createShipmentWaybill(shipment.id)
+    ElMessage.success(`重新发货成功${waybill.mailNo ? `，新运单号 ${waybill.mailNo}` : ''}`)
+    closeReshipDialog()
+    detailVisible.value = false
+    await load()
+    if (waybill.mailNo && canPrint(waybill)) {
+      try {
+        await printRow(waybill)
+      } catch {
+        /* 打印失败不阻断 */
+      }
+    }
+  } catch (e) {
+    ElMessage.error((e as Error).message || '重新发货失败')
+  } finally {
+    reshipSubmitting.value = false
+  }
+}
+
+async function submitKdzsReshipConfirm() {
+  const order = reshipOrder.value
+  if (!order) return
+  const expressNo = kdzsExpressNo.value.trim()
+  const company = kdzsExpressCompany.value.trim()
+  if (!company) {
+    ElMessage.warning('请选择快递公司')
+    return
+  }
+  if (!expressNo) {
+    ElMessage.warning('请输入新运单号')
+    return
+  }
+  const oldNo = (reshipSource.value?.mailNo || '').trim()
+  if (oldNo && expressNo === oldNo) {
+    ElMessage.warning('新运单号不能与原运单号相同')
+    return
+  }
+  reshipSubmitting.value = true
+  try {
+    await shippingApi.confirmKdzsShip({
+      orderId: order.id,
+      expressNo,
+      expressCompany: company,
+      reship: true,
+      order: buildReshipSnapshot(order),
+    })
+    ElMessage.success('已确认重新发货，新运单已追加到原订单发货记录')
+    confirmKdzsVisible.value = false
+    closeReshipDialog()
+    detailVisible.value = false
+    await load()
+  } catch (e) {
+    ElMessage.error((e as Error).message || '确认重新发货失败')
+  } finally {
+    reshipSubmitting.value = false
+  }
+}
+
 
 function shopDisplay(row: Shipment) {
   return (row.shopName || row.manualSourceName || '').trim() || '-'
@@ -715,9 +1285,18 @@ onMounted(() => {
         <el-table-column label="打印时间" width="170">
           <template #default="{ row }">{{ printTimeOf(row.primary) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="240" fixed="right">
+        <el-table-column label="操作" width="300" fixed="right">
           <template #default="{ row }">
             <el-button link type="primary" size="small" @click="openDetail(row.primary)">详情</el-button>
+            <el-button
+              v-if="canReship(row.primary)"
+              link
+              type="warning"
+              size="small"
+              @click="openReship(row.primary)"
+            >
+              重新发货
+            </el-button>
             <el-button
               v-if="row.primary.labelPdfUrl"
               link
@@ -881,8 +1460,12 @@ onMounted(() => {
           </el-table>
         </div>
 
-        <div v-if="canCancel(detail)" class="detail-actions">
+        <div v-if="canReship(detail) || canCancel(detail)" class="detail-actions">
+          <el-button v-if="canReship(detail)" type="warning" plain @click="openReship(detail)">
+            重新发货
+          </el-button>
           <el-button
+            v-if="canCancel(detail)"
             type="danger"
             plain
             :loading="actionLoading[detail.id] === 'cancel'"
@@ -893,6 +1476,298 @@ onMounted(() => {
         </div>
       </template>
     </el-drawer>
+
+    <el-dialog
+      v-model="reshipVisible"
+      :title="reshipDialogTitle"
+      :width="reshipDialogWidth"
+      destroy-on-close
+      @close="closeReshipDialog"
+    >
+      <div v-loading="reshipLoading">
+        <template v-if="reshipOrder && reshipSource">
+          <div class="ship-order-info">
+            <span>订单中心 #{{ reshipOrder.orderNo || reshipOrder.id }}</span>
+            <el-tag size="small" type="info" class="ml8">{{ labelPlatform(reshipOrder.platform) }}</el-tag>
+            <el-tag size="small" type="warning" class="ml8">追加包裹 · 手工单打单</el-tag>
+          </div>
+          <div class="muted reship-origin">
+            原运单 {{ reshipSource.mailNo || '-' }}
+            <span v-if="reshipSource.expressCompany"> · {{ reshipSource.expressCompany }}</span>
+            ；不新建订单，新运单号写入原订单发货记录
+          </div>
+
+          <!-- 第一步：确认/编辑收件与商品（类似手工建单） -->
+          <template v-if="reshipStep === 'edit'">
+            <div class="reship-edit">
+              <div class="recv-panel">
+                <div class="recv-paste">
+                  <el-input
+                    v-model="reshipDraft.pasteText"
+                    type="textarea"
+                    :rows="5"
+                    resize="none"
+                    placeholder="粘贴收件人信息（姓名 手机 地址），点一键填充"
+                  />
+                  <el-button class="fill-btn" link type="primary" @click="applyReshipPaste">
+                    一键填充
+                  </el-button>
+                </div>
+                <div class="recv-fields">
+                  <div class="field-row">
+                    <span class="field-label">收件人</span>
+                    <el-input v-model="reshipDraft.receiverName" placeholder="姓名" class="w-name" />
+                    <span class="inline-label">手机</span>
+                    <el-input v-model="reshipDraft.receiverMobile" placeholder="手机" class="w-phone" />
+                  </div>
+                  <div class="field-row">
+                    <span class="field-label">省市区</span>
+                    <el-input
+                      v-model="reshipDraft.receiverProvince"
+                      placeholder="省"
+                      class="w-pca"
+                    />
+                    <el-input v-model="reshipDraft.receiverCity" placeholder="市" class="w-pca" />
+                    <el-input v-model="reshipDraft.receiverCounty" placeholder="区" class="w-pca" />
+                  </div>
+                  <div class="field-row">
+                    <span class="field-label">详细地址</span>
+                    <el-input
+                      v-model="reshipDraft.receiverAddress"
+                      placeholder="详细地址"
+                      class="grow-input"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div class="goods-block">
+                <div class="goods-toolbar">
+                  <span class="field-label">商品信息</span>
+                  <span class="hint">可修改规格/数量，或添加商品（仅用于本次面单，不改原订单明细）</span>
+                </div>
+                <el-table :data="reshipGoods" border size="small" empty-text="暂无商品">
+                  <el-table-column label="商品名称" min-width="140">
+                    <template #default="{ row }">
+                      <el-input v-model="row.productName" placeholder="商品名称" />
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="规格名称" min-width="160">
+                    <template #default="{ row }">
+                      <el-input v-model="row.skuSpecs" placeholder="面单托寄物优先用规格" />
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="商家编码" width="110">
+                    <template #default="{ row }">
+                      <el-input v-model="row.outerId" placeholder="可选" />
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="数量" width="120">
+                    <template #default="{ row }">
+                      <el-input-number
+                        v-model="row.quantity"
+                        :min="1"
+                        :precision="0"
+                        controls-position="right"
+                        class="goods-qty"
+                      />
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="操作" width="70" fixed="right">
+                    <template #default="{ $index }">
+                      <el-button link type="danger" @click="removeReshipGoods($index)">删除</el-button>
+                    </template>
+                  </el-table-column>
+                </el-table>
+                <div class="goods-footer">
+                  <el-button link type="primary" @click="addReshipGoods">+ 添加商品</el-button>
+                </div>
+              </div>
+            </div>
+          </template>
+
+          <!-- 第二步：打单方式（默认快递助手手工单） -->
+          <template v-else>
+            <div class="reship-summary">
+              <div>
+                <span class="muted">收件</span>
+                {{ reshipDraft.receiverName }} {{ reshipDraft.receiverMobile }}
+              </div>
+              <div class="addr">
+                {{
+                  [
+                    reshipDraft.receiverProvince,
+                    reshipDraft.receiverCity,
+                    reshipDraft.receiverCounty,
+                    reshipDraft.receiverAddress,
+                  ]
+                    .filter(Boolean)
+                    .join('')
+                }}
+              </div>
+              <div class="goods-list">
+                <div
+                  v-for="g in reshipGoods.filter((x) => (x.skuSpecs || x.productName).trim())"
+                  :key="g.key"
+                  class="goods-text"
+                >
+                  {{ (g.skuSpecs || g.productName).trim() }} ×{{ g.quantity }}
+                </div>
+              </div>
+              <el-button link type="primary" @click="backReshipEditStep">返回修改</el-button>
+            </div>
+
+            <el-form label-width="100px" class="ship-form">
+              <el-form-item label="打单方式">
+                <el-radio-group v-model="reshipPrintMode">
+                  <el-radio value="kdzs">快递助手（手工单）</el-radio>
+                  <el-radio value="sf">自建物流</el-radio>
+                </el-radio-group>
+              </el-form-item>
+
+              <template v-if="reshipPrintMode === 'kdzs'">
+                <el-form-item label="快递模板" required>
+                  <div v-if="filteredTemplates.length" class="tpl-bar">
+                    <el-radio-group
+                      v-model="selectedTemplateId"
+                      class="tpl-radios"
+                      @change="onReshipTemplateChange"
+                    >
+                      <el-radio
+                        v-for="t in filteredTemplates"
+                        :key="t.templateId"
+                        :value="t.templateId"
+                        border
+                        class="tpl-radio"
+                      >
+                        {{ t.templateName }}
+                      </el-radio>
+                    </el-radio-group>
+                  </div>
+                  <el-alert
+                    v-else
+                    type="warning"
+                    :closable="false"
+                    title="暂无「菜鸟」手工单快递模板，请先到「快递模板」页同步"
+                  />
+                </el-form-item>
+                <el-alert
+                  type="info"
+                  :closable="false"
+                  :title="
+                    selectedTemplate
+                      ? `将以手工单打开快递助手（模板「${selectedTemplate.templateName}」）；完成后回填新运单号。原运单保留。`
+                      : '请先选择快递模板'
+                  "
+                />
+              </template>
+
+              <template v-else>
+                <el-form-item label="物流账号" required>
+                  <el-select
+                    v-model="reshipForm.carrierAccountId"
+                    placeholder="选择物流账号"
+                    style="width: 100%"
+                    @change="onReshipCarrierChange"
+                  >
+                    <el-option
+                      v-for="c in carrierAccounts"
+                      :key="c.id"
+                      :label="c.name"
+                      :value="c.id!"
+                    />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="寄件人" required>
+                  <el-select
+                    v-model="reshipForm.shipperProfileId"
+                    placeholder="选择寄件人"
+                    style="width: 100%"
+                  >
+                    <el-option
+                      v-for="s in shipperProfiles"
+                      :key="s.id"
+                      :label="s.isDefault ? `${s.name}（默认）` : s.name"
+                      :value="s.id!"
+                    />
+                  </el-select>
+                </el-form-item>
+                <el-form-item label="月结">
+                  <el-switch v-model="reshipForm.useMonthly" />
+                </el-form-item>
+                <el-form-item v-if="isSFCarrier" label="寄件方式">
+                  <el-radio-group v-model="reshipSfAction">
+                    <el-radio value="standard">顺丰标准寄件</el-radio>
+                    <el-radio value="quick">快速下单打印</el-radio>
+                  </el-radio-group>
+                </el-form-item>
+                <el-alert
+                  type="info"
+                  :closable="false"
+                  :title="
+                    isSFCarrier && reshipSfAction === 'standard'
+                      ? '将进入顺丰标准寄件页下单；新运单追加到原订单发货记录。'
+                      : '将快速取号并打印；新运单追加到原订单发货记录。'
+                  "
+                />
+              </template>
+            </el-form>
+          </template>
+        </template>
+      </div>
+      <template #footer>
+        <el-button @click="closeReshipDialog">取消</el-button>
+        <template v-if="reshipStep === 'edit'">
+          <el-button
+            type="primary"
+            :disabled="reshipLoading || !reshipOrder"
+            @click="goReshipShipStep"
+          >
+            下一步：打单发货
+          </el-button>
+        </template>
+        <template v-else>
+          <el-button @click="backReshipEditStep">上一步</el-button>
+          <el-button
+            type="primary"
+            :loading="reshipSubmitting"
+            :disabled="reshipLoading || !reshipOrder || (reshipPrintMode === 'kdzs' && !selectedTemplateId)"
+            @click="submitReship"
+          >
+            {{ primaryReshipLabel }}
+          </el-button>
+        </template>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="confirmKdzsVisible" title="确认已打单发货" width="440px" append-to-body>
+      <el-form label-width="90px">
+        <el-form-item label="快递公司" required>
+          <el-select
+            v-model="kdzsExpressCompany"
+            placeholder="请选择快递公司"
+            filterable
+            style="width: 100%"
+          >
+            <el-option v-for="c in expressCompanyOptions" :key="c" :label="c" :value="c" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="新运单号" required>
+          <el-input v-model="kdzsExpressNo" placeholder="快递助手打单后的新运单号" />
+        </el-form-item>
+        <el-alert
+          type="warning"
+          :closable="false"
+          :title="`原运单 ${reshipSource?.mailNo || '-'} 保留；请勿填入原单号`"
+        />
+      </el-form>
+      <template #footer>
+        <el-button @click="confirmKdzsVisible = false">取消</el-button>
+        <el-button type="primary" :loading="reshipSubmitting" @click="submitKdzsReshipConfirm">
+          确认发货
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -978,7 +1853,6 @@ onMounted(() => {
 .error-text { color: #f56c6c; }
 .muted { color: #909399; font-size: 12px; }
 .ml8 { margin-left: 8px; }
-.detail-actions { margin-top: 20px; }
 .label-preview {
   min-height: 280px;
   display: flex;
@@ -1006,5 +1880,125 @@ onMounted(() => {
   border-radius: 6px;
   border: 1px solid #e4e7ec;
   cursor: pointer;
+}
+.ship-order-info {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+.reship-origin {
+  margin-bottom: 12px;
+  line-height: 1.5;
+}
+.reship-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.recv-panel {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 12px;
+}
+.recv-paste {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.fill-btn {
+  align-self: flex-start;
+}
+.recv-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.field-label {
+  width: 64px;
+  flex-shrink: 0;
+  color: #606266;
+  font-size: 13px;
+}
+.inline-label {
+  color: #909399;
+  font-size: 12px;
+}
+.w-name {
+  width: 120px;
+}
+.w-phone {
+  width: 140px;
+}
+.w-pca {
+  width: 100px;
+}
+.grow-input {
+  flex: 1;
+  min-width: 180px;
+}
+.goods-block {
+  margin-top: 4px;
+}
+.goods-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.goods-toolbar .hint {
+  color: #909399;
+  font-size: 12px;
+}
+.goods-footer {
+  margin-top: 8px;
+}
+.goods-qty {
+  width: 100%;
+}
+.reship-summary {
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  background: #f8f9fb;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.6;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ship-form {
+  margin-top: 8px;
+}
+.tpl-bar {
+  width: 100%;
+}
+.tpl-radios {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.tpl-radio {
+  margin-right: 0 !important;
+}
+.detail-actions {
+  margin-top: 20px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+@media (max-width: 720px) {
+  .recv-panel {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

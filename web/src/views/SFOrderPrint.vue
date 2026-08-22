@@ -69,7 +69,7 @@ const submitting = ref(false)
 const cancelling = ref(false)
 const carriers = ref<CarrierAccount[]>([])
 const shippers = ref<ShipperProfile[]>([])
-const handoffMeta = ref<Pick<SFOrderHandoff, 'orderId' | 'sourceSystem'> | null>(null)
+const handoffMeta = ref<Pick<SFOrderHandoff, 'orderId' | 'sourceSystem' | 'reship'> | null>(null)
 const result = ref<{ shipmentId: number; mailNo: string; cancelled?: boolean } | null>(null)
 
 /** 物品信息多行（对齐企服：可增减行） */
@@ -310,7 +310,7 @@ function ensureReceiverRegion() {
 }
 
 function applyHandoff(h: SFOrderHandoff) {
-  handoffMeta.value = { orderId: h.orderId, sourceSystem: h.sourceSystem }
+  handoffMeta.value = { orderId: h.orderId, sourceSystem: h.sourceSystem, reship: h.reship }
   const o = h.order
   form.platform = o.platform
   form.shopId = o.shopId
@@ -859,6 +859,7 @@ async function submit(doPrint: boolean) {
       sendStartTm: resolveSendStartTm(),
       orderId: handoffMeta.value?.orderId,
       sourceSystem: handoffMeta.value?.sourceSystem || (handoffMeta.value?.orderId ? 'ordercore' : undefined),
+      reship: !!handoffMeta.value?.reship,
       order,
     })
     const waybill = await shippingApi.createShipmentWaybill(shipment.id)
@@ -902,6 +903,7 @@ onMounted(async () => {
 
     <div v-if="handoffMeta?.orderId || form.orderNo" class="order-banner">
       已带入订单中心 {{ form.orderNo || `#${handoffMeta?.orderId}` }}
+      <el-tag v-if="handoffMeta?.reship" size="small" type="warning" class="ml8">重新发货 · 追加包裹</el-tag>
     </div>
 
     <section class="card contacts">
@@ -1441,7 +1443,12 @@ onMounted(async () => {
   padding: 8px 12px;
   margin-bottom: 12px;
   font-size: 13px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
 }
+.ml8 { margin-left: 8px; }
 .muted { color: #909399; }
 .card {
   background: #fff;

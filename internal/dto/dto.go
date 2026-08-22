@@ -154,6 +154,7 @@ type CreateShipmentFromOrderDTO struct {
 	OrderID          uint64           `json:"orderId,omitempty"`
 	SourceSystem     string           `json:"sourceSystem,omitempty"`
 	GroupID          *uint64          `json:"groupId,omitempty"` // 拆分发货挂组
+	Reship           bool             `json:"reship,omitempty"`  // 重新发货：回写 OC 空明细追加
 	Order            OrderSnapshotDTO `json:"order"`
 }
 
@@ -163,6 +164,7 @@ type ConfirmKdzsShipDTO struct {
 	ExpressCompany string           `json:"expressCompany"`
 	Order          OrderSnapshotDTO `json:"order"`
 	GroupID        *uint64          `json:"groupId,omitempty"`
+	Reship         bool             `json:"reship,omitempty"` // 重新发货：回写 OC 空明细追加
 }
 
 // SplitShipLineDTO 拆分发货一行：商品数量 + 运单号。

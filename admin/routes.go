@@ -23,6 +23,7 @@ func RegisterRoutes(g *gin.RouterGroup, h *Handlers) {
 	g.POST("/shipments/sync-shipped-at", h.SyncShipmentShippedAt)
 	g.POST("/shipments/upsert-kdzs-from-sync", h.UpsertKdzsFromSync)
 	g.GET("/shipments/:id", h.GetShipment)
+	g.GET("/shipments/:id/reship-context", h.ReshipContext)
 	g.GET("/shipments/:id/promise-tm", h.SearchPromiseTm)
 	g.POST("/shipments/from-order", h.CreateShipmentFromOrder)
 	g.POST("/shipments/:id/create-waybill", h.CreateShipmentWaybill)

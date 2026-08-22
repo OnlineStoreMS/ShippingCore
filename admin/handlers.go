@@ -323,6 +323,20 @@ func (h *Handlers) GetShipment(c *gin.Context) {
 	response.OK(c, item)
 }
 
+func (h *Handlers) ReshipContext(c *gin.Context) {
+	id, err := httputil.ParseID(c)
+	if err != nil {
+		response.Fail(c, http.StatusBadRequest, "invalid id")
+		return
+	}
+	data, err := h.shipment(c).ReshipContext(c.Request.Context(), authcontext.BearerToken(c), id)
+	if err != nil {
+		httputil.HandleServiceError(c, err)
+		return
+	}
+	response.OK(c, data)
+}
+
 func (h *Handlers) SearchPromiseTm(c *gin.Context) {
 	id, err := httputil.ParseID(c)
 	if err != nil {

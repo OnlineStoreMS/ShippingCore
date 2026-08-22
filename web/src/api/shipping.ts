@@ -109,6 +109,8 @@ export interface CreateShipmentFromOrderInput {
   orderId?: number
   sourceSystem?: 'ordercore' | 'storesyncagent'
   groupId?: number
+  /** 重新发货：回写 OC 空明细追加包裹 */
+  reship?: boolean
   order: OrderSnapshot
 }
 
@@ -118,6 +120,8 @@ export interface ConfirmKdzsShipInput {
   expressCompany?: string
   order: OrderSnapshot
   groupId?: number
+  /** 重新发货：回写 OC 空明细追加包裹 */
+  reship?: boolean
 }
 
 export interface SplitShipLineInput {
@@ -217,6 +221,8 @@ export interface Shipment {
   remarkImages?: string | string[]
   pickupMode?: string
   sendStartTm?: string
+  /** 重新发货追加包裹 */
+  reship?: boolean
   createdAt: string
   updatedAt: string
   items?: ShipmentItem[]
@@ -532,6 +538,11 @@ export const shippingApi = {
 
   listShipments: (params?: Record<string, unknown>) => page<Shipment>('/shipments', params),
   getShipment: (id: number) => client.get(`/shipments/${id}`).then((r) => unwrap<Shipment>(r)),
+  /** 重新发货预填：原发货单 + OrderCore 订单 */
+  getReshipContext: (id: number) =>
+    client.get(`/shipments/${id}/reship-context`).then((r) =>
+      unwrap<{ shipment: Shipment; order: OMSOrder }>(r),
+    ),
   /** 出单后预计派送时间 EXP_RECE_SEARCH_PROMITM */
   searchPromiseTm: (id: number) =>
     client.get(`/shipments/${id}/promise-tm`).then((r) =>

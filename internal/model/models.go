@@ -140,6 +140,9 @@ type Shipment struct {
 	// SendStartTm 预约上门取件开始时间（丰桥 sendStartTm），格式 2006-01-02 15:04:05
 	SendStartTm string `gorm:"size:32" json:"sendStartTm,omitempty"`
 
+	// Reship 重新发货：回写订单中心时传空商品明细（已发完追加包裹）
+	Reship bool `gorm:"default:false" json:"reship,omitempty"`
+
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
 
