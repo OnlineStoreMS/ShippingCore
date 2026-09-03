@@ -344,6 +344,26 @@ export interface ExpressTemplate {
   syncedAt: string
 }
 
+/** 快递助手远程打单电脑（手机版扩展配对） */
+export interface KdzsPrintDevice {
+  id: number
+  deviceKey: string
+  name: string
+  online: boolean
+  lastSeenAt?: string
+  enabled: boolean
+  createdAt: string
+}
+
+export interface KdzsPrintTask {
+  id: number
+  deviceId: number
+  status: string
+  payload?: unknown
+  errorMessage?: string
+  createdAt: string
+}
+
 export interface WaybillAuth {
   id: number
   source: string
@@ -640,6 +660,17 @@ export const shippingApi = {
     client
       .post('/kdzs/helper-handoff-sessions', { payload })
       .then((r) => unwrap<{ token: string; expireAt: string }>(r)),
+  /** 已绑定的快递助手远程打单电脑（手机扩展配对） */
+  listKdzsPrintDevices: () =>
+    client.get('/kdzs-print/devices').then((r) =>
+      unwrap<{ list: KdzsPrintDevice[]; total: number }>(r),
+    ),
+  createKdzsPrintTask: (body: { deviceId: number; payload: Record<string, unknown> }) =>
+    client.post('/kdzs-print/tasks', body).then((r) => unwrap<KdzsPrintTask>(r)),
+  listKdzsPrintTasks: () =>
+    client.get('/kdzs-print/tasks').then((r) =>
+      unwrap<{ list: KdzsPrintTask[]; total: number }>(r),
+    ),
   queryPrintWaybills: (body: {
     platform: string
     items: { sysTid?: string; tid?: string }[]

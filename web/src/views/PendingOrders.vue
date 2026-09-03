@@ -7,6 +7,7 @@ import {
   shippingApi,
   type CarrierAccount,
   type ExpressTemplate,
+  type KdzsPrintDevice,
   type OMSOrder,
   type ShipperProfile,
   type ShipPlanLine,
@@ -41,8 +42,13 @@ type LabelTemplateOpt = {
 
 /** 顶层：快递助手 | 自建物流 */
 type PrintMode = 'kdzs' | 'sf'
+/** 快递助手：本机打开助手 | 下发到已配对电脑自动打 */
+type KdzsChannel = 'local' | 'remote'
 /** 自建物流 + 顺丰账号时的子方式 */
 type SFShipAction = 'standard' | 'quick'
+
+const KDZS_REMOTE_DEVICE_KEY = 'shippingcore.kdzs.remoteDeviceId'
+const KDZS_REMOTE_PRINTER_KEY = 'shippingcore.kdzs.remotePrinterName'
 
 const route = useRoute()
 const router = useRouter()
@@ -53,12 +59,17 @@ const omsTotal = ref(0)
 const carrierAccounts = ref<CarrierAccount[]>([])
 const shipperProfiles = ref<ShipperProfile[]>([])
 const allTemplates = ref<ExpressTemplate[]>([])
+const kdzsDevices = ref<KdzsPrintDevice[]>([])
 
 const selectedOrders = ref<OMSOrder[]>([])
 const shipDialogVisible = ref(false)
 const confirmKdzsVisible = ref(false)
 const shipTargets = ref<OMSOrder[]>([])
 const printMode = ref<PrintMode>('kdzs')
+/** 快递助手本机 / 远程 */
+const kdzsChannel = ref<KdzsChannel>('local')
+const kdzsRemoteDeviceId = ref<number | undefined>()
+const kdzsRemotePrinterName = ref(localStorage.getItem(KDZS_REMOTE_PRINTER_KEY) || '')
 /** 顺丰：标准寄件页 / 快速下单后选模板打印机 */
 const sfShipAction = ref<SFShipAction>('standard')
 const selectedTemplateId = ref('')
@@ -580,7 +591,19 @@ const selectedTemplate = computed(() =>
   filteredTemplates.value.find((t) => t.templateId === selectedTemplateId.value),
 )
 
+const selectedKdzsDevice = computed(
+  () => kdzsDevices.value.find((d) => d.id === kdzsRemoteDeviceId.value) || null,
+)
+
 const isBatchShip = computed(() => shipTargets.value.length > 1)
+
+const kdzsPrimaryDisabled = computed(() => {
+  if (!selectedTemplateId.value) return true
+  if (kdzsChannel.value === 'remote') {
+    return !kdzsRemoteDeviceId.value || !kdzsRemotePrinterName.value.trim()
+  }
+  return false
+})
 
 const selectedPickRows = computed(() => {
   const set = new Set(selectedShipKeys.value)
@@ -677,16 +700,30 @@ async function loadOmsOrders() {
   }
 }
 
+function restoreKdzsRemotePrefs() {
+  const savedDev = Number(localStorage.getItem(KDZS_REMOTE_DEVICE_KEY) || 0)
+  if (savedDev && kdzsDevices.value.some((d) => d.id === savedDev)) {
+    kdzsRemoteDeviceId.value = savedDev
+  } else {
+    const online = kdzsDevices.value.find((d) => d.online && d.enabled !== false)
+    kdzsRemoteDeviceId.value = online?.id || kdzsDevices.value.find((d) => d.enabled !== false)?.id
+  }
+  kdzsRemotePrinterName.value = localStorage.getItem(KDZS_REMOTE_PRINTER_KEY) || ''
+}
+
 async function loadOptions() {
   try {
-    const [carriers, shippers, templates] = await Promise.all([
+    const [carriers, shippers, templates, devices] = await Promise.all([
       shippingApi.listCarrierAccounts({ page: 1, pageSize: 200 }),
       shippingApi.listShipperProfiles({ page: 1, pageSize: 200 }),
       shippingApi.listExpressTemplates({ page: 1, pageSize: 200 }),
+      shippingApi.listKdzsPrintDevices().catch(() => ({ list: [] as KdzsPrintDevice[], total: 0 })),
     ])
     carrierAccounts.value = (carriers.list || []).filter((c) => c.enabled)
     shipperProfiles.value = (shippers.list || []).filter((s) => s.enabled)
     allTemplates.value = templates.list || []
+    kdzsDevices.value = (devices.list || []).filter((d) => d.enabled !== false)
+    restoreKdzsRemotePrefs()
   } catch {
     /* optional */
   }
@@ -875,6 +912,7 @@ function normalizePrintMode(raw?: string | null): PrintMode {
 async function prepareShipDialog(orders: OMSOrder[], preferredMode?: PrintMode) {
   shipTargets.value = orders
   selectedTemplateId.value = ''
+  kdzsChannel.value = 'local'
   kdzsExpressCompany.value = ''
   kdzsExpressRows.value = orders.map((order) => ({ order, expressNo: '' }))
   shipPickRows.value = []
@@ -892,6 +930,7 @@ async function prepareShipDialog(orders: OMSOrder[], preferredMode?: PrintMode) 
   shipForm.useMonthly = defaultCarrier?.useMonthly ?? false
   printMode.value = defaultPrintMode(orders, preferredMode)
   sfShipAction.value = 'standard'
+  restoreKdzsRemotePrefs()
 
   const tpls = allTemplates.value.filter(
     (t) => t.enabled !== false && t.platform === templatePlatformGroup(orders[0]),
@@ -1131,6 +1170,46 @@ function onPrintModeChange() {
   }
 }
 
+function onKdzsChannelChange() {
+  if (kdzsChannel.value === 'remote') restoreKdzsRemotePrefs()
+}
+
+function onKdzsRemoteDeviceChange(id: number | undefined) {
+  if (id) localStorage.setItem(KDZS_REMOTE_DEVICE_KEY, String(id))
+  else localStorage.removeItem(KDZS_REMOTE_DEVICE_KEY)
+}
+
+function onKdzsRemotePrinterBlur() {
+  const name = kdzsRemotePrinterName.value.trim()
+  kdzsRemotePrinterName.value = name
+  if (name) localStorage.setItem(KDZS_REMOTE_PRINTER_KEY, name)
+  else localStorage.removeItem(KDZS_REMOTE_PRINTER_KEY)
+}
+
+function buildKdzsHandoffOrders(): KdzsHandoffOrder[] {
+  return shipTargets.value.map((o) => {
+    const snap = snapshotForShip(o)
+    return {
+      orderNo: o.orderNo || '',
+      platformSysTid: o.platformSysTid || '',
+      platformOrderId: o.platformOrderId || '',
+      sysTid: o.platformSysTid || '',
+      tid: o.platformOrderId || '',
+      payTime: o.payTime || '',
+      orderedAt: o.orderedAt || '',
+      goods: (snap.goods || []).map((g) => {
+        const name = (g.skuName || g.title || '').trim()
+        return {
+          title: name,
+          skuName: name,
+          outerId: g.outerId,
+          num: g.num,
+        }
+      }),
+    }
+  })
+}
+
 async function openKdzsBatchPrint() {
   const order = shipTargets.value[0]
   if (!order) return
@@ -1143,27 +1222,6 @@ async function openKdzsBatchPrint() {
   try {
     const platform = orderPlatformCode(order)
     const tpl = selectedTemplate.value
-    const handoffOrders: KdzsHandoffOrder[] = shipTargets.value.map((o) => {
-      const snap = snapshotForShip(o)
-      return {
-        orderNo: o.orderNo || '',
-        platformSysTid: o.platformSysTid || '',
-        platformOrderId: o.platformOrderId || '',
-        sysTid: o.platformSysTid || '',
-        tid: o.platformOrderId || '',
-        payTime: o.payTime || '',
-        orderedAt: o.orderedAt || '',
-        goods: (snap.goods || []).map((g) => {
-          const name = (g.skuName || g.title || '').trim()
-          return {
-            title: name,
-            skuName: name,
-            outerId: g.outerId,
-            num: g.num,
-          }
-        }),
-      }
-    })
     const timeRange = buildKdzsOrderTimeRange(shipTargets.value)
     const payload: KdzsHandoffPayload = {
       v: 1,
@@ -1171,7 +1229,7 @@ async function openKdzsBatchPrint() {
       platform,
       templateName: tpl?.templateName || '',
       templateId: tpl?.templateId,
-      orders: handoffOrders,
+      orders: buildKdzsHandoffOrders(),
       orderTimeFrom: timeRange?.from,
       orderTimeTo: timeRange?.to,
       autoPrint: false,
@@ -1196,6 +1254,80 @@ async function openKdzsBatchPrint() {
     void syncWaybillsFromKdzs()
   } catch (e) {
     ElMessage.error((e as Error).message || '打开快递助手失败')
+  } finally {
+    loading.ship = false
+  }
+}
+
+/** 下发到已配对电脑，由该机扩展自动勾选并打印 */
+async function openKdzsRemotePrint() {
+  const order = shipTargets.value[0]
+  if (!order) return
+  if (!ensureShipItemsSelected()) return
+  if (!selectedTemplateId.value) {
+    ElMessage.warning('请选择快递模板')
+    return
+  }
+  const device = selectedKdzsDevice.value
+  if (!device || !kdzsRemoteDeviceId.value) {
+    ElMessage.warning('请选择打单电脑')
+    return
+  }
+  if (!device.online) {
+    ElMessage.warning('电脑离线，请确认该机扩展已打开并保持心跳')
+    return
+  }
+  const tpl = selectedTemplate.value
+  if (!tpl?.templateName && !tpl?.templateId) {
+    ElMessage.warning('请选择快递模板')
+    return
+  }
+  const printer = kdzsRemotePrinterName.value.trim()
+  if (!printer) {
+    ElMessage.warning('请填写远程电脑上的打印机完整名称')
+    return
+  }
+  for (const o of shipTargets.value) {
+    const plat = orderPlatformCode(o)
+    const sysTid = (o.platformSysTid || '').trim()
+    const platOid = (o.platformOrderId || '').trim()
+    if (plat === 'DFHAND' && !sysTid && !platOid) {
+      ElMessage.warning(
+        `订单 ${o.orderNo || o.id} 为手工单且尚未同步快递助手编号，请先推送成功后再远程打单`,
+      )
+      return
+    }
+  }
+
+  loading.ship = true
+  try {
+    const platform = orderPlatformCode(order)
+    const timeRange = buildKdzsOrderTimeRange(shipTargets.value)
+    const payload: Record<string, unknown> = {
+      v: 1,
+      createdAt: Date.now(),
+      platform,
+      templateName: tpl.templateName || '',
+      templateId: tpl.templateId,
+      printerName: printer,
+      orders: buildKdzsHandoffOrders(),
+      orderTimeFrom: timeRange?.from,
+      orderTimeTo: timeRange?.to,
+      autoPrint: true,
+    }
+    localStorage.setItem(KDZS_REMOTE_DEVICE_KEY, String(kdzsRemoteDeviceId.value))
+    localStorage.setItem(KDZS_REMOTE_PRINTER_KEY, printer)
+    const task = await shippingApi.createKdzsPrintTask({
+      deviceId: kdzsRemoteDeviceId.value,
+      payload,
+    })
+    ElMessage.success(
+      `已下发远程打单任务 #${task.id} 到「${device.name}」，电脑将自动勾选并打印；完成后请回填或同步运单号。`,
+    )
+    confirmKdzsVisible.value = true
+    void syncWaybillsFromKdzs()
+  } catch (e) {
+    ElMessage.error((e as Error).message || '远程打单下发失败')
   } finally {
     loading.ship = false
   }
@@ -1273,7 +1405,8 @@ async function submitShip() {
   if (!ensureShipItemsSelected()) return
 
   if (printMode.value === 'kdzs') {
-    await openKdzsBatchPrint()
+    if (kdzsChannel.value === 'remote') await openKdzsRemotePrint()
+    else await openKdzsBatchPrint()
     return
   }
 
@@ -1329,7 +1462,9 @@ async function submitShip() {
 }
 
 const primaryShipLabel = computed(() => {
-  if (printMode.value === 'kdzs') return '打开快递助手'
+  if (printMode.value === 'kdzs') {
+    return kdzsChannel.value === 'remote' ? '下发远程打单' : '打开快递助手'
+  }
   if (isSFCarrier.value && sfShipAction.value === 'standard') return '前往标准寄件'
   return '快速下单打印'
 })
@@ -1626,6 +1761,12 @@ onMounted(async () => {
           </el-form-item>
 
           <template v-if="printMode === 'kdzs'">
+            <el-form-item label="打单通道">
+              <el-radio-group v-model="kdzsChannel" class="print-mode-radios" @change="onKdzsChannelChange">
+                <el-radio value="local">本地打单</el-radio>
+                <el-radio value="remote">远程打单</el-radio>
+              </el-radio-group>
+            </el-form-item>
             <el-form-item label="快递模板" required>
               <div v-if="filteredTemplates.length" class="tpl-bar">
                 <el-radio-group v-model="selectedTemplateId" class="tpl-radios" @change="onTemplateChange">
@@ -1647,11 +1788,51 @@ onMounted(async () => {
                 :title="`暂无「${shipGroup}」快递模板，请先到「快递模板」页同步`"
               />
             </el-form-item>
+            <template v-if="kdzsChannel === 'remote'">
+              <el-form-item label="打单电脑" required>
+                <el-select
+                  v-model="kdzsRemoteDeviceId"
+                  placeholder="选择已配对电脑"
+                  style="width: 100%"
+                  @change="onKdzsRemoteDeviceChange"
+                >
+                  <el-option
+                    v-for="d in kdzsDevices"
+                    :key="d.id"
+                    :label="`${d.name}${d.online ? '（在线）' : '（离线）'}`"
+                    :value="d.id"
+                  />
+                </el-select>
+                <div v-if="!kdzsDevices.length" class="muted kdzs-remote-hint">
+                  暂无已配对电脑，请先在手机版「快递助手插件」页扫码绑定。
+                </div>
+                <div v-else-if="selectedKdzsDevice" class="muted kdzs-remote-hint">
+                  {{ selectedKdzsDevice.deviceKey }}
+                  · {{ selectedKdzsDevice.online ? '在线' : '离线' }}
+                </div>
+              </el-form-item>
+              <el-form-item label="打印机" required>
+                <el-input
+                  v-model="kdzsRemotePrinterName"
+                  placeholder="远程电脑上的打印机完整名称"
+                  clearable
+                  @blur="onKdzsRemotePrinterBlur"
+                />
+              </el-form-item>
+              <el-alert
+                type="info"
+                :closable="false"
+                :title="selectedTemplate
+                  ? `将任务下发到所选电脑，扩展自动勾选订单并按模板「${selectedTemplate.templateName}」打印；完成后回填或同步运单号。`
+                  : '请先选择快递模板'"
+              />
+            </template>
             <el-alert
+              v-else
               type="info"
               :closable="false"
               :title="selectedTemplate
-                ? `将打开快递助手并上传打单任务到云端；安装插件（extensions/kdzs-print-helper 电脑版）后自动选单/选模板「${selectedTemplate.templateName}」。请人工点打印，再回填运单号。`
+                ? `将打开本机快递助手并上传打单任务；安装插件后自动选单/选模板「${selectedTemplate.templateName}」。请人工点打印，再回填运单号。`
                 : '请先选择快递模板'"
             />
           </template>
@@ -1722,7 +1903,7 @@ onMounted(async () => {
         <el-button
           type="primary"
           :loading="loading.ship"
-          :disabled="printMode === 'kdzs' && !selectedTemplateId"
+          :disabled="printMode === 'kdzs' && kdzsPrimaryDisabled"
           @click="submitShip"
         >
           {{ primaryShipLabel }}
@@ -2079,6 +2260,11 @@ onMounted(async () => {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 12px;
+}
+.kdzs-remote-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.4;
 }
 .tpl-bar { width: 100%; }
 .tpl-radios { display: flex; flex-wrap: wrap; gap: 8px; }
