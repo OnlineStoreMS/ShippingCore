@@ -441,23 +441,29 @@ function formatPayTime(v?: string) {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
 
+/** 取日历日 YYYY-MM-DD（优先解析字符串，避免 ISO/Z 时区把日期推到次日） */
+function calendarYmd(raw?: string): string | null {
+  if (!raw) return null
+  const m = String(raw).match(/(\d{4})-(\d{2})-(\d{2})/)
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`
+  const d = new Date(raw)
+  if (Number.isNaN(d.getTime())) return null
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+
 /** 快递助手下单时间筛选：按任务订单付款/下单日聚合为当日 00:00:00 ~ 23:59:59 */
 function buildKdzsOrderTimeRange(orders: OMSOrder[]): { from: string; to: string } | null {
-  const times: number[] = []
+  const days: string[] = []
   for (const o of orders) {
-    const raw = o.payTime || o.orderedAt
-    if (!raw) continue
-    const d = new Date(raw)
-    if (!Number.isNaN(d.getTime())) times.push(d.getTime())
+    const ymd = calendarYmd(o.payTime || o.orderedAt)
+    if (ymd) days.push(ymd)
   }
-  if (!times.length) return null
-  const min = new Date(Math.min(...times))
-  const max = new Date(Math.max(...times))
-  const p = (n: number) => String(n).padStart(2, '0')
-  const ymd = (d: Date) => `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+  if (!days.length) return null
+  days.sort()
   return {
-    from: `${ymd(min)} 00:00:00`,
-    to: `${ymd(max)} 23:59:59`,
+    from: `${days[0]} 00:00:00`,
+    to: `${days[days.length - 1]} 23:59:59`,
   }
 }
 

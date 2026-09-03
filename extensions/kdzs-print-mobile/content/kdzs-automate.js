@@ -9,7 +9,19 @@
   /** @type {any} */
   let handoff = null
   let running = false
+  /** 防止同一任务被「扩展存储 / 队列推送 / 页面重载」并发拉起多次 */
+  let lastAutoStartKey = ''
+  let lastAutoStartAt = 0
   let lastLog = []
+
+  function taskDedupeKey(payload) {
+    if (!payload) return ''
+    const oid = (payload.orders || [])
+      .map((o) => o?.platformSysTid || o?.platformOrderId || o?.orderNo || '')
+      .filter(Boolean)
+      .join(',')
+    return `${payload.cloudTaskId || ''}|${payload.createdAt || ''}|${oid}`
+  }
 
   function log(msg, level = 'info') {
     const line = `[${new Date().toLocaleTimeString()}] ${msg}`
@@ -393,13 +405,15 @@
 
   function toYmd(v) {
     if (!v) return ''
+    // 优先日历字符串，避免 new Date('2026-09-03 00:00:00Z') 等时区偏移
+    const m = String(v).match(/(\d{4})-(\d{2})-(\d{2})/)
+    if (m) return `${m[1]}-${m[2]}-${m[3]}`
     const d = new Date(v)
     if (!Number.isNaN(d.getTime())) {
       const p = (n) => String(n).padStart(2, '0')
       return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
     }
-    const m = String(v).match(/(\d{4})-(\d{2})-(\d{2})/)
-    return m ? `${m[1]}-${m[2]}-${m[3]}` : ''
+    return ''
   }
 
   function resolveOrderTimeRange() {
@@ -1378,10 +1392,31 @@
 
       // 下单时间 → 点一次查询 → 在结果里勾选（列表已有则不再按单号查，避免二次刷新）
       const n = await (async () => {
-        await setOrderTimeRange()
+        const timeOk = await setOrderTimeRange()
+        // 任务带了明确时间却没设上时，继续查极易落在空列表 / 错日，直接中止
+        if (!timeOk && handoff?.orderTimeFrom && handoff?.orderTimeTo) {
+          log('下单时间未能按任务设置，已中止自动勾选（请人工设好时间后再点「执行选单」）', 'error')
+          return -1
+        }
         await clickQuery('应用时间范围')
         return searchAndSelectOrders({ preferListFirst: true })
       })()
+      if (n < 0) {
+        if (handoff?.cloudTaskId) {
+          chrome.runtime.sendMessage(
+            {
+              type: 'KDZS_PRINT_REPORT_TASK',
+              taskId: handoff.cloudTaskId,
+              status: 'failed',
+              errorMessage: '下单时间筛选设置失败',
+            },
+            () => {
+              /* ignore */
+            },
+          )
+        }
+        return
+      }
       log(`订单勾选结果：${n}/${(handoff.orders || []).length}`)
       await selectTemplate()
       await clickSelectShip()
@@ -1574,7 +1609,20 @@
     handoff = { ...payload, savedAt: payload.savedAt || Date.now() }
     renderPanel()
     log(`已加载任务（${source}）：${(handoff.orders || []).length} 单 · 平台 ${platformUi(handoff.platform).label}`)
-    if (!manual && !running) void runAutomation()
+    if (manual) return
+    if (running) {
+      log(`已有自动化在执行，忽略重复触发（${source}）`)
+      return
+    }
+    const key = taskDedupeKey(handoff)
+    const now = Date.now()
+    if (key && key === lastAutoStartKey && now - lastAutoStartAt < 12000) {
+      log(`短时间内同一任务已启动，忽略重复触发（${source}）`)
+      return
+    }
+    lastAutoStartKey = key
+    lastAutoStartAt = now
+    void runAutomation()
   }
 
   function loadHandoff(manual = false) {
