@@ -1265,7 +1265,7 @@ async function openKdzsBatchPrint() {
   }
 }
 
-/** 下发到已配对电脑，由该机扩展自动勾选并打印 */
+/** 下发到已配对电脑，由该机 WindowsAgent 自动勾选并打印 */
 async function openKdzsRemotePrint() {
   const order = shipTargets.value[0]
   if (!order) return
@@ -1276,11 +1276,11 @@ async function openKdzsRemotePrint() {
   }
   const device = selectedKdzsDevice.value
   if (!device || !kdzsRemoteDeviceId.value) {
-    ElMessage.warning('请选择打单电脑')
+    ElMessage.warning('请选择打单电脑（Agent）')
     return
   }
   if (!device.online) {
-    ElMessage.warning('电脑离线，请确认该机扩展已打开并保持心跳')
+    ElMessage.warning('电脑离线，请确认该机 WindowsAgent 已运行并保持心跳')
     return
   }
   const tpl = selectedTemplate.value
@@ -1328,7 +1328,7 @@ async function openKdzsRemotePrint() {
       payload,
     })
     ElMessage.success(
-      `已下发远程打单任务 #${task.id} 到「${device.name}」，电脑将自动勾选并打印；完成后请回填或同步运单号。`,
+      `已下发远程打单任务 #${task.id} 到「${device.name}」（WindowsAgent），完成后请回填或同步运单号。`,
     )
     confirmKdzsVisible.value = true
     void syncWaybillsFromKdzs()
@@ -1798,7 +1798,7 @@ onMounted(async () => {
               <el-form-item label="打单电脑" required>
                 <el-select
                   v-model="kdzsRemoteDeviceId"
-                  placeholder="选择已配对电脑"
+                  placeholder="选择已绑定的 WindowsAgent"
                   style="width: 100%"
                   @change="onKdzsRemoteDeviceChange"
                 >
@@ -1810,7 +1810,7 @@ onMounted(async () => {
                   />
                 </el-select>
                 <div v-if="!kdzsDevices.length" class="muted kdzs-remote-hint">
-                  暂无已配对电脑，请先在手机版「快递助手插件」页扫码绑定。
+                  暂无已绑定电脑，请先在手机「快递助手远程打单」页用 Agent 配对码绑定。
                 </div>
                 <div v-else-if="selectedKdzsDevice" class="muted kdzs-remote-hint">
                   {{ selectedKdzsDevice.deviceKey }}
@@ -1829,7 +1829,7 @@ onMounted(async () => {
                 type="info"
                 :closable="false"
                 :title="selectedTemplate
-                  ? `将任务下发到所选电脑，扩展自动勾选订单并按模板「${selectedTemplate.templateName}」打印；完成后回填或同步运单号。`
+                  ? `将任务下发到本机 WindowsAgent，自动登录快递助手并按模板「${selectedTemplate.templateName}」打印；完成后回填或同步运单号。`
                   : '请先选择快递模板'"
               />
             </template>

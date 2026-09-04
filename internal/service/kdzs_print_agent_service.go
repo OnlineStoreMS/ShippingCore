@@ -115,7 +115,7 @@ type CreatePairOfferResult struct {
 	Name         string `json:"name"`
 }
 
-// CreatePairOffer 电脑扩展生成配对码：先创建设备凭证（待认领），手机再输入码认领。
+// CreatePairOffer 打单端（WindowsAgent / 旧版浏览器扩展）生成配对码：先创建设备凭证（待认领），手机再输入码认领。
 func (s *KdzsPrintAgentService) CreatePairOffer(deviceName string) (*CreatePairOfferResult, error) {
 	name := strings.TrimSpace(deviceName)
 	if name == "" {
@@ -403,7 +403,7 @@ func (s *KdzsPrintAgentService) ListRecentTasks(limit int) ([]KdzsPrintTaskDTO, 
 	return out, nil
 }
 
-// ClaimNext 扩展领取下一待办（同设备串行）。
+// ClaimNext 打单端（WindowsAgent）领取下一待办（同设备串行）。
 func (s *KdzsPrintAgentService) ClaimNext(deviceKey, secret string) (*KdzsPrintTaskDTO, error) {
 	d, err := s.AuthenticateDevice(deviceKey, secret)
 	if err != nil {

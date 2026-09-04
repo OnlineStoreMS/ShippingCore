@@ -1,22 +1,22 @@
-# OSMS 快递助手·手机版（Chrome 扩展）
+# OSMS 快递助手·手机版（Chrome 扩展）— **已弃用**
 
-目录：`extensions/kdzs-print-mobile` · 版本 **1.4.2+**
+> **Deprecated（2026-09）**  
+> 远程打单已迁移到 **WindowsAgent** 任务类型「快递助手远程打单」。  
+> 请改用 Agent：填写快递助手账号密码 → 生成配对码 → 手机「快递助手远程打单」页绑定。  
+> 本目录仅保留对照/应急，不再作为正式接入方式。
 
-## 能力（仅此）
+目录：`extensions/kdzs-print-mobile`
+
+## 历史能力
 
 1. 生成配对码 ↔ OpsMobile 绑定  
 2. 心跳在线 + 领取远程打单任务  
-3. 打开快递助手 → 勾选 → 下拉选打印机（`select.select_system_printer`）→ 弹窗「打印快递单」→ 发货确定  
+3. 打开快递助手 → 勾选 → 打印 → 发货  
 
-## 不含
+## 仍在使用
 
-- 发货中心「打开快递助手」桥接 / `_osms_ht`  
-- 电脑端 postMessage handoff  
+发货中心电脑端 **本地打单** 请继续用：`extensions/kdzs-print-helper`（与 WindowsAgent 远程打单互不冲突）。
 
-发货中心电脑端请用：`extensions/kdzs-print-helper`（勿与本扩展同时启用）。
+## 对照移植
 
-## 安装
-
-1. 移除旧合并版扩展  
-2. 加载本目录 → 名称应为 **OSMS 快递助手·手机版**  
-3. 重新配对；OpsMobile 设置页保存打印机全名
+WindowsAgent 注入脚本参考：`WindowsAgent/src/WindowsAgent.Skills/Scripts/kdzs-automate.js`（由本扩展自动化逻辑移植）。
