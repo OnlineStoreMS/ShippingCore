@@ -9,6 +9,8 @@
   /** @type {any} */
   let handoff = null
   let running = false
+  /** 每次启动/清除任务递增；在途 await 后校验，用于掐掉僵尸并发 */
+  let runGen = 0
   /** 防止同一任务被「扩展存储 / 队列推送 / 页面重载」并发拉起多次 */
   let lastAutoStartKey = ''
   let lastAutoStartAt = 0
@@ -21,6 +23,19 @@
       .filter(Boolean)
       .join(',')
     return `${payload.cloudTaskId || ''}|${payload.createdAt || ''}|${oid}`
+  }
+
+  function bumpRunGen(reason) {
+    runGen += 1
+    if (reason) {
+      /* optional debug — keep quiet unless needed */
+    }
+    return runGen
+  }
+
+  /** @returns {boolean} true=应继续；false=已被新任务/清除掐掉 */
+  function stillActive(myGen) {
+    return myGen === runGen && !!handoff
   }
 
   function log(msg, level = 'info') {
@@ -442,9 +457,13 @@
     return m ? m[1] : ''
   }
 
-  async function waitForPrintBatchReady() {
+  async function waitForPrintBatchReady(myGen) {
     log('等待批打页加载完成…')
     for (let i = 0; i < 40; i++) {
+      if (!stillActive(myGen)) {
+        log('等待批打页：任务已变更/清除，中止')
+        return false
+      }
       const panel = document.querySelector('.range-picker-panel')
       const begin = panel?.getAttribute('data-begin-date')
       const wrap = document.querySelector('.kdzs-design-range-picker-wrapper')
@@ -452,6 +471,10 @@
       if (panel && begin && wrap && typeSelect) {
         // 默认历史时间范围渲染后再动手，避免点空
         await sleep(1000)
+        if (!stillActive(myGen)) {
+          log('等待批打页：任务已变更/清除，中止')
+          return false
+        }
         log(`页面已就绪，当前时间范围 ${begin.slice(0, 10)} ~ ${(panel.getAttribute('data-end-date') || '').slice(0, 10)}`)
         return true
       }
@@ -1342,6 +1365,7 @@
   }
 
   function clearFinishedHandoff(reason) {
+    bumpRunGen()
     handoff = null
     chrome.runtime.sendMessage({ type: 'KDZS_HELPER_CLEAR_HANDOFF' }, () => {
       log(reason || '已清除已完成任务')
@@ -1349,16 +1373,25 @@
     })
   }
 
-  async function runAutomation() {
-    if (running) return
-    running = true
-    renderPanel()
-    try {
+  async function runAutomation(opts = {}) {
+    const alreadyLocked = !!opts.alreadyLocked
+    if (!alreadyLocked) {
+      if (running) return
       if (!handoff) {
         log('没有待执行任务。请先绑定插件并由手机发送打单任务，或从发货中心打开快递助手。', 'error')
         return
       }
-      const age = Date.now() - Number(handoff.createdAt || handoff.savedAt || 0)
+      running = true
+    } else if (!handoff) {
+      running = false
+      log('没有待执行任务。请先绑定插件并由手机发送打单任务，或从发货中心打开快递助手。', 'error')
+      return
+    }
+    const myGen = bumpRunGen()
+    const taskSnap = handoff
+    renderPanel()
+    try {
+      const age = Date.now() - Number(taskSnap.createdAt || taskSnap.savedAt || 0)
       if (age > HANDOFF_MAX_AGE_MS) {
         log('任务已过期（>30 分钟），请回发货中心重新打开', 'error')
         return
@@ -1368,39 +1401,70 @@
 
       // 门户外壳只负责进「打单发货」+ 切平台 + 监视顶层打印/发货弹窗
       if (IS_DF_SHELL) {
-        await ensureDfShellBatchPrint(handoff)
+        await ensureDfShellBatchPrint(taskSnap)
+        if (!stillActive(myGen)) {
+          log('门户监视：任务已结束，退出')
+          return
+        }
         log('已切换打单发货与电商平台；批打 iframe 将勾选，本页监视打印弹窗…')
         await watchShellDialogs(120000)
         return
       }
 
       // 错误平台的旧 iframe 直接忽略，等正确 iframe 加载
-      if (IS_PLATFORM_FRAME && !hostMatchesTask(handoff.platform)) {
-        log(`当前 iframe 为 ${HOST}，任务需要 ${hostForPlatform(handoff.platform)}，跳过`)
+      if (IS_PLATFORM_FRAME && !hostMatchesTask(taskSnap.platform)) {
+        log(`当前 iframe 为 ${HOST}，任务需要 ${hostForPlatform(taskSnap.platform)}，跳过`)
         return
+      }
+
+      // 隐藏/后台旧 iframe 不抢跑（平台切换常残留）
+      if (IS_PLATFORM_FRAME && (document.hidden || !document.body || document.body.offsetParent === null)) {
+        try {
+          const r = document.documentElement.getBoundingClientRect()
+          if (r.width < 2 || r.height < 2) {
+            log('当前批打 iframe 不可见，跳过（避免与主 iframe 并发）')
+            return
+          }
+        } catch {
+          /* ignore */
+        }
       }
 
       // 若误开到子站但非批打路由，尽量回到门户走标准路径
       if (IS_TOP && IS_PLATFORM_FRAME && !/printBatch|batchPrint|newIndex/i.test(location.href)) {
         log('不在批打页，改走快递助手门户打单发货…')
-        location.href = dfBatchPrintUrl(handoff.platform)
+        location.href = dfBatchPrintUrl(taskSnap.platform)
         return
       }
 
       await sleep(500)
-      await waitForPrintBatchReady()
+      if (!stillActive(myGen)) {
+        log('自动化：任务已变更/清除，中止')
+        return
+      }
+      await waitForPrintBatchReady(myGen)
+      if (!stillActive(myGen)) {
+        log('自动化：任务已变更/清除，中止（批打页等待后）')
+        return
+      }
 
       // 下单时间 → 点一次查询 → 在结果里勾选（列表已有则不再按单号查，避免二次刷新）
       const n = await (async () => {
         const timeOk = await setOrderTimeRange()
+        if (!stillActive(myGen)) return -2
         // 任务带了明确时间却没设上时，继续查极易落在空列表 / 错日，直接中止
         if (!timeOk && handoff?.orderTimeFrom && handoff?.orderTimeTo) {
           log('下单时间未能按任务设置，已中止自动勾选（请人工设好时间后再点「执行选单」）', 'error')
           return -1
         }
         await clickQuery('应用时间范围')
+        if (!stillActive(myGen)) return -2
         return searchAndSelectOrders({ preferListFirst: true })
       })()
+      if (n === -2 || !stillActive(myGen)) {
+        log('自动化：任务已变更/清除，中止')
+        return
+      }
       if (n < 0) {
         if (handoff?.cloudTaskId) {
           chrome.runtime.sendMessage(
@@ -1417,8 +1481,12 @@
         }
         return
       }
-      log(`订单勾选结果：${n}/${(handoff.orders || []).length}`)
+      log(`订单勾选结果：${n}/${(handoff?.orders || []).length}`)
       await selectTemplate()
+      if (!stillActive(myGen)) {
+        log('自动化：任务已变更/清除，中止')
+        return
+      }
       await clickSelectShip()
 
       if (n <= 0) {
@@ -1439,9 +1507,13 @@
         return
       }
 
-      const doPrint = handoff.autoPrint !== false
+      const doPrint = handoff?.autoPrint !== false
       if (doPrint) {
         const printed = await clickPrintExpress()
+        if (!stillActive(myGen)) {
+          log('自动化：任务已变更/清除，中止（打印后）')
+          return
+        }
         if (!printed) {
           if (handoff?.cloudTaskId) {
             chrome.runtime.sendMessage(
@@ -1459,6 +1531,10 @@
           return
         }
         const shipped = await clickShip()
+        if (!stillActive(myGen)) {
+          log('自动化：任务已变更/清除，中止（发货后）')
+          return
+        }
         if (!shipped) {
           if (handoff?.cloudTaskId) {
             chrome.runtime.sendMessage(
@@ -1496,6 +1572,10 @@
       // 清除本地任务，避免刷新/重进批打页再次执行
       clearFinishedHandoff('已清除已完成任务')
     } catch (e) {
+      if (!stillActive(myGen) && !handoff) {
+        log(`自动化已中止（任务已清除）：${e?.message || e}`)
+        return
+      }
       log(`自动化异常：${e?.message || e}`, 'error')
       if (handoff?.cloudTaskId) {
         chrome.runtime.sendMessage(
@@ -1511,7 +1591,8 @@
         )
       }
     } finally {
-      running = false
+      if (myGen === runGen) running = false
+      else if (!handoff) running = false
       renderPanel()
     }
   }
@@ -1576,8 +1657,10 @@
         if (act === 'run') void runAutomation()
         if (act === 'reload') void loadHandoff(true)
         if (act === 'clear') {
+          bumpRunGen()
           chrome.runtime.sendMessage({ type: 'KDZS_HELPER_CLEAR_HANDOFF' }, () => {
             handoff = null
+            running = false
             lastLog = []
             log('已清除任务')
           })
@@ -1622,7 +1705,9 @@
     }
     lastAutoStartKey = key
     lastAutoStartAt = now
-    void runAutomation()
+    // 同步占坑，避免两个 applyHandoff 在 runAutomation 首行 await 前同时通过
+    running = true
+    void runAutomation({ alreadyLocked: true })
   }
 
   function loadHandoff(manual = false) {
@@ -1678,7 +1763,9 @@
       if (area !== 'local' || !changes.kdzsHandoff) return
       const next = changes.kdzsHandoff.newValue
       if (!next) {
+        bumpRunGen()
         handoff = null
+        running = false
         renderPanel()
         return
       }
