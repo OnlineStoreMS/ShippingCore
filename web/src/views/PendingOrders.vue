@@ -1328,10 +1328,10 @@ async function openKdzsRemotePrint() {
       payload,
     })
     ElMessage.success(
-      `已下发远程打单任务 #${task.id} 到「${device.name}」（WindowsAgent），完成后请回填或同步运单号。`,
+      `已下发远程打单任务 #${task.id} 到「${device.name}」（WindowsAgent）。打印完成后再点「同步单号」回填运单。`,
     )
     confirmKdzsVisible.value = true
-    void syncWaybillsFromKdzs()
+    // 远程打单异步执行，此时立刻查快递助手详情常报「系统订单不存在」；等 Agent 打完再手动同步
   } catch (e) {
     ElMessage.error((e as Error).message || '远程打单下发失败')
   } finally {
@@ -1396,10 +1396,15 @@ async function syncWaybillsFromKdzs() {
     }
     if (filled > 0) {
       ElMessage.success(`已从快递助手同步 ${filled} 笔运单号`)
-      } else {
-      const detail = list.map((r) => r.message).find((m) => !!m)
-      ElMessage.warning(detail || '暂未查到运单号，请确认已在快递助手打印完成后，再点「同步单号」')
-      }
+    } else {
+      const detail = list.map((r) => r.message).find((m) => !!m) || ''
+      // 快递助手详情接口对刚下发/未打完的单常返回「系统订单[xxx]不存在」，勿原样吓人
+      const soft =
+        /系统订单.*不存在/.test(detail)
+          ? '暂未查到运单号（订单可能仍在远程打单中），请稍后再点「同步单号」'
+          : detail || '暂未查到运单号，请确认已在快递助手打印完成后，再点「同步单号」'
+      ElMessage.warning(soft)
+    }
     } catch (e) {
     ElMessage.error((e as Error).message || '同步单号失败')
   } finally {
