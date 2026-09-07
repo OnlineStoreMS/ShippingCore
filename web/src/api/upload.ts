@@ -29,9 +29,17 @@ export async function getPhotoUploadSession(token: string): Promise<PhotoUploadS
   return unwrap<PhotoUploadSession>(res)
 }
 
-/** 手机端免登录查询/上传 */
+/** 手机端免登录查询/上传（同域名 /apps/{name}/ 路径下须带应用前缀） */
+function mobileApiBase(): string {
+  if (typeof window !== 'undefined') {
+    const m = window.location.pathname.match(/^(\/apps\/[^/]+\/)/)
+    if (m) return m[1] + 'api/v1/mobile'
+  }
+  return (import.meta.env.BASE_URL || '/') + 'api/v1/mobile'
+}
+
 const mobileClient = axios.create({
-  baseURL: '/api/v1/mobile',
+  baseURL: mobileApiBase(),
   timeout: 60000,
 })
 
