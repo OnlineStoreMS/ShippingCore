@@ -18,6 +18,12 @@ const router = createRouter({
       meta: { public: true },
     },
     {
+      path: '/m/photo-upload',
+      name: 'MobilePhotoUpload',
+      component: () => import('../views/MobilePhotoUpload.vue'),
+      meta: { public: true },
+    },
+    {
       path: '/',
       component: AdminLayout,
       redirect: '/pending',

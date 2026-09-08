@@ -16,15 +16,22 @@ import (
 )
 
 const (
-	photoSessionTTL   = 10 * time.Minute
-	photoSessionClean = 2 * time.Minute
+	photoSessionTTL       = 10 * time.Minute
+	photoSessionClean     = 2 * time.Minute
+	maxPhotoSessionItems  = 20
+	photoSessionKeepAlive = 2 * time.Minute
 )
+
+type photoItem struct {
+	URL string `json:"url"`
+}
 
 type photoSession struct {
 	Token    string
 	Subdir   string
 	TenantID uint64
 	URL      string
+	Items    []photoItem
 	Status   string // pending | done
 	ExpireAt time.Time
 }
@@ -71,7 +78,24 @@ func (h *PhotoUploadHandler) get(token string) (*photoSession, bool) {
 		return nil, false
 	}
 	cp := *s
+	if s.Items != nil {
+		cp.Items = append([]photoItem(nil), s.Items...)
+	}
 	return &cp, true
+}
+
+func photoSessionPayload(s *photoSession) gin.H {
+	items := s.Items
+	if items == nil {
+		items = []photoItem{}
+	}
+	return gin.H{
+		"token":    s.Token,
+		"status":   s.Status,
+		"url":      s.URL,
+		"items":    items,
+		"expireAt": s.ExpireAt.UTC().Format(time.RFC3339),
+	}
 }
 
 func (h *PhotoUploadHandler) CreateSession(c *gin.Context) {
@@ -94,11 +118,7 @@ func (h *PhotoUploadHandler) CreateSession(c *gin.Context) {
 	h.mu.Lock()
 	h.sessions[token] = s
 	h.mu.Unlock()
-	response.OK(c, gin.H{
-		"token":    token,
-		"expireAt": s.ExpireAt.UTC().Format(time.RFC3339),
-		"status":   s.Status,
-	})
+	response.OK(c, photoSessionPayload(s))
 }
 
 func (h *PhotoUploadHandler) GetSession(c *gin.Context) {
@@ -108,12 +128,7 @@ func (h *PhotoUploadHandler) GetSession(c *gin.Context) {
 		response.Fail(c, http.StatusNotFound, "扫码会话已过期或不存在")
 		return
 	}
-	response.OK(c, gin.H{
-		"token":    s.Token,
-		"status":   s.Status,
-		"url":      s.URL,
-		"expireAt": s.ExpireAt.UTC().Format(time.RFC3339),
-	})
+	response.OK(c, photoSessionPayload(s))
 }
 
 func (h *PhotoUploadHandler) MobileGet(c *gin.Context) {
@@ -132,9 +147,15 @@ func (h *PhotoUploadHandler) MobileUpload(c *gin.Context) {
 		response.Fail(c, http.StatusNotFound, "扫码会话已过期或不存在")
 		return
 	}
-	if s.Status == "done" && s.URL != "" {
+	if s.Status == "done" && len(s.Items) > 0 {
+		payload := photoSessionPayload(s)
 		h.mu.Unlock()
-		response.OK(c, gin.H{"url": s.URL, "status": "done"})
+		response.OK(c, payload)
+		return
+	}
+	if len(s.Items) >= maxPhotoSessionItems {
+		h.mu.Unlock()
+		response.Fail(c, http.StatusBadRequest, "本批次最多上传 20 张图片")
 		return
 	}
 	subdir := s.Subdir
@@ -151,7 +172,7 @@ func (h *PhotoUploadHandler) MobileUpload(c *gin.Context) {
 	}
 	ext := strings.ToLower(filepath.Ext(file.Filename))
 	switch ext {
-	case ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp":
+	case ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".heic":
 	default:
 		ct := file.Header.Get("Content-Type")
 		if !strings.HasPrefix(ct, "image/") {
@@ -166,13 +187,34 @@ func (h *PhotoUploadHandler) MobileUpload(c *gin.Context) {
 		return
 	}
 
+	final := strings.TrimSpace(c.PostForm("final")) == "1" || strings.TrimSpace(c.Query("final")) == "1"
+
 	h.mu.Lock()
-	if cur, ok := h.sessions[token]; ok && time.Now().Before(cur.ExpireAt) {
-		cur.URL = url
-		cur.Status = "done"
-		cur.ExpireAt = time.Now().Add(2 * time.Minute)
+	cur, ok := h.sessions[token]
+	if !ok || time.Now().After(cur.ExpireAt) {
+		h.mu.Unlock()
+		response.Fail(c, http.StatusNotFound, "扫码会话已过期或不存在")
+		return
 	}
+	if cur.Status == "done" {
+		payload := photoSessionPayload(cur)
+		h.mu.Unlock()
+		response.OK(c, payload)
+		return
+	}
+	cur.Items = append(cur.Items, photoItem{URL: url})
+	cur.URL = url
+	if final || len(cur.Items) >= maxPhotoSessionItems {
+		cur.Status = "done"
+		cur.ExpireAt = time.Now().Add(photoSessionKeepAlive)
+	} else {
+		remain := time.Until(cur.ExpireAt)
+		if remain < 3*time.Minute {
+			cur.ExpireAt = time.Now().Add(photoSessionTTL)
+		}
+	}
+	payload := photoSessionPayload(cur)
 	h.mu.Unlock()
 
-	response.OK(c, gin.H{"url": url, "status": "done"})
+	response.OK(c, payload)
 }

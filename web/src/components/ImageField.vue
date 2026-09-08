@@ -88,11 +88,12 @@ async function openScan() {
     pollTimer = setInterval(async () => {
       try {
         const s = await getPhotoUploadSession(scanToken.value)
-        if (s.status === 'done' && s.url) {
-          url.value = s.url
+        const items = s.items?.length ? s.items : s.url ? [{ url: s.url }] : []
+        if (s.status === 'done' && items.length) {
+          url.value = items[0].url
           scanStatus.value = 'done'
           stopPoll()
-          ElMessage.success('实拍图已上传')
+          ElMessage.success(items.length > 1 ? `已取第 1 张（共 ${items.length} 张）` : '实拍图已上传')
           setTimeout(() => { scanVisible.value = false }, 600)
         }
       } catch {
