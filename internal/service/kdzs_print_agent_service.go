@@ -324,8 +324,9 @@ func (s *KdzsPrintAgentService) UnbindDevice(id uint64) error {
 }
 
 type CreatePrintTaskInput struct {
-	DeviceID uint64          `json:"deviceId"`
-	Payload  json.RawMessage `json:"payload"`
+	DeviceID    uint64          `json:"deviceId"`
+	AccountCode string          `json:"accountCode,omitempty"` // 可选；空则用当前活跃快递助手账号
+	Payload     json.RawMessage `json:"payload"`
 }
 
 type KdzsPrintTaskDTO struct {
@@ -359,6 +360,68 @@ func toTaskDTO(t model.KdzsPrintTask) KdzsPrintTaskDTO {
 	return out
 }
 
+// toPublicTaskDTO 给管理端/手机端：去掉密码字段，避免泄露。
+func toPublicTaskDTO(t model.KdzsPrintTask) KdzsPrintTaskDTO {
+	dto := toTaskDTO(t)
+	dto.Payload = redactPrintPayload(t.Payload)
+	return dto
+}
+
+func redactPrintPayload(raw string) json.RawMessage {
+	var m map[string]any
+	if err := json.Unmarshal([]byte(raw), &m); err != nil || m == nil {
+		return json.RawMessage(raw)
+	}
+	if _, ok := m["kdzsPassword"]; ok {
+		m["kdzsPasswordSet"] = true
+		delete(m, "kdzsPassword")
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return json.RawMessage(raw)
+	}
+	return b
+}
+
+func (s *KdzsPrintAgentService) resolvePrintLogin(accountCode string) (mobile, password, code, name string, err error) {
+	code = strings.TrimSpace(accountCode)
+	if code == "" {
+		var st model.KdzsSetting
+		if e := s.db().Where("tenant_id = ?", s.tenantID).First(&st).Error; e == nil {
+			code = strings.TrimSpace(st.ActiveAccountCode)
+			if code == "" {
+				code = strings.TrimSpace(st.DefaultAccountCode)
+			}
+		}
+	}
+	if code == "" {
+		var first model.KdzsAccount
+		if e := s.db().Where("enabled = true").Order("sort_order ASC, id ASC").First(&first).Error; e == nil {
+			code = first.Code
+		}
+	}
+	if code == "" {
+		return "", "", "", "", fmt.Errorf("%w: 请先在发货中心配置快递助手账号", ErrBadRequest)
+	}
+	var rec model.KdzsAccount
+	if e := s.db().Where("code = ? AND enabled = true", code).First(&rec).Error; e != nil {
+		if errors.Is(e, gorm.ErrRecordNotFound) {
+			return "", "", "", "", fmt.Errorf("%w: 快递助手账号不存在或未启用", ErrBadRequest)
+		}
+		return "", "", "", "", e
+	}
+	mobile = strings.TrimSpace(rec.Mobile)
+	password = rec.Password
+	if mobile == "" || password == "" {
+		return "", "", "", "", fmt.Errorf("%w: 快递助手账号「%s」缺少手机号或密码", ErrBadRequest, code)
+	}
+	name = strings.TrimSpace(rec.Name)
+	if name == "" {
+		name = mobile
+	}
+	return mobile, password, rec.Code, name, nil
+}
+
 func (s *KdzsPrintAgentService) CreateTask(userID uint64, in *CreatePrintTaskInput) (*KdzsPrintTaskDTO, error) {
 	if in == nil || in.DeviceID == 0 || len(in.Payload) == 0 {
 		return nil, ErrBadRequest
@@ -367,6 +430,20 @@ func (s *KdzsPrintAgentService) CreateTask(userID uint64, in *CreatePrintTaskInp
 	if err := json.Unmarshal(in.Payload, &probe); err != nil {
 		return nil, fmt.Errorf("%w: payload 须为 JSON 对象", ErrBadRequest)
 	}
+	mobile, password, code, name, err := s.resolvePrintLogin(in.AccountCode)
+	if err != nil {
+		return nil, err
+	}
+	// 由发货中心注入登录态；不依赖 WindowsAgent 本地手填账号。
+	probe["kdzsMobile"] = mobile
+	probe["kdzsPassword"] = password
+	probe["kdzsAccountCode"] = code
+	probe["kdzsAccountName"] = name
+	enriched, err := json.Marshal(probe)
+	if err != nil {
+		return nil, err
+	}
+
 	var d model.KdzsPrintDevice
 	if err := s.db().Where("id = ? AND enabled = true", in.DeviceID).First(&d).Error; err != nil {
 		return nil, ErrDeviceNotFound
@@ -378,13 +455,13 @@ func (s *KdzsPrintAgentService) CreateTask(userID uint64, in *CreatePrintTaskInp
 		TenantID:  s.tenantID,
 		DeviceID:  d.ID,
 		Status:    model.KdzsPrintTaskPending,
-		Payload:   string(in.Payload),
+		Payload:   string(enriched),
 		CreatedBy: userID,
 	}
 	if err := s.repos.DB.Create(&task).Error; err != nil {
 		return nil, err
 	}
-	dto := toTaskDTO(task)
+	dto := toPublicTaskDTO(task)
 	return &dto, nil
 }
 
@@ -398,7 +475,7 @@ func (s *KdzsPrintAgentService) ListRecentTasks(limit int) ([]KdzsPrintTaskDTO, 
 	}
 	out := make([]KdzsPrintTaskDTO, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, toTaskDTO(r))
+		out = append(out, toPublicTaskDTO(r))
 	}
 	return out, nil
 }
