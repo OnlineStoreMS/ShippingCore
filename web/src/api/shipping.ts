@@ -344,7 +344,7 @@ export interface ExpressTemplate {
   syncedAt: string
 }
 
-/** 快递助手远程打单电脑（手机版扩展配对） */
+/** 快递助手远程打单电脑（Agent 令牌自助注册） */
 export interface KdzsPrintDevice {
   id: number
   deviceKey: string
@@ -660,7 +660,7 @@ export const shippingApi = {
     client
       .post('/kdzs/helper-handoff-sessions', { payload })
       .then((r) => unwrap<{ token: string; expireAt: string }>(r)),
-  /** 已绑定的快递助手远程打单电脑（手机扩展配对） */
+  /** 已注册的快递助手远程打单电脑 */
   listKdzsPrintDevices: () =>
     client.get('/kdzs-print/devices').then((r) =>
       unwrap<{ list: KdzsPrintDevice[]; total: number }>(r),

@@ -27,12 +27,14 @@ func (h *KdzsPrintAgentHandler) adminSvc(c *gin.Context) *service.KdzsPrintAgent
 
 func writePrintAgentErr(c *gin.Context, err error) {
 	switch {
-	case errors.Is(err, service.ErrPairCodeInvalid):
-		response.Fail(c, http.StatusBadRequest, err.Error())
+	case errors.Is(err, service.ErrEnrollTokenInvalid):
+		response.Fail(c, http.StatusUnauthorized, err.Error())
 	case errors.Is(err, service.ErrDeviceAuth):
 		response.Fail(c, http.StatusUnauthorized, err.Error())
 	case errors.Is(err, service.ErrDeviceOffline):
 		response.Fail(c, http.StatusConflict, err.Error())
+	case errors.Is(err, service.ErrAgentsUnavailable):
+		response.Fail(c, http.StatusBadGateway, err.Error())
 	case errors.Is(err, service.ErrDeviceNotFound), errors.Is(err, service.ErrNotFound):
 		response.Fail(c, http.StatusNotFound, err.Error())
 	case errors.Is(err, service.ErrNoTask):
@@ -61,13 +63,14 @@ func deviceCreds(c *gin.Context) (key, secret string) {
 	return key, secret
 }
 
-// CreatePairOffer POST /mobile/kdzs-print/pair-sessions （扩展用，无需登录）
-func (h *KdzsPrintAgentHandler) CreatePairOffer(c *gin.Context) {
-	var body struct {
-		DeviceName string `json:"deviceName"`
+// RegisterMachine POST /mobile/kdzs-print/register
+func (h *KdzsPrintAgentHandler) RegisterMachine(c *gin.Context) {
+	var in service.RegisterPrintMachineInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		response.Fail(c, http.StatusBadRequest, "invalid body")
+		return
 	}
-	_ = c.ShouldBindJSON(&body)
-	res, err := h.svc.CreatePairOffer(body.DeviceName)
+	res, err := h.svc.RegisterMachine(&in)
 	if err != nil {
 		writePrintAgentErr(c, err)
 		return
@@ -75,21 +78,24 @@ func (h *KdzsPrintAgentHandler) CreatePairOffer(c *gin.Context) {
 	response.OK(c, res)
 }
 
-// ClaimPair POST /admin/kdzs-print/pair-claim （手机登录后输入电脑配对码）
-func (h *KdzsPrintAgentHandler) ClaimPair(c *gin.Context) {
-	var body struct {
-		PairCode string `json:"pairCode"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		response.Fail(c, http.StatusBadRequest, "invalid body")
-		return
-	}
-	dto, err := h.adminSvc(c).ClaimPair(authcontext.UserID(c), body.PairCode)
+// GetEnrollToken GET /admin/kdzs-print/enroll-token
+func (h *KdzsPrintAgentHandler) GetEnrollToken(c *gin.Context) {
+	tok, err := h.adminSvc(c).EnsurePrintEnrollToken()
 	if err != nil {
 		writePrintAgentErr(c, err)
 		return
 	}
-	response.OK(c, dto)
+	response.OK(c, gin.H{"enrollToken": tok})
+}
+
+// RotateEnrollToken POST /admin/kdzs-print/enroll-token/rotate
+func (h *KdzsPrintAgentHandler) RotateEnrollToken(c *gin.Context) {
+	tok, err := h.adminSvc(c).RotatePrintEnrollToken()
+	if err != nil {
+		writePrintAgentErr(c, err)
+		return
+	}
+	response.OK(c, gin.H{"enrollToken": tok})
 }
 
 // ListDevices GET /admin/kdzs-print/devices
@@ -155,11 +161,6 @@ func (h *KdzsPrintAgentHandler) ListTasks(c *gin.Context) {
 	response.OK(c, gin.H{"list": list, "total": len(list)})
 }
 
-// CompletePair 已废弃：配对改为电脑出码、手机认领。
-func (h *KdzsPrintAgentHandler) CompletePair(c *gin.Context) {
-	response.Fail(c, http.StatusGone, "请升级扩展：由电脑生成配对码，手机输入绑定")
-}
-
 // Heartbeat POST /mobile/kdzs-print/heartbeat
 func (h *KdzsPrintAgentHandler) Heartbeat(c *gin.Context) {
 	key, secret := deviceCreds(c)
@@ -176,10 +177,6 @@ func (h *KdzsPrintAgentHandler) ClaimTask(c *gin.Context) {
 	key, secret := deviceCreds(c)
 	dto, err := h.svc.ClaimNext(key, secret)
 	if err != nil {
-		if errors.Is(err, service.ErrNoTask) {
-			response.OK(c, gin.H{"task": nil})
-			return
-		}
 		writePrintAgentErr(c, err)
 		return
 	}
@@ -189,12 +186,9 @@ func (h *KdzsPrintAgentHandler) ClaimTask(c *gin.Context) {
 // ReportTask POST /mobile/kdzs-print/tasks/:id/report
 func (h *KdzsPrintAgentHandler) ReportTask(c *gin.Context) {
 	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
-	var in service.ReportTaskInput
-	if err := c.ShouldBindJSON(&in); err != nil {
-		response.Fail(c, http.StatusBadRequest, "invalid body")
-		return
-	}
 	key, secret := deviceCreds(c)
+	var in service.ReportTaskInput
+	_ = c.ShouldBindJSON(&in)
 	dto, err := h.svc.ReportTask(key, secret, id, &in)
 	if err != nil {
 		writePrintAgentErr(c, err)

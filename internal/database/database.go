@@ -49,12 +49,13 @@ func AutoMigrate(db *gorm.DB) error {
 		&model.KdzsAccount{},
 		&model.KdzsSetting{},
 		&model.ShipPlanLine{},
-		&model.KdzsPrintPairSession{},
 		&model.KdzsPrintDevice{},
 		&model.KdzsPrintTask{},
 	); err != nil {
 		return err
 	}
+	// 废弃配对表：存在则删掉，彻底告别历史绑定模型。
+	_ = db.Exec(`DROP TABLE IF EXISTS kdzs_print_pair_sessions`).Error
 	return ensureIndexes(db)
 }
 

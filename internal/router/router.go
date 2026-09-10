@@ -4,6 +4,7 @@ import (
 	"shippingcore/admin"
 	adminmw "shippingcore/admin/middleware"
 	"shippingcore/internal/config"
+	"shippingcore/internal/integrations/agentscenter"
 	"shippingcore/internal/integrations/ordercore"
 	"shippingcore/internal/integrations/storesyncagent"
 	jwtmgr "shippingcore/internal/pkg/jwt"
@@ -42,7 +43,10 @@ func Setup(db *gorm.DB, cfg *config.Config) *gin.Engine {
 	uploadH := admin.NewUploadHandler(store)
 	photoH := admin.NewPhotoUploadHandler(store)
 	kdzsHandoffH := admin.NewKdzsHelperHandoffHandler()
-	kdzsPrintAgentSvc := service.NewKdzsPrintAgentService(repos)
+	kdzsPrintAgentSvc := service.NewKdzsPrintAgentService(repos, agentscenter.NewClient(
+		cfg.Integrations.AgentsCenterAPIURL,
+		cfg.Integrations.AgentsCenterToken,
+	))
 	kdzsPrintAgentH := admin.NewKdzsPrintAgentHandler(kdzsPrintAgentSvc)
 
 	r.GET("/health", func(c *gin.Context) {
@@ -59,7 +63,8 @@ func Setup(db *gorm.DB, cfg *config.Config) *gin.Engine {
 	adminGroup.GET("/photo-upload-sessions/:token", photoH.GetSession)
 	adminGroup.POST("/kdzs/helper-handoff-sessions", kdzsHandoffH.CreateSession)
 
-	adminGroup.POST("/kdzs-print/pair-claim", kdzsPrintAgentH.ClaimPair)
+	adminGroup.GET("/kdzs-print/enroll-token", kdzsPrintAgentH.GetEnrollToken)
+	adminGroup.POST("/kdzs-print/enroll-token/rotate", kdzsPrintAgentH.RotateEnrollToken)
 	adminGroup.GET("/kdzs-print/devices", kdzsPrintAgentH.ListDevices)
 	adminGroup.PUT("/kdzs-print/devices/:id", kdzsPrintAgentH.RenameDevice)
 	adminGroup.DELETE("/kdzs-print/devices/:id", kdzsPrintAgentH.UnbindDevice)
@@ -70,8 +75,7 @@ func Setup(db *gorm.DB, cfg *config.Config) *gin.Engine {
 	mobile.GET("/photo-upload/:token", photoH.MobileGet)
 	mobile.POST("/photo-upload/:token", photoH.MobileUpload)
 	mobile.GET("/kdzs-helper-handoff/:token", kdzsHandoffH.MobileGet)
-	mobile.POST("/kdzs-print/pair-sessions", kdzsPrintAgentH.CreatePairOffer)
-	mobile.POST("/kdzs-print/pair", kdzsPrintAgentH.CompletePair) // 旧扩展兼容提示
+	mobile.POST("/kdzs-print/register", kdzsPrintAgentH.RegisterMachine)
 	mobile.POST("/kdzs-print/heartbeat", kdzsPrintAgentH.Heartbeat)
 	mobile.POST("/kdzs-print/tasks/claim", kdzsPrintAgentH.ClaimTask)
 	mobile.POST("/kdzs-print/tasks/:id/report", kdzsPrintAgentH.ReportTask)

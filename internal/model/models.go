@@ -234,9 +234,11 @@ type KdzsSetting struct {
 	DefaultAccountCode string     `gorm:"size:64" json:"defaultAccountCode"`
 	ActiveAccountCode  string     `gorm:"size:64" json:"activeAccountCode"`
 	AutoSyncFromSSA    bool       `gorm:"not null;default:true" json:"autoSyncFromSSA"`
-	LastSyncedAt       *time.Time `json:"lastSyncedAt,omitempty"`
-	CreatedAt          time.Time  `json:"createdAt"`
-	UpdatedAt          time.Time  `json:"updatedAt"`
+	// PrintEnrollToken WA 注册打单机用；本租户唯一，无需手机配对。
+	PrintEnrollToken string     `gorm:"size:64;index" json:"printEnrollToken"`
+	LastSyncedAt     *time.Time `json:"lastSyncedAt,omitempty"`
+	CreatedAt        time.Time  `json:"createdAt"`
+	UpdatedAt        time.Time  `json:"updatedAt"`
 }
 
 func (KdzsSetting) TableName() string { return "kdzs_settings" }
@@ -290,27 +292,12 @@ const (
 	KdzsPrintTaskCancelled = "cancelled"
 )
 
-// KdzsPrintPairSession 电脑扩展发起的配对会话（手机输入配对码认领）。
-// 未认领前 TenantID/UserID 为 0；认领后写入手机账号并标记 Consumed。
-type KdzsPrintPairSession struct {
-	ID        uint64    `gorm:"primaryKey" json:"id"`
-	TenantID  uint64    `gorm:"index;not null;default:0" json:"tenantId"`
-	UserID    uint64    `gorm:"index;not null;default:0" json:"userId"`
-	PairCode  string    `gorm:"size:16;uniqueIndex;not null" json:"pairCode"`
-	ExpireAt  time.Time `gorm:"index;not null" json:"expireAt"`
-	Consumed  bool      `gorm:"default:false" json:"consumed"`
-	DeviceID  *uint64   `gorm:"index" json:"deviceId,omitempty"`
-	CreatedAt time.Time `json:"createdAt"`
-}
-
-func (KdzsPrintPairSession) TableName() string { return "kdzs_print_pair_sessions" }
-
-// KdzsPrintDevice 已绑定的快递助手浏览器扩展实例。
-// 配对码生成时先落库（TenantID=0 表示待认领）；手机认领后写入真实租户。
+// KdzsPrintDevice 已向发货中心注册的 WindowsAgent 打单机（心跳保活，无配对绑定）。
 type KdzsPrintDevice struct {
 	ID         uint64     `gorm:"primaryKey" json:"id"`
-	TenantID   uint64     `gorm:"index;not null;default:0" json:"tenantId"`
+	TenantID   uint64     `gorm:"uniqueIndex:idx_kdzs_print_tenant_machine,priority:1;not null" json:"tenantId"`
 	UserID     uint64     `gorm:"index;not null;default:0" json:"userId"`
+	MachineID  string     `gorm:"size:128;uniqueIndex:idx_kdzs_print_tenant_machine,priority:2;not null;default:''" json:"machineId"`
 	DeviceKey  string     `gorm:"size:64;uniqueIndex;not null" json:"deviceKey"`
 	SecretHash string     `gorm:"size:128;not null" json:"-"`
 	Name       string     `gorm:"size:128;not null" json:"name"`
@@ -322,7 +309,7 @@ type KdzsPrintDevice struct {
 
 func (KdzsPrintDevice) TableName() string { return "kdzs_print_devices" }
 
-// KdzsPrintTask 远程打单任务（手机下发，扩展领取执行）。
+// KdzsPrintTask 远程打单任务（发货中心下发，Agent 领取执行）。
 type KdzsPrintTask struct {
 	ID           uint64     `gorm:"primaryKey" json:"id"`
 	TenantID     uint64     `gorm:"index;not null" json:"tenantId"`

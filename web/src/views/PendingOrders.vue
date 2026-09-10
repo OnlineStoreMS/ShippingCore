@@ -42,7 +42,7 @@ type LabelTemplateOpt = {
 
 /** 顶层：快递助手 | 自建物流 */
 type PrintMode = 'kdzs' | 'sf'
-/** 快递助手：本机打开助手 | 下发到已配对电脑自动打 */
+/** 快递助手：本机打开助手 | 下发到在线电脑自动打 */
 type KdzsChannel = 'local' | 'remote'
 /** 自建物流 + 顺丰账号时的子方式 */
 type SFShipAction = 'standard' | 'quick'
@@ -600,6 +600,29 @@ const selectedTemplate = computed(() =>
 const selectedKdzsDevice = computed(
   () => kdzsDevices.value.find((d) => d.id === kdzsRemoteDeviceId.value) || null,
 )
+
+const kdzsDevicesSorted = computed(() =>
+  [...kdzsDevices.value].sort((a, b) => Number(b.online) - Number(a.online) || b.id - a.id),
+)
+
+function kdzsDeviceOptionLabel(d: KdzsPrintDevice) {
+  const state = d.online ? '在线' : '离线'
+  if (!d.lastSeenAt) return `${d.name}（${state}）`
+  const t = new Date(d.lastSeenAt)
+  if (Number.isNaN(t.getTime())) return `${d.name}（${state}）`
+  const mm = String(t.getMonth() + 1).padStart(2, '0')
+  const dd = String(t.getDate()).padStart(2, '0')
+  const hh = String(t.getHours()).padStart(2, '0')
+  const mi = String(t.getMinutes()).padStart(2, '0')
+  return `${d.name}（${state} · ${mm}-${dd} ${hh}:${mi}）`
+}
+
+function formatKdzsHeartbeat(iso?: string) {
+  if (!iso) return ''
+  const t = new Date(iso)
+  if (Number.isNaN(t.getTime())) return iso
+  return t.toLocaleString('zh-CN', { hour12: false })
+}
 
 const isBatchShip = computed(() => shipTargets.value.length > 1)
 
@@ -1265,7 +1288,7 @@ async function openKdzsBatchPrint() {
   }
 }
 
-/** 下发到已配对电脑，由该机 WindowsAgent 自动勾选并打印 */
+/** 下发到在线电脑，由该机 WindowsAgent 自动勾选并打印 */
 async function openKdzsRemotePrint() {
   const order = shipTargets.value[0]
   if (!order) return
@@ -1803,23 +1826,30 @@ onMounted(async () => {
               <el-form-item label="打单电脑" required>
                 <el-select
                   v-model="kdzsRemoteDeviceId"
-                  placeholder="选择已绑定的 WindowsAgent"
+                  placeholder="选择在线的 WindowsAgent"
                   style="width: 100%"
                   @change="onKdzsRemoteDeviceChange"
                 >
                   <el-option
-                    v-for="d in kdzsDevices"
+                    v-for="d in kdzsDevicesSorted"
                     :key="d.id"
-                    :label="`${d.name}${d.online ? '（在线）' : '（离线）'}`"
+                    :label="kdzsDeviceOptionLabel(d)"
                     :value="d.id"
+                    :disabled="!d.online"
                   />
                 </el-select>
                 <div v-if="!kdzsDevices.length" class="muted kdzs-remote-hint">
-                  暂无已绑定电脑，请先在手机「快递助手远程打单」页用 Agent 配对码绑定。
+                  暂无在线 Agent。请在打单电脑运行 WindowsAgent 并配置 Agents 中心地址；连上后自动出现在此列表。
+                </div>
+                <div v-else-if="!kdzsDevices.some((d) => d.online)" class="muted kdzs-remote-hint">
+                  已有机器均离线。请确认对应电脑上的 WindowsAgent 已启动并连上 Agents（约每 20 秒心跳）。
                 </div>
                 <div v-else-if="selectedKdzsDevice" class="muted kdzs-remote-hint">
-                  {{ selectedKdzsDevice.deviceKey }}
+                  {{ selectedKdzsDevice.name }}
                   · {{ selectedKdzsDevice.online ? '在线' : '离线' }}
+                  <template v-if="selectedKdzsDevice.lastSeenAt">
+                    · 心跳 {{ formatKdzsHeartbeat(selectedKdzsDevice.lastSeenAt) }}
+                  </template>
                 </div>
               </el-form-item>
               <el-form-item label="打印机" required>

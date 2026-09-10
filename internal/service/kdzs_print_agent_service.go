@@ -7,10 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/big"
 	"strings"
 	"time"
 
+	"shippingcore/internal/integrations/agentscenter"
 	"shippingcore/internal/model"
 	"shippingcore/internal/repo"
 
@@ -19,25 +19,28 @@ import (
 )
 
 const (
-	kdzsPairTTL          = 10 * time.Minute
-	kdzsDeviceOnlineSkew = 45 * time.Second
+	kdzsDeviceOnlineSkew = 90 * time.Second // WA 心跳约 12s；略放宽避免抖动标离线
+	kdzsDeviceStaleAfter = 3 * 24 * time.Hour
+	kdzsPrintSkillID     = "kdzs.remote.print"
 )
 
 var (
-	ErrPairCodeInvalid = errors.New("配对码无效或已过期")
-	ErrDeviceAuth      = errors.New("设备鉴权失败")
-	ErrDeviceOffline   = errors.New("打单插件不在线")
-	ErrDeviceNotFound  = errors.New("设备不存在")
-	ErrNoTask          = errors.New("暂无待领任务")
+	ErrEnrollTokenInvalid = errors.New("注册令牌无效")
+	ErrDeviceAuth         = errors.New("设备鉴权失败")
+	ErrDeviceOffline      = errors.New("打单电脑不在线")
+	ErrDeviceNotFound     = errors.New("设备不存在")
+	ErrNoTask             = errors.New("暂无待领任务")
+	ErrAgentsUnavailable  = errors.New("Agents 中心不可用")
 )
 
 type KdzsPrintAgentService struct {
 	repos    *repo.Repos
+	agents   *agentscenter.Client
 	tenantID uint64
 }
 
-func NewKdzsPrintAgentService(repos *repo.Repos) *KdzsPrintAgentService {
-	return &KdzsPrintAgentService{repos: repos}
+func NewKdzsPrintAgentService(repos *repo.Repos, agents *agentscenter.Client) *KdzsPrintAgentService {
+	return &KdzsPrintAgentService{repos: repos, agents: agents}
 }
 
 func (s *KdzsPrintAgentService) ForTenant(tenantID uint64) *KdzsPrintAgentService {
@@ -63,20 +66,12 @@ func randomHex(n int) (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-func randomPairCode() (string, error) {
-	n, err := rand.Int(rand.Reader, big.NewInt(1000000))
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("%06d", n.Int64()), nil
-}
-
 type KdzsPrintDeviceDTO struct {
 	ID         uint64  `json:"id"`
+	MachineID  string  `json:"machineId"`
 	DeviceKey  string  `json:"deviceKey"`
 	Name       string  `json:"name"`
 	Online     bool    `json:"online"`
-	Claimed    bool    `json:"claimed"` // TenantID>0 表示已被手机认领
 	LastSeenAt *string `json:"lastSeenAt,omitempty"`
 	Enabled    bool    `json:"enabled"`
 	CreatedAt  string  `json:"createdAt"`
@@ -92,10 +87,10 @@ func deviceOnline(last *time.Time) bool {
 func toDeviceDTO(d model.KdzsPrintDevice) KdzsPrintDeviceDTO {
 	out := KdzsPrintDeviceDTO{
 		ID:        d.ID,
+		MachineID: d.MachineID,
 		DeviceKey: d.DeviceKey,
 		Name:      d.Name,
 		Online:    deviceOnline(d.LastSeenAt),
-		Claimed:   d.TenantID > 0,
 		Enabled:   d.Enabled,
 		CreatedAt: d.CreatedAt.Format(time.RFC3339),
 	}
@@ -106,25 +101,48 @@ func toDeviceDTO(d model.KdzsPrintDevice) KdzsPrintDeviceDTO {
 	return out
 }
 
-type CreatePairOfferResult struct {
-	PairCode     string `json:"pairCode"`
-	ExpireAt     string `json:"expireAt"`
+type RegisterPrintMachineInput struct {
+	EnrollToken string `json:"enrollToken"`
+	MachineID   string `json:"machineId"`
+	Name        string `json:"name"`
+}
+
+type RegisterPrintMachineResult struct {
 	DeviceID     uint64 `json:"deviceId"`
 	DeviceKey    string `json:"deviceKey"`
 	DeviceSecret string `json:"deviceSecret"`
+	MachineID    string `json:"machineId"`
 	Name         string `json:"name"`
+	TenantID     uint64 `json:"tenantId"`
 }
 
-// CreatePairOffer 打单端（WindowsAgent / 旧版浏览器扩展）生成配对码：先创建设备凭证（待认领），手机再输入码认领。
-func (s *KdzsPrintAgentService) CreatePairOffer(deviceName string) (*CreatePairOfferResult, error) {
-	name := strings.TrimSpace(deviceName)
+// RegisterMachine WA 用租户注册令牌自助登记打单机；同 machineId 重复注册则轮换密钥并上线。
+func (s *KdzsPrintAgentService) RegisterMachine(in *RegisterPrintMachineInput) (*RegisterPrintMachineResult, error) {
+	if in == nil {
+		return nil, ErrBadRequest
+	}
+	token := strings.TrimSpace(in.EnrollToken)
+	machineID := strings.TrimSpace(in.MachineID)
+	name := strings.TrimSpace(in.Name)
+	if token == "" || machineID == "" {
+		return nil, fmt.Errorf("%w: enrollToken/machineId 必填", ErrBadRequest)
+	}
 	if name == "" {
-		name = "打单电脑"
+		name = machineID
 	}
 	if len(name) > 64 {
 		name = name[:64]
 	}
-	expireAt := time.Now().Add(kdzsPairTTL)
+	if len(machineID) > 128 {
+		machineID = machineID[:128]
+	}
+
+	var st model.KdzsSetting
+	if err := s.repos.DB.Where("print_enroll_token = ?", token).First(&st).Error; err != nil {
+		return nil, ErrEnrollTokenInvalid
+	}
+	tenantID := st.TenantID
+
 	deviceKey, err := randomHex(16)
 	if err != nil {
 		return nil, err
@@ -135,109 +153,115 @@ func (s *KdzsPrintAgentService) CreatePairOffer(deviceName string) (*CreatePairO
 	}
 	now := time.Now()
 
-	var code string
 	var dev model.KdzsPrintDevice
-	for i := 0; i < 8; i++ {
-		code, err = randomPairCode()
-		if err != nil {
-			return nil, err
+	err = s.repos.DB.Transaction(func(tx *gorm.DB) error {
+		q := tx.Where("tenant_id = ? AND machine_id = ?", tenantID, machineID).First(&dev)
+		if q.Error == nil {
+			return tx.Model(&dev).Updates(map[string]any{
+				"device_key":   deviceKey,
+				"secret_hash": hashSecret(secret),
+				"name":        name,
+				"enabled":     true,
+				"last_seen_at": now,
+			}).Error
 		}
-		err = s.repos.DB.Transaction(func(tx *gorm.DB) error {
-			dev = model.KdzsPrintDevice{
-				TenantID:   0,
-				UserID:     0,
-				DeviceKey:  deviceKey,
-				SecretHash: hashSecret(secret),
-				Name:       name,
-				LastSeenAt: &now,
-				Enabled:    true,
-			}
-			if err := tx.Create(&dev).Error; err != nil {
-				return err
-			}
-			did := dev.ID
-			sess := model.KdzsPrintPairSession{
-				TenantID: 0,
-				UserID:   0,
-				PairCode: code,
-				ExpireAt: expireAt,
-				DeviceID: &did,
-			}
-			return tx.Create(&sess).Error
-		})
-		if err == nil {
-			return &CreatePairOfferResult{
-				PairCode:     code,
-				ExpireAt:     expireAt.UTC().Format(time.RFC3339),
-				DeviceID:     dev.ID,
-				DeviceKey:    deviceKey,
-				DeviceSecret: secret,
-				Name:         name,
-			}, nil
+		if !errors.Is(q.Error, gorm.ErrRecordNotFound) {
+			return q.Error
 		}
-		// pair_code 唯一冲突则换码重试；其它错误直接返回
-		if !strings.Contains(strings.ToLower(err.Error()), "duplicate") &&
-			!strings.Contains(err.Error(), "unique") {
-			return nil, err
+		dev = model.KdzsPrintDevice{
+			TenantID:   tenantID,
+			MachineID:  machineID,
+			DeviceKey:  deviceKey,
+			SecretHash: hashSecret(secret),
+			Name:       name,
+			LastSeenAt: &now,
+			Enabled:    true,
 		}
-	}
-	return nil, fmt.Errorf("生成配对码失败，请重试")
-}
-
-// ClaimPair 手机输入电脑显示的配对码，把待认领设备挂到当前账号。
-func (s *KdzsPrintAgentService) ClaimPair(userID uint64, pairCode string) (*KdzsPrintDeviceDTO, error) {
-	if s.tenantID == 0 || userID == 0 {
-		return nil, ErrBadRequest
-	}
-	code := strings.TrimSpace(pairCode)
-	if len(code) < 4 {
-		return nil, ErrPairCodeInvalid
-	}
-
-	var out model.KdzsPrintDevice
-	err := s.repos.DB.Transaction(func(tx *gorm.DB) error {
-		var sess model.KdzsPrintPairSession
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("pair_code = ? AND consumed = false", code).First(&sess).Error; err != nil {
-			return ErrPairCodeInvalid
-		}
-		if time.Now().After(sess.ExpireAt) {
-			return ErrPairCodeInvalid
-		}
-		if sess.DeviceID == nil || *sess.DeviceID == 0 {
-			return ErrPairCodeInvalid
-		}
-		var dev model.KdzsPrintDevice
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("id = ? AND enabled = true", *sess.DeviceID).First(&dev).Error; err != nil {
-			return ErrPairCodeInvalid
-		}
-		if dev.TenantID > 0 {
-			return ErrPairCodeInvalid
-		}
-		if err := tx.Model(&dev).Updates(map[string]any{
-			"tenant_id": s.tenantID,
-			"user_id":   userID,
-		}).Error; err != nil {
-			return err
-		}
-		if err := tx.Model(&sess).Updates(map[string]any{
-			"consumed":  true,
-			"tenant_id": s.tenantID,
-			"user_id":   userID,
-		}).Error; err != nil {
-			return err
-		}
-		dev.TenantID = s.tenantID
-		dev.UserID = userID
-		out = dev
-		return nil
+		return tx.Create(&dev).Error
 	})
 	if err != nil {
 		return nil, err
 	}
-	dto := toDeviceDTO(out)
-	return &dto, nil
+	// 重新读 id
+	if err := s.repos.DB.Where("tenant_id = ? AND machine_id = ?", tenantID, machineID).First(&dev).Error; err != nil {
+		return nil, err
+	}
+	return &RegisterPrintMachineResult{
+		DeviceID:     dev.ID,
+		DeviceKey:    deviceKey,
+		DeviceSecret: secret,
+		MachineID:    machineID,
+		Name:         name,
+		TenantID:     tenantID,
+	}, nil
+}
+
+func (s *KdzsPrintAgentService) EnsurePrintEnrollToken() (string, error) {
+	if s.tenantID == 0 {
+		return "", ErrBadRequest
+	}
+	var st model.KdzsSetting
+	err := s.db().Where("tenant_id = ?", s.tenantID).First(&st).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		tok, e := randomHex(16)
+		if e != nil {
+			return "", e
+		}
+		st = model.KdzsSetting{
+			TenantID:         s.tenantID,
+			AutoSyncFromSSA:  true,
+			PrintEnrollToken: tok,
+		}
+		if e := s.repos.DB.Create(&st).Error; e != nil {
+			return "", e
+		}
+		return tok, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(st.PrintEnrollToken) == "" {
+		tok, e := randomHex(16)
+		if e != nil {
+			return "", e
+		}
+		st.PrintEnrollToken = tok
+		if e := s.repos.DB.Model(&st).Update("print_enroll_token", tok).Error; e != nil {
+			return "", e
+		}
+		return tok, nil
+	}
+	return st.PrintEnrollToken, nil
+}
+
+func (s *KdzsPrintAgentService) RotatePrintEnrollToken() (string, error) {
+	if s.tenantID == 0 {
+		return "", ErrBadRequest
+	}
+	tok, err := randomHex(16)
+	if err != nil {
+		return "", err
+	}
+	var st model.KdzsSetting
+	err = s.db().Where("tenant_id = ?", s.tenantID).First(&st).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		st = model.KdzsSetting{
+			TenantID:         s.tenantID,
+			AutoSyncFromSSA:  true,
+			PrintEnrollToken: tok,
+		}
+		if e := s.repos.DB.Create(&st).Error; e != nil {
+			return "", e
+		}
+		return tok, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if err := s.repos.DB.Model(&st).Update("print_enroll_token", tok).Error; err != nil {
+		return "", err
+	}
+	return tok, nil
 }
 
 func (s *KdzsPrintAgentService) AuthenticateDevice(deviceKey, secret string) (*model.KdzsPrintDevice, error) {
@@ -265,7 +289,6 @@ func (s *KdzsPrintAgentService) Heartbeat(deviceKey, secret string) (*KdzsPrintD
 	if err := s.repos.DB.Model(d).Update("last_seen_at", now).Error; err != nil {
 		return nil, err
 	}
-	// 重新读取，以便拿到手机认领后写入的 tenant_id
 	if err := s.repos.DB.First(d, d.ID).Error; err != nil {
 		return nil, err
 	}
@@ -275,52 +298,48 @@ func (s *KdzsPrintAgentService) Heartbeat(deviceKey, secret string) (*KdzsPrintD
 }
 
 func (s *KdzsPrintAgentService) ListDevices() ([]KdzsPrintDeviceDTO, error) {
-	var rows []model.KdzsPrintDevice
-	if err := s.db().Where("enabled = true").Order("id DESC").Find(&rows).Error; err != nil {
-		return nil, err
+	// 打单机 = Agents 中心在线且具备 kdzs.remote.print 的 WA；无需配对/注册令牌。
+	if s.agents == nil {
+		return nil, ErrAgentsUnavailable
 	}
-	out := make([]KdzsPrintDeviceDTO, 0, len(rows))
-	for _, r := range rows {
-		out = append(out, toDeviceDTO(r))
+	agents, err := s.agents.ListAgents(s.tenantID, false, kdzsPrintSkillID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrAgentsUnavailable, err)
+	}
+	out := make([]KdzsPrintDeviceDTO, 0, len(agents))
+	for _, a := range agents {
+		online := strings.EqualFold(a.Status, "online")
+		dto := KdzsPrintDeviceDTO{
+			ID:        a.ID,
+			MachineID: a.MachineID,
+			DeviceKey: a.MachineID,
+			Name:      a.Name,
+			Online:    online,
+			Enabled:   true,
+			CreatedAt: a.CreatedAt,
+		}
+		if a.LastHeartbeat != nil {
+			dto.LastSeenAt = a.LastHeartbeat
+		}
+		out = append(out, dto)
 	}
 	return out, nil
 }
 
+// pruneStaleDevices 关闭长时间无心跳的机器，避免打单页堆满离线项。
+func (s *KdzsPrintAgentService) pruneStaleDevices() {
+	cutoff := time.Now().Add(-kdzsDeviceStaleAfter)
+	_ = s.db().Model(&model.KdzsPrintDevice{}).
+		Where("enabled = true AND (last_seen_at IS NULL OR last_seen_at < ?)", cutoff).
+		Update("enabled", false).Error
+}
+
 func (s *KdzsPrintAgentService) RenameDevice(id uint64, name string) (*KdzsPrintDeviceDTO, error) {
-	name = strings.TrimSpace(name)
-	if id == 0 || name == "" {
-		return nil, ErrBadRequest
-	}
-	if len(name) > 64 {
-		name = name[:64]
-	}
-	res := s.db().Model(&model.KdzsPrintDevice{}).Where("id = ?", id).Update("name", name)
-	if res.Error != nil {
-		return nil, res.Error
-	}
-	if res.RowsAffected == 0 {
-		return nil, ErrDeviceNotFound
-	}
-	var d model.KdzsPrintDevice
-	if err := s.db().First(&d, id).Error; err != nil {
-		return nil, err
-	}
-	dto := toDeviceDTO(d)
-	return &dto, nil
+	return nil, fmt.Errorf("%w: 打单机随 Agents 中心在线状态出现，请在 Agents 中心改名", ErrBadRequest)
 }
 
 func (s *KdzsPrintAgentService) UnbindDevice(id uint64) error {
-	if id == 0 {
-		return ErrBadRequest
-	}
-	res := s.db().Model(&model.KdzsPrintDevice{}).Where("id = ?", id).Update("enabled", false)
-	if res.Error != nil {
-		return res.Error
-	}
-	if res.RowsAffected == 0 {
-		return ErrDeviceNotFound
-	}
-	return nil
+	return fmt.Errorf("%w: 打单机无需解绑；关闭 WindowsAgent 或从 Agents 中心下线即可", ErrBadRequest)
 }
 
 type CreatePrintTaskInput struct {
@@ -426,6 +445,9 @@ func (s *KdzsPrintAgentService) CreateTask(userID uint64, in *CreatePrintTaskInp
 	if in == nil || in.DeviceID == 0 || len(in.Payload) == 0 {
 		return nil, ErrBadRequest
 	}
+	if s.agents == nil {
+		return nil, ErrAgentsUnavailable
+	}
 	var probe map[string]any
 	if err := json.Unmarshal(in.Payload, &probe); err != nil {
 		return nil, fmt.Errorf("%w: payload 须为 JSON 对象", ErrBadRequest)
@@ -439,24 +461,36 @@ func (s *KdzsPrintAgentService) CreateTask(userID uint64, in *CreatePrintTaskInp
 	probe["kdzsPassword"] = password
 	probe["kdzsAccountCode"] = code
 	probe["kdzsAccountName"] = name
+	if probe["autoPrint"] == nil {
+		probe["autoPrint"] = true
+	}
 	enriched, err := json.Marshal(probe)
 	if err != nil {
 		return nil, err
 	}
 
-	var d model.KdzsPrintDevice
-	if err := s.db().Where("id = ? AND enabled = true", in.DeviceID).First(&d).Error; err != nil {
-		return nil, ErrDeviceNotFound
+	// DeviceID = AgentsCenter agentId；在线校验由 CreateTargetedJob 完成。
+	acJob, err := s.agents.CreateTargetedJob(s.tenantID, in.DeviceID, kdzsPrintSkillID, string(enriched), "shipping")
+	if err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "离线") {
+			return nil, ErrDeviceOffline
+		}
+		if strings.Contains(msg, "不存在") {
+			return nil, ErrDeviceNotFound
+		}
+		return nil, fmt.Errorf("%w: %v", ErrAgentsUnavailable, err)
 	}
-	if !deviceOnline(d.LastSeenAt) {
-		return nil, ErrDeviceOffline
-	}
+
 	task := model.KdzsPrintTask{
 		TenantID:  s.tenantID,
-		DeviceID:  d.ID,
+		DeviceID:  in.DeviceID,
 		Status:    model.KdzsPrintTaskPending,
 		Payload:   string(enriched),
 		CreatedBy: userID,
+	}
+	if acJob != nil && acJob.ID > 0 {
+		task.ErrorMessage = fmt.Sprintf("agentsJobId=%d", acJob.ID)
 	}
 	if err := s.repos.DB.Create(&task).Error; err != nil {
 		return nil, err

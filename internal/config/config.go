@@ -35,6 +35,8 @@ type AuthConfig struct {
 type IntegrationsConfig struct {
 	StoreSyncAgentAPIURL string `mapstructure:"storesyncagent_api_url"`
 	OrderCoreAPIURL      string `mapstructure:"ordercore_api_url"`
+	AgentsCenterAPIURL   string `mapstructure:"agentscenter_api_url"`
+	AgentsCenterToken    string `mapstructure:"agentscenter_internal_token"`
 }
 
 type StorageConfig struct {
