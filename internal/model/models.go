@@ -317,6 +317,8 @@ type KdzsPrintTask struct {
 	Status       string     `gorm:"size:16;index;not null;default:pending" json:"status"`
 	Payload      string     `gorm:"type:text;not null" json:"payload"` // JSON
 	ErrorMessage string     `gorm:"size:1024" json:"errorMessage,omitempty"`
+	// AgentsJobID AgentsCenter 执行单 ID；列表时据此同步真实状态。
+	AgentsJobID  uint64     `gorm:"index;default:0" json:"agentsJobId,omitempty"`
 	CreatedBy    uint64     `gorm:"index;not null" json:"createdBy"`
 	ClaimedAt    *time.Time `json:"claimedAt,omitempty"`
 	FinishedAt   *time.Time `json:"finishedAt,omitempty"`

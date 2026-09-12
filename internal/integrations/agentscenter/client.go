@@ -55,6 +55,14 @@ type CreatedJob struct {
 	ID uint64 `json:"id"`
 }
 
+type JobStatus struct {
+	ID           uint64  `json:"id"`
+	Status       string  `json:"status"`
+	ErrorMessage string  `json:"errorMessage"`
+	StartedAt    *string `json:"startedAt,omitempty"`
+	FinishedAt   *string `json:"finishedAt,omitempty"`
+}
+
 func (c *Client) ListAgents(tenantID uint64, onlineOnly bool, skill string) ([]Agent, error) {
 	if c == nil {
 		return nil, fmt.Errorf("AgentsCenter 未配置")
@@ -87,6 +95,51 @@ func (c *Client) ListAgents(tenantID uint64, onlineOnly bool, skill string) ([]A
 	var envelope struct {
 		Data struct {
 			List []Agent `json:"list"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(b, &envelope); err != nil {
+		return nil, err
+	}
+	return envelope.Data.List, nil
+}
+
+func (c *Client) GetJobs(tenantID uint64, ids []uint64) ([]JobStatus, error) {
+	if c == nil {
+		return nil, fmt.Errorf("AgentsCenter 未配置")
+	}
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	parts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id > 0 {
+			parts = append(parts, fmt.Sprintf("%d", id))
+		}
+	}
+	if len(parts) == 0 {
+		return nil, nil
+	}
+	q := url.Values{}
+	q.Set("tenantId", fmt.Sprintf("%d", tenantID))
+	q.Set("ids", strings.Join(parts, ","))
+	u := fmt.Sprintf("%s/api/v1/internal/jobs?%s", c.BaseURL, q.Encode())
+	req, err := http.NewRequest(http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Internal-Token", c.Token)
+	res, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	b, _ := io.ReadAll(res.Body)
+	if res.StatusCode >= 300 {
+		return nil, fmt.Errorf("AgentsCenter HTTP %d: %s", res.StatusCode, strings.TrimSpace(string(b)))
+	}
+	var envelope struct {
+		Data struct {
+			List []JobStatus `json:"list"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(b, &envelope); err != nil {

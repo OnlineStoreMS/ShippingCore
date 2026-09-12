@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -490,7 +491,7 @@ func (s *KdzsPrintAgentService) CreateTask(userID uint64, in *CreatePrintTaskInp
 		CreatedBy: userID,
 	}
 	if acJob != nil && acJob.ID > 0 {
-		task.ErrorMessage = fmt.Sprintf("agentsJobId=%d", acJob.ID)
+		task.AgentsJobID = acJob.ID
 	}
 	if err := s.repos.DB.Create(&task).Error; err != nil {
 		return nil, err
@@ -507,11 +508,131 @@ func (s *KdzsPrintAgentService) ListRecentTasks(limit int) ([]KdzsPrintTaskDTO, 
 	if err := s.db().Order("id DESC").Limit(limit).Find(&rows).Error; err != nil {
 		return nil, err
 	}
+	s.syncTasksFromAgents(&rows)
 	out := make([]KdzsPrintTaskDTO, 0, len(rows))
 	for _, r := range rows {
 		out = append(out, toPublicTaskDTO(r))
 	}
 	return out, nil
+}
+
+// syncTasksFromAgents 把未完结的本地打单任务状态与 AgentsCenter 执行单对齐。
+func (s *KdzsPrintAgentService) syncTasksFromAgents(rows *[]model.KdzsPrintTask) {
+	if rows == nil || len(*rows) == 0 || s.agents == nil {
+		return
+	}
+	need := make([]uint64, 0, len(*rows))
+	for i := range *rows {
+		r := &(*rows)[i]
+		if r.AgentsJobID == 0 {
+			if id := parseAgentsJobID(r.ErrorMessage); id > 0 {
+				r.AgentsJobID = id
+				_ = s.repos.DB.Model(r).Update("agents_job_id", id).Error
+				if strings.HasPrefix(strings.TrimSpace(r.ErrorMessage), "agentsJobId=") {
+					r.ErrorMessage = ""
+					_ = s.repos.DB.Model(r).Update("error_message", "").Error
+				}
+			}
+		}
+		if r.AgentsJobID > 0 && !isPrintTaskTerminal(r.Status) {
+			need = append(need, r.AgentsJobID)
+		}
+	}
+	if len(need) == 0 {
+		return
+	}
+	jobs, err := s.agents.GetJobs(s.tenantID, need)
+	if err != nil || len(jobs) == 0 {
+		return
+	}
+	byID := make(map[uint64]agentscenter.JobStatus, len(jobs))
+	for _, j := range jobs {
+		byID[j.ID] = j
+	}
+	now := time.Now()
+	for i := range *rows {
+		r := &(*rows)[i]
+		j, ok := byID[r.AgentsJobID]
+		if !ok {
+			continue
+		}
+		st, errMsg := mapAgentsJobStatus(j)
+		if st == "" || st == r.Status {
+			// 状态未变时仍可刷新失败文案
+			if st == model.KdzsPrintTaskFailed && errMsg != "" && r.ErrorMessage != errMsg {
+				r.ErrorMessage = errMsg
+				_ = s.repos.DB.Model(r).Update("error_message", errMsg).Error
+			}
+			continue
+		}
+		updates := map[string]any{
+			"status":     st,
+			"updated_at": now,
+		}
+		if st == model.KdzsPrintTaskClaimed && r.ClaimedAt == nil {
+			t := now
+			if j.StartedAt != nil {
+				if parsed, e := time.Parse(time.RFC3339, *j.StartedAt); e == nil {
+					t = parsed
+				}
+			}
+			r.ClaimedAt = &t
+			updates["claimed_at"] = t
+		}
+		if isPrintTaskTerminal(st) {
+			t := now
+			if j.FinishedAt != nil {
+				if parsed, e := time.Parse(time.RFC3339, *j.FinishedAt); e == nil {
+					t = parsed
+				}
+			}
+			r.FinishedAt = &t
+			updates["finished_at"] = t
+			if st == model.KdzsPrintTaskFailed {
+				updates["error_message"] = errMsg
+				r.ErrorMessage = errMsg
+			} else if st == model.KdzsPrintTaskDone {
+				updates["error_message"] = ""
+				r.ErrorMessage = ""
+			}
+		}
+		r.Status = st
+		_ = s.repos.DB.Model(r).Updates(updates).Error
+	}
+}
+
+func isPrintTaskTerminal(status string) bool {
+	switch status {
+	case model.KdzsPrintTaskDone, model.KdzsPrintTaskFailed, model.KdzsPrintTaskCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+func mapAgentsJobStatus(j agentscenter.JobStatus) (status, errMsg string) {
+	errMsg = strings.TrimSpace(j.ErrorMessage)
+	switch strings.TrimSpace(j.Status) {
+	case "pending":
+		return model.KdzsPrintTaskPending, ""
+	case "claimed", "running":
+		return model.KdzsPrintTaskClaimed, ""
+	case "succeeded":
+		return model.KdzsPrintTaskDone, ""
+	case "failed", "cancelled":
+		return model.KdzsPrintTaskFailed, errMsg
+	default:
+		return "", ""
+	}
+}
+
+func parseAgentsJobID(errMsg string) uint64 {
+	msg := strings.TrimSpace(errMsg)
+	if !strings.HasPrefix(msg, "agentsJobId=") {
+		return 0
+	}
+	n, _ := strconv.ParseUint(strings.TrimPrefix(msg, "agentsJobId="), 10, 64)
+	return n
 }
 
 // ClaimNext 打单端（WindowsAgent）领取下一待办（同设备串行）。
