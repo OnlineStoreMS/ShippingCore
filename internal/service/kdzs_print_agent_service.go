@@ -1,18 +1,22 @@
 package service
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"time"
 
+	"shippingcore/internal/dto"
 	"shippingcore/internal/integrations/agentscenter"
 	"shippingcore/internal/model"
+	jwtmgr "shippingcore/internal/pkg/jwt"
 	"shippingcore/internal/repo"
 
 	"gorm.io/gorm"
@@ -35,13 +39,15 @@ var (
 )
 
 type KdzsPrintAgentService struct {
-	repos    *repo.Repos
-	agents   *agentscenter.Client
-	tenantID uint64
+	repos     *repo.Repos
+	agents    *agentscenter.Client
+	shipments *ShipmentService
+	jwt       *jwtmgr.Manager
+	tenantID  uint64
 }
 
-func NewKdzsPrintAgentService(repos *repo.Repos, agents *agentscenter.Client) *KdzsPrintAgentService {
-	return &KdzsPrintAgentService{repos: repos, agents: agents}
+func NewKdzsPrintAgentService(repos *repo.Repos, agents *agentscenter.Client, shipments *ShipmentService, jwt *jwtmgr.Manager) *KdzsPrintAgentService {
+	return &KdzsPrintAgentService{repos: repos, agents: agents, shipments: shipments, jwt: jwt}
 }
 
 func (s *KdzsPrintAgentService) ForTenant(tenantID uint64) *KdzsPrintAgentService {
@@ -350,14 +356,16 @@ type CreatePrintTaskInput struct {
 }
 
 type KdzsPrintTaskDTO struct {
-	ID           uint64          `json:"id"`
-	DeviceID     uint64          `json:"deviceId"`
-	Status       string          `json:"status"`
-	Payload      json.RawMessage `json:"payload"`
-	ErrorMessage string          `json:"errorMessage,omitempty"`
-	CreatedAt    string          `json:"createdAt"`
-	ClaimedAt    *string         `json:"claimedAt,omitempty"`
-	FinishedAt   *string         `json:"finishedAt,omitempty"`
+	ID              uint64          `json:"id"`
+	DeviceID        uint64          `json:"deviceId"`
+	Status          string          `json:"status"`
+	Payload         json.RawMessage `json:"payload"`
+	ErrorMessage    string          `json:"errorMessage,omitempty"`
+	MailNo          string          `json:"mailNo,omitempty"`
+	ShipConfirmedAt *string         `json:"shipConfirmedAt,omitempty"`
+	CreatedAt       string          `json:"createdAt"`
+	ClaimedAt       *string         `json:"claimedAt,omitempty"`
+	FinishedAt      *string         `json:"finishedAt,omitempty"`
 }
 
 func toTaskDTO(t model.KdzsPrintTask) KdzsPrintTaskDTO {
@@ -367,7 +375,12 @@ func toTaskDTO(t model.KdzsPrintTask) KdzsPrintTaskDTO {
 		Status:       t.Status,
 		Payload:      json.RawMessage(t.Payload),
 		ErrorMessage: t.ErrorMessage,
+		MailNo:       t.MailNo,
 		CreatedAt:    t.CreatedAt.Format(time.RFC3339),
+	}
+	if t.ShipConfirmedAt != nil {
+		s := t.ShipConfirmedAt.Format(time.RFC3339)
+		out.ShipConfirmedAt = &s
 	}
 	if t.ClaimedAt != nil {
 		s := t.ClaimedAt.Format(time.RFC3339)
@@ -534,7 +547,11 @@ func (s *KdzsPrintAgentService) syncTasksFromAgents(rows *[]model.KdzsPrintTask)
 				}
 			}
 		}
-		if r.AgentsJobID > 0 && !isPrintTaskTerminal(r.Status) {
+		if r.AgentsJobID == 0 {
+			continue
+		}
+		// 未完结，或已完成但尚未自动确认发货：都需要拉 ResultJSON
+		if !isPrintTaskTerminal(r.Status) || (r.Status == model.KdzsPrintTaskDone && r.ShipConfirmedAt == nil) {
 			need = append(need, r.AgentsJobID)
 		}
 	}
@@ -558,10 +575,13 @@ func (s *KdzsPrintAgentService) syncTasksFromAgents(rows *[]model.KdzsPrintTask)
 		}
 		st, errMsg := mapAgentsJobStatus(j)
 		if st == "" || st == r.Status {
-			// 状态未变时仍可刷新失败文案
+			// 状态未变时仍可刷新失败文案 / 尝试自动确认
 			if st == model.KdzsPrintTaskFailed && errMsg != "" && r.ErrorMessage != errMsg {
 				r.ErrorMessage = errMsg
 				_ = s.repos.DB.Model(r).Update("error_message", errMsg).Error
+			}
+			if r.Status == model.KdzsPrintTaskDone && r.ShipConfirmedAt == nil {
+				s.maybeAutoConfirmShip(r, j.ResultJSON)
 			}
 			continue
 		}
@@ -598,7 +618,222 @@ func (s *KdzsPrintAgentService) syncTasksFromAgents(rows *[]model.KdzsPrintTask)
 		}
 		r.Status = st
 		_ = s.repos.DB.Model(r).Updates(updates).Error
+		if st == model.KdzsPrintTaskDone && r.ShipConfirmedAt == nil {
+			s.maybeAutoConfirmShip(r, j.ResultJSON)
+		}
 	}
+}
+
+// StartBackgroundSync 轮询未完结/待自动确认的打单任务（不依赖前端刷列表）。
+func (s *KdzsPrintAgentService) StartBackgroundSync(ctx context.Context) {
+	if s == nil || s.agents == nil {
+		return
+	}
+	go func() {
+		t := time.NewTicker(12 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				s.pollOpenTasks()
+			}
+		}
+	}()
+}
+
+func (s *KdzsPrintAgentService) pollOpenTasks() {
+	var rows []model.KdzsPrintTask
+	err := s.repos.DB.
+		Where("agents_job_id > 0 AND (status IN ? OR (status = ? AND ship_confirmed_at IS NULL))",
+			[]string{model.KdzsPrintTaskPending, model.KdzsPrintTaskClaimed},
+			model.KdzsPrintTaskDone).
+		Order("id DESC").
+		Limit(80).
+		Find(&rows).Error
+	if err != nil || len(rows) == 0 {
+		return
+	}
+	// 按租户分组同步（GetJobs 带 tenantId）
+	byTenant := map[uint64][]model.KdzsPrintTask{}
+	for _, r := range rows {
+		byTenant[r.TenantID] = append(byTenant[r.TenantID], r)
+	}
+	for tid, list := range byTenant {
+		cp := list
+		s.ForTenant(tid).syncTasksFromAgents(&cp)
+	}
+}
+
+func parsePayloadUint64(v any) uint64 {
+	switch x := v.(type) {
+	case float64:
+		if x > 0 {
+			return uint64(x)
+		}
+	case json.Number:
+		n, _ := x.Int64()
+		if n > 0 {
+			return uint64(n)
+		}
+	case string:
+		n, _ := strconv.ParseUint(strings.TrimSpace(x), 10, 64)
+		return n
+	case int:
+		if x > 0 {
+			return uint64(x)
+		}
+	case int64:
+		if x > 0 {
+			return uint64(x)
+		}
+	case uint64:
+		return x
+	}
+	return 0
+}
+
+func parseMailNoFromResult(resultJSON string) string {
+	raw := strings.TrimSpace(resultJSON)
+	if raw == "" {
+		return ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(raw), &m); err != nil || m == nil {
+		return ""
+	}
+	for _, key := range []string{"mailNo", "expressNo", "waybillNo", "trackingNo"} {
+		if s, ok := m[key].(string); ok {
+			s = strings.TrimSpace(s)
+			if s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+func payloadBool(m map[string]any, key string) (val bool, present bool) {
+	v, ok := m[key]
+	if !ok || v == nil {
+		return false, false
+	}
+	switch x := v.(type) {
+	case bool:
+		return x, true
+	case string:
+		s := strings.ToLower(strings.TrimSpace(x))
+		if s == "true" || s == "1" || s == "yes" {
+			return true, true
+		}
+		if s == "false" || s == "0" || s == "no" {
+			return false, true
+		}
+	case float64:
+		return x != 0, true
+	}
+	return false, true
+}
+
+// maybeAutoConfirmShip Agent 打单成功并带回运单号后，自动 ConfirmKdzsShip 回写订单中心。
+func (s *KdzsPrintAgentService) maybeAutoConfirmShip(task *model.KdzsPrintTask, resultJSON string) {
+	if task == nil || task.ShipConfirmedAt != nil {
+		return
+	}
+	if s.shipments == nil || s.jwt == nil {
+		return
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(task.Payload), &payload); err != nil || payload == nil {
+		return
+	}
+	auto, hasAuto := payloadBool(payload, "autoConfirmShip")
+	orderID := parsePayloadUint64(payload["orderId"])
+	if orderID == 0 {
+		if orders, ok := payload["orders"].([]any); ok && len(orders) == 1 {
+			if om, ok := orders[0].(map[string]any); ok {
+				orderID = parsePayloadUint64(om["orderId"])
+			}
+		}
+	}
+	if orderID == 0 {
+		return
+	}
+	// 显式 false 关闭；未传时有 orderId 则默认开启
+	if hasAuto && !auto {
+		return
+	}
+	if !hasAuto {
+		auto = true
+	}
+	if !auto {
+		return
+	}
+	// 批量多单一票：无法安全映射，跳过
+	if orders, ok := payload["orders"].([]any); ok && len(orders) > 1 {
+		return
+	}
+
+	mailNo := strings.TrimSpace(task.MailNo)
+	if mailNo == "" {
+		mailNo = parseMailNoFromResult(resultJSON)
+	}
+	if mailNo == "" {
+		return
+	}
+	if task.MailNo != mailNo {
+		task.MailNo = mailNo
+		_ = s.repos.DB.Model(task).Update("mail_no", mailNo).Error
+	}
+
+	orderRaw, err := json.Marshal(payload["order"])
+	if err != nil || len(orderRaw) == 0 || string(orderRaw) == "null" {
+		log.Printf("[kdzs-print] task=%d skip auto-confirm: missing order snapshot", task.ID)
+		return
+	}
+	var orderSnap dto.OrderSnapshotDTO
+	if err := json.Unmarshal(orderRaw, &orderSnap); err != nil {
+		log.Printf("[kdzs-print] task=%d skip auto-confirm: bad order snapshot: %v", task.ID, err)
+		return
+	}
+
+	expressCompany := strings.TrimSpace(fmt.Sprint(payload["expressCompany"]))
+	if expressCompany == "" || expressCompany == "<nil>" {
+		expressCompany = "快递"
+	}
+	reship, _ := payloadBool(payload, "reship")
+	var groupID *uint64
+	if gid := parsePayloadUint64(payload["groupId"]); gid > 0 {
+		groupID = &gid
+	}
+
+	token, err := s.jwt.IssueServiceToken(task.TenantID, task.CreatedBy, 15*time.Minute)
+	if err != nil {
+		log.Printf("[kdzs-print] task=%d issue token failed: %v", task.ID, err)
+		return
+	}
+	shipSvc := s.shipments.ForTenant(task.TenantID)
+	_, err = shipSvc.ConfirmKdzsShip(context.Background(), token, &dto.ConfirmKdzsShipDTO{
+		OrderID:        orderID,
+		ExpressNo:      mailNo,
+		ExpressCompany: expressCompany,
+		Order:          orderSnap,
+		GroupID:        groupID,
+		Reship:         reship,
+	})
+	if err != nil {
+		log.Printf("[kdzs-print] task=%d auto ConfirmKdzsShip order=%d mail=%s failed: %v", task.ID, orderID, mailNo, err)
+		return
+	}
+	now := time.Now()
+	task.ShipConfirmedAt = &now
+	_ = s.repos.DB.Model(task).Updates(map[string]any{
+		"mail_no":           mailNo,
+		"ship_confirmed_at": now,
+		"updated_at":        now,
+	}).Error
+	log.Printf("[kdzs-print] task=%d auto-confirmed ship order=%d mail=%s", task.ID, orderID, mailNo)
 }
 
 func isPrintTaskTerminal(status string) bool {

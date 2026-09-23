@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"shippingcore/admin"
 	adminmw "shippingcore/admin/middleware"
 	"shippingcore/internal/config"
@@ -43,11 +44,13 @@ func Setup(db *gorm.DB, cfg *config.Config) *gin.Engine {
 	uploadH := admin.NewUploadHandler(store)
 	photoH := admin.NewPhotoUploadHandler(store)
 	kdzsHandoffH := admin.NewKdzsHelperHandoffHandler()
+	jwtMgr := jwtmgr.NewManager(cfg.Auth.JWTSecret)
 	kdzsPrintAgentSvc := service.NewKdzsPrintAgentService(repos, agentscenter.NewClient(
 		cfg.Integrations.AgentsCenterAPIURL,
 		cfg.Integrations.AgentsCenterToken,
-	))
+	), shipmentSvc, jwtMgr)
 	kdzsPrintAgentH := admin.NewKdzsPrintAgentHandler(kdzsPrintAgentSvc)
+	kdzsPrintAgentSvc.StartBackgroundSync(context.Background())
 
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok", "service": "shippingcore"})
@@ -55,7 +58,6 @@ func Setup(db *gorm.DB, cfg *config.Config) *gin.Engine {
 
 	v1 := r.Group("/api/v1")
 	adminGroup := v1.Group("/admin")
-	jwtMgr := jwtmgr.NewManager(cfg.Auth.JWTSecret)
 	adminGroup.Use(adminmw.AdminAuth(&cfg.Auth, jwtMgr))
 	admin.RegisterRoutes(adminGroup, h)
 	adminGroup.POST("/upload", uploadH.Upload)

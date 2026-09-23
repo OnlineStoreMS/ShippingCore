@@ -317,13 +317,17 @@ type KdzsPrintTask struct {
 	Status       string     `gorm:"size:16;index;not null;default:pending" json:"status"`
 	Payload      string     `gorm:"type:text;not null" json:"payload"` // JSON
 	ErrorMessage string     `gorm:"size:1024" json:"errorMessage,omitempty"`
+	// MailNo Agent 回报的运单号（打单成功后写入）。
+	MailNo string `gorm:"size:64;index" json:"mailNo,omitempty"`
+	// ShipConfirmedAt 自动确认发货成功时间；非空则不再重试 ConfirmKdzsShip。
+	ShipConfirmedAt *time.Time `json:"shipConfirmedAt,omitempty"`
 	// AgentsJobID AgentsCenter 执行单 ID；列表时据此同步真实状态。
-	AgentsJobID  uint64     `gorm:"index;default:0" json:"agentsJobId,omitempty"`
-	CreatedBy    uint64     `gorm:"index;not null" json:"createdBy"`
-	ClaimedAt    *time.Time `json:"claimedAt,omitempty"`
-	FinishedAt   *time.Time `json:"finishedAt,omitempty"`
-	CreatedAt    time.Time  `json:"createdAt"`
-	UpdatedAt    time.Time  `json:"updatedAt"`
+	AgentsJobID uint64     `gorm:"index;default:0" json:"agentsJobId,omitempty"`
+	CreatedBy   uint64     `gorm:"index;not null" json:"createdBy"`
+	ClaimedAt   *time.Time `json:"claimedAt,omitempty"`
+	FinishedAt  *time.Time `json:"finishedAt,omitempty"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	UpdatedAt   time.Time  `json:"updatedAt"`
 }
 
 func (KdzsPrintTask) TableName() string { return "kdzs_print_tasks" }

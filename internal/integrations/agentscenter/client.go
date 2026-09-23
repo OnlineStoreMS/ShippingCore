@@ -59,6 +59,7 @@ type JobStatus struct {
 	ID           uint64  `json:"id"`
 	Status       string  `json:"status"`
 	ErrorMessage string  `json:"errorMessage"`
+	ResultJSON   string  `json:"resultJson,omitempty"`
 	StartedAt    *string `json:"startedAt,omitempty"`
 	FinishedAt   *string `json:"finishedAt,omitempty"`
 }

@@ -2,6 +2,7 @@ package jwt
 
 import (
 	"errors"
+	"time"
 
 	jwtlib "github.com/golang-jwt/jwt/v5"
 )
@@ -42,4 +43,28 @@ func (m *Manager) ParseAccess(tokenStr string) (*Claims, error) {
 		return nil, ErrInvalidToken
 	}
 	return claims, nil
+}
+
+// IssueServiceToken 签发短时服务令牌（与 UserCore/OrderCore 同密钥），用于打单完成后回写订单中心。
+func (m *Manager) IssueServiceToken(tenantID, userID uint64, ttl time.Duration) (string, error) {
+	if m == nil || len(m.secret) == 0 {
+		return "", errors.New("jwt secret not configured")
+	}
+	if ttl <= 0 {
+		ttl = 15 * time.Minute
+	}
+	now := time.Now()
+	claims := Claims{
+		UserID:      userID,
+		TenantID:    tenantID,
+		DisplayName: "shippingcore-kdzs-auto",
+		Permissions: []string{"order:read", "order:write"},
+		RegisteredClaims: jwtlib.RegisteredClaims{
+			IssuedAt:  jwtlib.NewNumericDate(now),
+			ExpiresAt: jwtlib.NewNumericDate(now.Add(ttl)),
+			Issuer:    "shippingcore",
+		},
+	}
+	t := jwtlib.NewWithClaims(jwtlib.SigningMethodHS256, claims)
+	return t.SignedString(m.secret)
 }

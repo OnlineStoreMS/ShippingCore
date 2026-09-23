@@ -1344,6 +1344,14 @@ async function openKdzsRemotePrint() {
       orderTimeTo: timeRange?.to,
       autoPrint: true,
     }
+    if (shipTargets.value.length === 1) {
+      const only = shipTargets.value[0]
+      payload.orderId = only.id
+      payload.order = snapshotForShip(only)
+      payload.autoConfirmShip = true
+      const orders = payload.orders as Array<Record<string, unknown>>
+      if (orders?.[0]) orders[0].orderId = only.id
+    }
     localStorage.setItem(KDZS_REMOTE_DEVICE_KEY, String(kdzsRemoteDeviceId.value))
     localStorage.setItem(KDZS_REMOTE_PRINTER_KEY, printer)
     const task = await shippingApi.createKdzsPrintTask({
@@ -1351,10 +1359,12 @@ async function openKdzsRemotePrint() {
       payload,
     })
     ElMessage.success(
-      `已下发远程打单任务 #${task.id} 到「${device.name}」（WindowsAgent）。打印完成后再点「同步单号」回填运单。`,
+      shipTargets.value.length === 1
+        ? `已下发远程打单任务 #${task.id} 到「${device.name}」。打印完成后将自动确认发货。`
+        : `已下发远程打单任务 #${task.id} 到「${device.name}」。批量请打印完成后点「同步单号」再确认发货。`,
     )
     confirmKdzsVisible.value = true
-    // 远程打单异步执行，此时立刻查快递助手详情常报「系统订单不存在」；等 Agent 打完再手动同步
+    // 远程打单异步执行；单单一票由 ShippingCore 轮询 Agent 结果后自动 ConfirmKdzsShip
   } catch (e) {
     ElMessage.error((e as Error).message || '远程打单下发失败')
   } finally {
