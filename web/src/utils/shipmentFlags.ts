@@ -6,9 +6,13 @@ type ShipFlagRow = Pick<Shipment, 'carrierAccountId' | 'sfOrderId' | 'mailNo' | 
 export function isKdzsShipment(row: ShipFlagRow): boolean {
   if (!row) return false
   const via = String(row.shipVia || '').trim().toLowerCase()
-  if (via === 'kdzs') return true
   if (via === 'sf') return false
-  // 有运单号但从未丰桥取号（无 sfOrderId）→ 快递助手/手工填单；勿因误绑 carrierAccountId 判成顺丰
+  // 丰桥取号证据优先：KDZS 同步曾把电商顺丰标准寄件误标成 kdzs
+  if (Number(row.carrierAccountId || 0) > 0 || String(row.sfOrderId || '').trim()) {
+    return false
+  }
+  if (via === 'kdzs') return true
+  // 有运单号但从未丰桥取号 → 快递助手/手工填单
   return !!String(row.mailNo || '').trim() && !String(row.sfOrderId || '').trim()
 }
 

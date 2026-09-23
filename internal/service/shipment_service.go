@@ -184,13 +184,17 @@ func isKdzsShipment(shipment *model.Shipment) bool {
 		return false
 	}
 	via := strings.ToLower(strings.TrimSpace(shipment.ShipVia))
-	if via == model.ShipViaKdzs {
-		return true
-	}
 	if via == model.ShipViaSF {
 		return false
 	}
-	// 有运单号但从未丰桥取号：快递助手/手工填单（勿因误绑 carrier_account_id 判成顺丰）
+	// 丰桥取号证据优先：订单中心 KDZS 同步曾把电商顺丰标准寄件误改成 ship_via=kdzs
+	if shipment.CarrierAccountID > 0 || strings.TrimSpace(shipment.SFOrderID) != "" {
+		return false
+	}
+	if via == model.ShipViaKdzs {
+		return true
+	}
+	// 有运单号但从未丰桥取号：快递助手/手工填单
 	return strings.TrimSpace(shipment.MailNo) != "" && strings.TrimSpace(shipment.SFOrderID) == ""
 }
 
@@ -367,6 +371,27 @@ func (s *ShipmentService) UpsertKdzsFromSync(in *dto.UpsertKdzsFromSyncDTO) (*mo
 	shippedAt := parseFlexibleTime(in.ShippedAt)
 
 	if existing, ok := s.findActiveKdzsShipment(in.OrderID, expressNo); ok {
+		// 已是丰桥取号/标准寄件单：只对齐发货时间，勿改成 kdzs（否则发货列表丢失「打印」）
+		if isSFManagedShipment(existing) || existing.CarrierAccountID > 0 || strings.TrimSpace(existing.SFOrderID) != "" ||
+			strings.EqualFold(strings.TrimSpace(existing.ShipVia), model.ShipViaSF) {
+			updates := map[string]any{}
+			if shippedAt != nil && (existing.ShippedAt == nil || !existing.ShippedAt.Equal(*shippedAt)) {
+				updates["shipped_at"] = *shippedAt
+			}
+			if expressCompany != "" && strings.TrimSpace(existing.ExpressCompany) == "" {
+				updates["express_company"] = expressCompany
+			}
+			// 纠正历史误标
+			if !strings.EqualFold(strings.TrimSpace(existing.ShipVia), model.ShipViaSF) {
+				updates["ship_via"] = model.ShipViaSF
+			}
+			if len(updates) > 0 {
+				if err := s.db().Model(existing).Updates(updates).Error; err != nil {
+					return nil, err
+				}
+			}
+			return s.Get(existing.ID)
+		}
 		updates := map[string]any{
 			"printed_at": nil, // 快递助手打单：不记本系统打印时间
 			"ship_via":   model.ShipViaKdzs,
