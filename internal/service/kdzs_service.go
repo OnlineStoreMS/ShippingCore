@@ -133,8 +133,9 @@ func (s *KdzsService) ListWaybillAuths(page, pageSize int) ([]model.WaybillAuth,
 }
 
 type syncListPayload struct {
-	Items []json.RawMessage `json:"items"`
-	Total int               `json:"total"`
+	Items    []json.RawMessage `json:"items"`
+	Total    int               `json:"total"`
+	Complete *bool             `json:"complete"`
 }
 
 type elecAuthItem struct {
@@ -227,9 +228,7 @@ func (s *KdzsService) SyncPrintAssets(ctx context.Context, token string) (map[st
 	}
 	var authPayload syncListPayload
 	authSeen := map[string]struct{}{}
-	authListOK := false
 	if err := json.Unmarshal(authRaw, &authPayload); err == nil {
-		authListOK = true
 		for _, raw := range authPayload.Items {
 			var item elecAuthItem
 			if err := json.Unmarshal(raw, &item); err != nil {
@@ -264,14 +263,14 @@ func (s *KdzsService) SyncPrintAssets(ctx context.Context, token string) (map[st
 
 	tplRaw, err := s.ssAgent.ListExpressTemplates(ctx, token)
 	if err != nil {
-		// 模板接口偶发失败时仍保留已同步的面单授权，且不删除本地模板
-		if authListOK || stats["auths"] > 0 {
-			return stats, nil
-		}
+		// 模板没拉到时保留本地记录，避免一次失败把已同步模板清掉
 		return stats, fmt.Errorf("拉取快递模板: %w", err)
 	}
 	var tplPayload syncListPayload
-	if err := json.Unmarshal(tplRaw, &tplPayload); err == nil {
+	if err := json.Unmarshal(tplRaw, &tplPayload); err != nil {
+		return stats, fmt.Errorf("解析快递模板: %w", err)
+	}
+	{
 		tplSeen := map[string]struct{}{}
 		for _, raw := range tplPayload.Items {
 			var item expressTemplateItem
@@ -311,8 +310,11 @@ func (s *KdzsService) SyncPrintAssets(ctx context.Context, token string) (map[st
 				stats["templates"]++
 			}
 		}
-		if n, err := s.reconcileExpressTemplates(kdzsCode, tplSeen); err == nil {
-			stats["templatesDeleted"] = n
+		// complete 缺省视为完整（兼容旧接口）。部分平台失败时不删除本地模板。
+		if tplPayload.Complete == nil || *tplPayload.Complete {
+			if n, err := s.reconcileExpressTemplates(kdzsCode, tplSeen); err == nil {
+				stats["templatesDeleted"] = n
+			}
 		}
 	}
 
