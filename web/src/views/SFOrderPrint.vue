@@ -865,21 +865,22 @@ async function submit(doPrint: boolean) {
     const waybill = await shippingApi.createShipmentWaybill(shipment.id)
     result.value = { shipmentId: waybill.id, mailNo: waybill.mailNo || '' }
     ElMessage.success(`下单成功${waybill.mailNo ? `，运单号 ${waybill.mailNo}` : ''}`)
+    submitting.value = false
     if (doPrint) {
-      try {
-        await printShipmentLabel(waybill.id)
-        const isPdf = (carrierView.value?.printChannel || '').toLowerCase() === 'pdf'
-        ElMessage.success(isPdf ? '已在浏览器打开官方 PDF 面单' : '已发送到本机打印机')
-      } catch (pe) {
-        const msg = (pe as Error).message || ''
-        if (msg !== 'PRINTER_NOT_SELECTED') {
-          ElMessage.warning(msg || '打印失败，可稍后在发货单重试')
-        }
-      }
+      void printShipmentLabel(waybill.id)
+        .then(() => {
+          const isPdf = (carrierView.value?.printChannel || '').toLowerCase() === 'pdf'
+          ElMessage.success(isPdf ? '已在浏览器打开官方 PDF 面单' : '已发送到本机打印机')
+        })
+        .catch((pe) => {
+          const msg = (pe as Error).message || ''
+          if (msg !== 'PRINTER_NOT_SELECTED') {
+            ElMessage.warning(msg || '打印失败，可稍后在发货单重试')
+          }
+        })
     }
   } catch (e) {
     ElMessage.error((e as Error).message || '下单失败')
-  } finally {
     submitting.value = false
   }
 }

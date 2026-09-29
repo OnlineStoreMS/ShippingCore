@@ -1490,17 +1490,17 @@ async function submitShip() {
     })
     const waybill = await shippingApi.createShipmentWaybill(shipment.id)
     const carrier = carrierAccounts.value.find((c) => c.id === shipForm.carrierAccountId)
-
+    ElMessage.success(`下单成功${waybill.mailNo ? `，运单号 ${waybill.mailNo}` : ''}`)
     closeShipDialog()
-    await openCloudPrintDialog({
+    loading.ship = false
+    void openCloudPrintDialog({
       shipmentId: waybill.id,
       mailNo: waybill.mailNo || '',
       carrier,
-    })
-      await loadOmsOrders()
+    }).catch((e) => ElMessage.warning((e as Error).message || '打开打印失败'))
+    void loadOmsOrders()
   } catch (e) {
     ElMessage.error((e as Error).message || '打单失败')
-  } finally {
     loading.ship = false
   }
 }

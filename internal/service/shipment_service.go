@@ -804,13 +804,7 @@ func (s *ShipmentService) CreateWaybill(ctx context.Context, token string, id ui
 	shipment.ErrorMessage = ""
 	markShipmentShipped(shipment)
 
-	// 下单成功后尽量取云打印数据；失败不阻断出单
-	if tpl := resolvePrintTemplateCode(carrier); tpl != "" {
-		if err := s.applyCloudPrint(ctx, client, carrier, shipment, tpl); err != nil {
-			log.Printf("sf cloud print after create waybill %s: %v", shipment.MailNo, err)
-		}
-	}
-
+	// 先落库运单号并尽快返回前端；云打印/面单存档异步，避免取号后页面长时间转圈
 	if err := s.db().Save(shipment).Error; err != nil {
 		return nil, err
 	}
@@ -823,6 +817,42 @@ func (s *ShipmentService) CreateWaybill(ctx context.Context, token string, id ui
 		if _, err := s.shipOrderCore(ctx, token, shipment.OrderCoreOrderID, "顺丰", shipment.MailNo, coreItems, true); err != nil {
 			return nil, fmt.Errorf("运单已出(%s)，回写订单中心失败: %w", shipment.MailNo, err)
 		}
+	}
+
+	if tpl := resolvePrintTemplateCode(carrier); tpl != "" {
+		shipID := shipment.ID
+		mailNo := shipment.MailNo
+		carrierID := carrier.ID
+		go func() {
+			bg, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+			defer cancel()
+			sh, err := s.Get(shipID)
+			if err != nil || sh == nil {
+				log.Printf("sf cloud print async load %s: %v", mailNo, err)
+				return
+			}
+			ca, err := s.carrier.GetRaw(carrierID)
+			if err != nil {
+				log.Printf("sf cloud print async carrier %s: %v", mailNo, err)
+				return
+			}
+			cli := newSFClient(ca)
+			if err := s.applyCloudPrint(bg, cli, ca, sh, tpl); err != nil {
+				log.Printf("sf cloud print after create waybill %s: %v", mailNo, err)
+				return
+			}
+			if err := s.db().Model(sh).Updates(map[string]any{
+				"label_url":     sh.LabelURL,
+				"label_token":   sh.LabelToken,
+				"label_data":    sh.LabelData,
+				"label_pdf_url": sh.LabelPdfURL,
+				"status":        sh.Status,
+				"printed_at":    sh.PrintedAt,
+				"updated_at":    time.Now(),
+			}).Error; err != nil {
+				log.Printf("sf cloud print async save %s: %v", mailNo, err)
+			}
+		}()
 	}
 
 	return s.Get(shipment.ID)
@@ -1049,14 +1079,8 @@ func (s *ShipmentService) applyCloudPrint(ctx context.Context, client *sf.Client
 	if shipment.LabelURL != "" && !strings.HasPrefix(shipment.LabelURL, "sf://") {
 		markShipmentPrinted(shipment)
 	}
-	if url, err := s.archiveLabelPDFOnce(ctx, client, carrier, shipment, tpl, "", result); err == nil && url != "" {
-		shipment.LabelPdfURL = url
-	} else {
-		if err != nil {
-			log.Printf("archive label pdf immediate %s: %v", shipment.MailNo, err)
-		}
-		s.scheduleArchiveLabelPDF(shipment.ID, shipment.CarrierAccountID, shipment.MailNo, tpl, "", true)
-	}
+	// 不在取号/打印热路径同步拉 PDF 存档；后台重试即可
+	s.scheduleArchiveLabelPDF(shipment.ID, shipment.CarrierAccountID, shipment.MailNo, tpl, "", true)
 	return nil
 }
 
