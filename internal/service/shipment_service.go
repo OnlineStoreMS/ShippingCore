@@ -837,6 +837,18 @@ func firstNonEmptyTrim(values ...string) string {
 	return ""
 }
 
+// isOrderAlreadyShippedErr 订单中心已对该运单/明细完成发货（自动确认重试时视为成功）。
+func isOrderAlreadyShippedErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "超过剩余可发") ||
+		strings.Contains(msg, "已全部发货") ||
+		strings.Contains(msg, "无需重复发货") ||
+		strings.Contains(msg, "已发货")
+}
+
 // resolveSFCustomerOrderID 丰桥客户订单号：首次业务单号，取消后再下为 -2、-3…
 func (s *ShipmentService) resolveSFCustomerOrderID(shipment *model.Shipment) string {
 	if shipment == nil {
@@ -1475,6 +1487,10 @@ func (s *ShipmentService) ConfirmKdzsShip(ctx context.Context, token string, in 
 		}
 		shippedAt, err := s.shipOrderCore(ctx, token, in.OrderID, firstNonEmptyTrim(expressCompany, existing.ExpressCompany), expressNo, coreItems, false)
 		if err != nil {
+			// 订单中心已记过同号发货（剩余可发=0）时视为成功，避免自动确认轮询空转
+			if isOrderAlreadyShippedErr(err) {
+				return s.Get(existing.ID)
+			}
 			return nil, fmt.Errorf("发货单已存在，回写订单中心失败: %w", err)
 		}
 		updates := map[string]any{}

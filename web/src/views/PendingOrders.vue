@@ -1279,7 +1279,7 @@ async function openKdzsBatchPrint() {
     ElMessage.success(
       `已打开快递助手并上传打单任务。请确认右下角「OSMS 打单助手」出现订单后，人工选模板/打印；完成后回填运单号。`,
     )
-    confirmKdzsVisible.value = true
+        confirmKdzsVisible.value = true
     void syncWaybillsFromKdzs()
   } catch (e) {
     ElMessage.error((e as Error).message || '打开快递助手失败')
@@ -1429,7 +1429,7 @@ async function syncWaybillsFromKdzs() {
     }
     if (filled > 0) {
       ElMessage.success(`已从快递助手同步 ${filled} 笔运单号`)
-    } else {
+      } else {
       const detail = list.map((r) => r.message).find((m) => !!m) || ''
       // 快递助手详情接口对刚下发/未打完的单常返回「系统订单[xxx]不存在」，勿原样吓人
       const soft =
@@ -1437,7 +1437,7 @@ async function syncWaybillsFromKdzs() {
           ? '暂未查到运单号（订单可能仍在远程打单中），请稍后再点「同步单号」'
           : detail || '暂未查到运单号，请确认已在快递助手打印完成后，再点「同步单号」'
       ElMessage.warning(soft)
-    }
+      }
     } catch (e) {
     ElMessage.error((e as Error).message || '同步单号失败')
   } finally {
@@ -1790,7 +1790,7 @@ onMounted(async () => {
                     controls-position="right"
                   />
                   <span class="muted">待发 ×{{ row.maxQty }}</span>
-        </div>
+          </div>
               </div>
             </label>
           </el-checkbox-group>
@@ -1850,7 +1850,7 @@ onMounted(async () => {
                 </el-select>
                 <div v-if="!kdzsDevices.length" class="muted kdzs-remote-hint">
                   暂无在线 Agent。请在打单电脑运行 WindowsAgent 并配置 Agents 中心地址；连上后自动出现在此列表。
-                </div>
+        </div>
                 <div v-else-if="!kdzsDevices.some((d) => d.online)" class="muted kdzs-remote-hint">
                   已有机器均离线。请确认对应电脑上的 WindowsAgent 已启动并连上 Agents（约每 20 秒心跳）。
                 </div>
@@ -1859,9 +1859,9 @@ onMounted(async () => {
                   · {{ selectedKdzsDevice.online ? '在线' : '离线' }}
                   <template v-if="selectedKdzsDevice.lastSeenAt">
                     · 心跳 {{ formatKdzsHeartbeat(selectedKdzsDevice.lastSeenAt) }}
-                  </template>
-                </div>
-              </el-form-item>
+          </template>
+        </div>
+          </el-form-item>
               <el-form-item label="打印机" required>
                 <el-input
                   v-model="kdzsRemotePrinterName"

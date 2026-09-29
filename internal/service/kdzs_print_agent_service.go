@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -700,16 +701,34 @@ func parseMailNoFromResult(resultJSON string) string {
 		return ""
 	}
 	var m map[string]any
-	if err := json.Unmarshal([]byte(raw), &m); err != nil || m == nil {
-		return ""
-	}
-	for _, key := range []string{"mailNo", "expressNo", "waybillNo", "trackingNo"} {
-		if s, ok := m[key].(string); ok {
-			s = strings.TrimSpace(s)
-			if s != "" {
-				return s
+	if err := json.Unmarshal([]byte(raw), &m); err == nil && m != nil {
+		for _, key := range []string{"mailNo", "expressNo", "waybillNo", "trackingNo"} {
+			if s, ok := m[key].(string); ok {
+				s = strings.TrimSpace(s)
+				if s != "" {
+					return s
+				}
 			}
 		}
+		// 旧版 Agent 只把运单号写在文案里：已打印并发货，运单号 7903…
+		if msg, ok := m["message"].(string); ok {
+			if n := extractMailNoFromText(msg); n != "" {
+				return n
+			}
+		}
+	}
+	return extractMailNoFromText(raw)
+}
+
+var mailNoInTextRe = regexp.MustCompile(`(?i)(?:运单号|快递单号|面单号|mail\s*no|tracking)\s*[:：]?\s*([A-Za-z0-9]{8,32})`)
+
+func extractMailNoFromText(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	if m := mailNoInTextRe.FindStringSubmatch(s); len(m) > 1 {
+		return strings.TrimSpace(m[1])
 	}
 	return ""
 }
@@ -780,6 +799,7 @@ func (s *KdzsPrintAgentService) maybeAutoConfirmShip(task *model.KdzsPrintTask, 
 		mailNo = parseMailNoFromResult(resultJSON)
 	}
 	if mailNo == "" {
+		log.Printf("[kdzs-print] task=%d skip auto-confirm: no mailNo in result (order=%d)", task.ID, orderID)
 		return
 	}
 	if task.MailNo != mailNo {
@@ -823,8 +843,13 @@ func (s *KdzsPrintAgentService) maybeAutoConfirmShip(task *model.KdzsPrintTask, 
 		Reship:         reship,
 	})
 	if err != nil {
-		log.Printf("[kdzs-print] task=%d auto ConfirmKdzsShip order=%d mail=%s failed: %v", task.ID, orderID, mailNo, err)
-		return
+		// 发货中心/订单中心已有同号发货记录时，仍标记任务已确认，避免 12s 轮询空转
+		if isOrderAlreadyShippedErr(err) || strings.Contains(err.Error(), "发货单已存在") {
+			log.Printf("[kdzs-print] task=%d order=%d mail=%s already shipped, mark confirmed: %v", task.ID, orderID, mailNo, err)
+		} else {
+			log.Printf("[kdzs-print] task=%d auto ConfirmKdzsShip order=%d mail=%s failed: %v", task.ID, orderID, mailNo, err)
+			return
+		}
 	}
 	now := time.Now()
 	task.ShipConfirmedAt = &now
