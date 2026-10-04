@@ -1358,11 +1358,17 @@ async function openKdzsRemotePrint() {
       deviceId: kdzsRemoteDeviceId.value,
       payload,
     })
-    ElMessage.success(
-      shipTargets.value.length === 1
-        ? `已下发远程打单任务 #${task.id} 到「${device.name}」。打印完成后将自动确认发货。`
-        : `已下发远程打单任务 #${task.id} 到「${device.name}」。批量请打印完成后点「同步单号」再确认发货。`,
-    )
+    if (task.merged) {
+      ElMessage.success(
+        `已合并进「${device.name}」排队批量 #${task.id}${task.orderCount ? `（共 ${task.orderCount} 单）` : ''}。上一批结束后将一次勾选打印。`,
+      )
+    } else {
+      ElMessage.success(
+        shipTargets.value.length === 1
+          ? `已下发远程打单任务 #${task.id} 到「${device.name}」。打印完成后将自动确认发货。`
+          : `已下发远程打单任务 #${task.id} 到「${device.name}」。批量请打印完成后点「同步单号」再确认发货。`,
+      )
+    }
     confirmKdzsVisible.value = true
     // 远程打单异步执行；单单一票由 ShippingCore 轮询 Agent 结果后自动 ConfirmKdzsShip
   } catch (e) {

@@ -367,6 +367,10 @@ type KdzsPrintTaskDTO struct {
 	CreatedAt       string          `json:"createdAt"`
 	ClaimedAt       *string         `json:"claimedAt,omitempty"`
 	FinishedAt      *string         `json:"finishedAt,omitempty"`
+	// Merged 本次下发被并入已有 pending 批量任务（非新建）。
+	Merged bool `json:"merged,omitempty"`
+	// OrderCount payload.orders 笔数（合并后便于前端提示）。
+	OrderCount int `json:"orderCount,omitempty"`
 }
 
 func toTaskDTO(t model.KdzsPrintTask) KdzsPrintTaskDTO {
@@ -456,6 +460,300 @@ func (s *KdzsPrintAgentService) resolvePrintLogin(accountCode string) (mobile, p
 	return mobile, password, rec.Code, name, nil
 }
 
+func payloadString(m map[string]any, key string) string {
+	if m == nil {
+		return ""
+	}
+	v, ok := m[key]
+	if !ok || v == nil {
+		return ""
+	}
+	switch t := v.(type) {
+	case string:
+		return strings.TrimSpace(t)
+	case float64:
+		if t == 0 {
+			return ""
+		}
+		return strconv.FormatInt(int64(t), 10)
+	case json.Number:
+		return strings.TrimSpace(t.String())
+	default:
+		return strings.TrimSpace(fmt.Sprint(t))
+	}
+}
+
+// printMergeKey 同类可合并：同平台 + 同模板 + 同快递助手账号（打印机不参与键，合并时取非空）。
+func printMergeKey(m map[string]any) (string, bool) {
+	platform := strings.ToUpper(payloadString(m, "platform"))
+	tplID := payloadString(m, "templateId")
+	tplName := payloadString(m, "templateName")
+	if platform == "" || (tplID == "" && tplName == "") {
+		return "", false
+	}
+	account := payloadString(m, "kdzsAccountCode")
+	return platform + "\x00" + tplID + "\x00" + tplName + "\x00" + account, true
+}
+
+func orderDedupeKey(o map[string]any) string {
+	for _, k := range []string{"orderId", "platformSysTid", "sysTid", "platformOrderId", "tid", "orderNo"} {
+		if v := payloadString(o, k); v != "" {
+			return k + "=" + v
+		}
+	}
+	raw, _ := json.Marshal(o)
+	return string(raw)
+}
+
+func extractOrders(m map[string]any) []map[string]any {
+	raw, ok := m["orders"]
+	if !ok || raw == nil {
+		return nil
+	}
+	arr, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(arr))
+	for _, item := range arr {
+		om, ok := item.(map[string]any)
+		if !ok || om == nil {
+			continue
+		}
+		out = append(out, om)
+	}
+	return out
+}
+
+func mergePrintPayload(base, incoming map[string]any) (map[string]any, int) {
+	merged := map[string]any{}
+	for k, v := range base {
+		merged[k] = v
+	}
+	// 凭证 / 模板以已有任务为准；打印机优先非空新值。
+	for _, k := range []string{"kdzsMobile", "kdzsPassword", "kdzsAccountCode", "kdzsAccountName", "templateId", "templateName", "platform"} {
+		if v := payloadString(base, k); v != "" {
+			merged[k] = base[k]
+		} else if _, ok := incoming[k]; ok {
+			merged[k] = incoming[k]
+		}
+	}
+	if p := payloadString(incoming, "printerName"); p != "" {
+		merged["printerName"] = p
+	} else if p := payloadString(base, "printerName"); p != "" {
+		merged["printerName"] = p
+	}
+	if merged["autoPrint"] == nil {
+		if incoming["autoPrint"] != nil {
+			merged["autoPrint"] = incoming["autoPrint"]
+		} else {
+			merged["autoPrint"] = true
+		}
+	}
+
+	seen := map[string]struct{}{}
+	orders := make([]any, 0, 8)
+	for _, src := range []map[string]any{base, incoming} {
+		for _, o := range extractOrders(src) {
+			key := orderDedupeKey(o)
+			if key == "" {
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			orders = append(orders, o)
+		}
+	}
+	merged["orders"] = orders
+
+	// 多单批量：去掉单票字段，避免 Agent 走单票确认发货。
+	if len(orders) > 1 {
+		delete(merged, "orderId")
+		delete(merged, "order")
+		delete(merged, "autoConfirmShip")
+	} else if len(orders) == 1 {
+		if om, ok := orders[0].(map[string]any); ok {
+			if id := payloadString(om, "orderId"); id != "" {
+				if n, err := strconv.ParseUint(id, 10, 64); err == nil && n > 0 {
+					merged["orderId"] = n
+				}
+			}
+		}
+	}
+
+	// 下单时间窗取并集，方便快递助手筛选。
+	fromA, toA := payloadString(base, "orderTimeFrom"), payloadString(base, "orderTimeTo")
+	fromB, toB := payloadString(incoming, "orderTimeFrom"), payloadString(incoming, "orderTimeTo")
+	from, to := fromA, toA
+	if fromB != "" && (from == "" || fromB < from) {
+		from = fromB
+	}
+	if toB != "" && (to == "" || toB > to) {
+		to = toB
+	}
+	if from != "" {
+		merged["orderTimeFrom"] = from
+	}
+	if to != "" {
+		merged["orderTimeTo"] = to
+	}
+	merged["createdAt"] = time.Now().UnixMilli()
+	merged["v"] = 1
+	return merged, len(orders)
+}
+
+// tryMergePendingPrintTask 将本次下发合并进同设备、同平台模板的 pending 任务。
+// 上一批若正在跑，新单会堆进下一条 pending；同批多次单发会合成一条批量。
+func (s *KdzsPrintAgentService) tryMergePendingPrintTask(userID, deviceID uint64, incoming map[string]any) (*KdzsPrintTaskDTO, error) {
+	key, ok := printMergeKey(incoming)
+	if !ok || s.agents == nil {
+		return nil, nil
+	}
+
+	type absorbRef struct {
+		id         uint64
+		agentsJobID uint64
+	}
+	var survivorID, survivorJobID uint64
+	var absorbList []absorbRef
+	var mergedRaw []byte
+	var orderCount int
+
+	// 1) 锁定并算出合并结果（不调用外部 HTTP）。
+	err := s.db().Transaction(func(tx *gorm.DB) error {
+		var pending []model.KdzsPrintTask
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("tenant_id = ? AND device_id = ? AND status = ?", s.tenantID, deviceID, model.KdzsPrintTaskPending).
+			Order("id ASC").
+			Find(&pending).Error; err != nil {
+			return err
+		}
+		var survivor model.KdzsPrintTask
+		var absorbTasks []model.KdzsPrintTask
+		for i := range pending {
+			var probe map[string]any
+			if err := json.Unmarshal([]byte(pending[i].Payload), &probe); err != nil {
+				continue
+			}
+			k, ok := printMergeKey(probe)
+			if !ok || k != key {
+				continue
+			}
+			if survivor.ID == 0 {
+				survivor = pending[i]
+			} else {
+				absorbTasks = append(absorbTasks, pending[i])
+			}
+		}
+		if survivor.ID == 0 || survivor.AgentsJobID == 0 {
+			return nil
+		}
+		var base map[string]any
+		if err := json.Unmarshal([]byte(survivor.Payload), &base); err != nil {
+			return err
+		}
+		merged := base
+		for _, abs := range absorbTasks {
+			var other map[string]any
+			if err := json.Unmarshal([]byte(abs.Payload), &other); err != nil {
+				continue
+			}
+			merged, orderCount = mergePrintPayload(merged, other)
+		}
+		merged, orderCount = mergePrintPayload(merged, incoming)
+		raw, err := json.Marshal(merged)
+		if err != nil {
+			return err
+		}
+		survivorID = survivor.ID
+		survivorJobID = survivor.AgentsJobID
+		mergedRaw = raw
+		for _, abs := range absorbTasks {
+			absorbList = append(absorbList, absorbRef{id: abs.ID, agentsJobID: abs.AgentsJobID})
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if survivorID == 0 || len(mergedRaw) == 0 {
+		return nil, nil
+	}
+
+	// 2) 先更新 Agents；若已领取则放弃合并，走新建。
+	if err := s.agents.UpdatePendingJobParams(s.tenantID, survivorJobID, string(mergedRaw)); err != nil {
+		log.Printf("[kdzs-print] merge skipped device=%d job=%d: %v", deviceID, survivorJobID, err)
+		return nil, nil
+	}
+
+	// 3) 回写发货中心任务，并取消被吞并的重复 pending。
+	now := time.Now()
+	var survivor model.KdzsPrintTask
+	err = s.db().Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("id = ? AND tenant_id = ? AND status = ?", survivorID, s.tenantID, model.KdzsPrintTaskPending).
+			First(&survivor).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil
+			}
+			return err
+		}
+		if err := tx.Model(&survivor).Updates(map[string]any{
+			"payload":    string(mergedRaw),
+			"updated_at": now,
+		}).Error; err != nil {
+			return err
+		}
+		survivor.Payload = string(mergedRaw)
+		survivor.UpdatedAt = now
+		for _, abs := range absorbList {
+			reason := fmt.Sprintf("已合并到批量任务 #%d", survivorID)
+			_ = tx.Model(&model.KdzsPrintTask{}).
+				Where("id = ? AND tenant_id = ? AND status = ?", abs.id, s.tenantID, model.KdzsPrintTaskPending).
+				Updates(map[string]any{
+					"status":        model.KdzsPrintTaskCancelled,
+					"error_message": reason,
+					"finished_at":   now,
+					"updated_at":    now,
+				}).Error
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if survivor.ID == 0 {
+		// Agents 已合并；本地任务可能刚被同步状态，仍视为成功合并。
+		survivor = model.KdzsPrintTask{
+			ID:          survivorID,
+			TenantID:    s.tenantID,
+			DeviceID:    deviceID,
+			Status:      model.KdzsPrintTaskPending,
+			Payload:     string(mergedRaw),
+			AgentsJobID: survivorJobID,
+			CreatedBy:   userID,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}
+	}
+	for _, abs := range absorbList {
+		if abs.agentsJobID > 0 {
+			reason := fmt.Sprintf("已合并到批量任务 #%d", survivorID)
+			if cerr := s.agents.CancelPendingJob(s.tenantID, abs.agentsJobID, reason); cerr != nil {
+				log.Printf("[kdzs-print] cancel absorbed job #%d: %v", abs.agentsJobID, cerr)
+			}
+		}
+	}
+	log.Printf("[kdzs-print] merged into task #%d device=%d orders=%d absorbed=%d by=%d",
+		survivorID, deviceID, orderCount, len(absorbList), userID)
+	dto := toPublicTaskDTO(survivor)
+	dto.Merged = true
+	dto.OrderCount = orderCount
+	return &dto, nil
+}
+
 func (s *KdzsPrintAgentService) CreateTask(userID uint64, in *CreatePrintTaskInput) (*KdzsPrintTaskDTO, error) {
 	if in == nil || in.DeviceID == 0 || len(in.Payload) == 0 {
 		return nil, ErrBadRequest
@@ -479,6 +777,14 @@ func (s *KdzsPrintAgentService) CreateTask(userID uint64, in *CreatePrintTaskInp
 	if probe["autoPrint"] == nil {
 		probe["autoPrint"] = true
 	}
+
+	// 同类多次单发：并入同设备 pending 批量（上一批执行中则堆到下一条 pending）。
+	if merged, merr := s.tryMergePendingPrintTask(userID, in.DeviceID, probe); merr != nil {
+		return nil, merr
+	} else if merged != nil {
+		return merged, nil
+	}
+
 	enriched, err := json.Marshal(probe)
 	if err != nil {
 		return nil, err

@@ -364,6 +364,8 @@ export interface KdzsPrintTask {
   mailNo?: string
   shipConfirmedAt?: string
   createdAt: string
+  merged?: boolean
+  orderCount?: number
 }
 
 export interface WaybillAuth {

@@ -198,3 +198,65 @@ func (c *Client) CreateTargetedJob(tenantID, targetAgentID uint64, jobType, para
 	}
 	return &envelope.Data, nil
 }
+
+// UpdatePendingJobParams 更新仍排队中的执行单参数（合并批量打单用）。
+func (c *Client) UpdatePendingJobParams(tenantID, jobID uint64, paramsJSON string) error {
+	if c == nil {
+		return fmt.Errorf("AgentsCenter 未配置")
+	}
+	if jobID == 0 {
+		return fmt.Errorf("jobId 必填")
+	}
+	body, _ := json.Marshal(map[string]any{
+		"tenantId":   tenantID,
+		"paramsJson": paramsJSON,
+	})
+	u := fmt.Sprintf("%s/api/v1/internal/jobs/%d", c.BaseURL, jobID)
+	req, err := http.NewRequest(http.MethodPatch, u, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Token", c.Token)
+	res, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	b, _ := io.ReadAll(res.Body)
+	if res.StatusCode >= 300 {
+		return fmt.Errorf("AgentsCenter HTTP %d: %s", res.StatusCode, strings.TrimSpace(string(b)))
+	}
+	return nil
+}
+
+// CancelPendingJob 取消仍排队中的执行单。
+func (c *Client) CancelPendingJob(tenantID, jobID uint64, reason string) error {
+	if c == nil {
+		return fmt.Errorf("AgentsCenter 未配置")
+	}
+	if jobID == 0 {
+		return fmt.Errorf("jobId 必填")
+	}
+	body, _ := json.Marshal(map[string]any{
+		"tenantId": tenantID,
+		"reason":   reason,
+	})
+	u := fmt.Sprintf("%s/api/v1/internal/jobs/%d/cancel", c.BaseURL, jobID)
+	req, err := http.NewRequest(http.MethodPost, u, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Token", c.Token)
+	res, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	b, _ := io.ReadAll(res.Body)
+	if res.StatusCode >= 300 {
+		return fmt.Errorf("AgentsCenter HTTP %d: %s", res.StatusCode, strings.TrimSpace(string(b)))
+	}
+	return nil
+}
