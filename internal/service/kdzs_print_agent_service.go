@@ -421,6 +421,14 @@ func redactPrintPayload(raw string) json.RawMessage {
 	return b
 }
 
+// DefaultPrintLogin 租户默认/活跃快递助手账号（供 AgentsCenter → WA 常驻登录）。
+func (s *KdzsPrintAgentService) DefaultPrintLogin(tenantID uint64) (mobile, password, code, name string, err error) {
+	if tenantID == 0 {
+		return "", "", "", "", fmt.Errorf("%w: tenantId 无效", ErrBadRequest)
+	}
+	return s.ForTenant(tenantID).resolvePrintLogin("")
+}
+
 func (s *KdzsPrintAgentService) resolvePrintLogin(accountCode string) (mobile, password, code, name string, err error) {
 	code = strings.TrimSpace(accountCode)
 	if code == "" {

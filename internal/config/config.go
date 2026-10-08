@@ -28,8 +28,9 @@ type DatabaseConfig struct {
 }
 
 type AuthConfig struct {
-	Enabled   bool
-	JWTSecret string `mapstructure:"jwt_secret"`
+	Enabled       bool
+	JWTSecret     string `mapstructure:"jwt_secret"`
+	InternalToken string `mapstructure:"internal_token"`
 }
 
 type IntegrationsConfig struct {
@@ -87,6 +88,9 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Auth.JWTSecret == "" {
 		cfg.Auth.JWTSecret = "change-me-in-production-use-long-random-string"
+	}
+	if cfg.Auth.InternalToken == "" {
+		cfg.Auth.InternalToken = cfg.Auth.JWTSecret
 	}
 	if cfg.Integrations.StoreSyncAgentAPIURL == "" {
 		cfg.Integrations.StoreSyncAgentAPIURL = "http://127.0.0.1:8097"

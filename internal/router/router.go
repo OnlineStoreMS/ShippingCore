@@ -82,6 +82,10 @@ func Setup(db *gorm.DB, cfg *config.Config) *gin.Engine {
 	mobile.POST("/kdzs-print/tasks/claim", kdzsPrintAgentH.ClaimTask)
 	mobile.POST("/kdzs-print/tasks/:id/report", kdzsPrintAgentH.ReportTask)
 
+	internal := v1.Group("/internal")
+	internal.Use(admin.InternalAuth(cfg.Auth.InternalToken))
+	internal.GET("/kdzs/default-login", kdzsPrintAgentH.InternalDefaultKdzsLogin)
+
 	return r
 }
 
