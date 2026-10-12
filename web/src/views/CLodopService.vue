@@ -2,7 +2,6 @@
 import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { CircleCheck, CircleClose, Link, Printer, Refresh } from '@element-plus/icons-vue'
-import { shippingApi } from '../api/shipping'
 import {
   ensureLocalPrintService,
   getSavedPrinterIndex,
@@ -26,7 +25,6 @@ const CLODOP_SCRIPT_SNIPPET =
   '/script>'
 
 const loading = ref(false)
-const savingDefault = ref(false)
 const testing = ref(false)
 const serviceOk = ref(false)
 const serviceError = ref('')
@@ -34,21 +32,8 @@ const serviceEndpoint = ref('')
 const printers = ref<LocalPrinter[]>([])
 const selected = ref<number | null>(getSavedPrinterIndex())
 const savedName = ref(getSavedPrinterName())
-const cloudSfName = ref('')
 
 const selectedPrinter = computed(() => printers.value.find((p) => p.index === selected.value) || null)
-
-async function loadCloudDefaults() {
-  try {
-    const st = await shippingApi.getPrintSettings()
-    cloudSfName.value = (st.sfPrinterName || '').trim()
-    if (!savedName.value && cloudSfName.value) {
-      savedName.value = cloudSfName.value
-    }
-  } catch {
-    /* 云端失败时仍可用本机缓存 */
-  }
-}
 
 async function probeService() {
   serviceError.value = ''
@@ -67,21 +52,15 @@ async function probeService() {
 async function refresh() {
   loading.value = true
   try {
-    await loadCloudDefaults()
     await probeService()
     if (!serviceOk.value) {
       printers.value = []
       return
     }
     printers.value = await listLocalPrinters()
-    const preferName = savedName.value || cloudSfName.value
     if (selected.value != null && !printers.value.some((p) => p.index === selected.value)) {
-      const byName = printers.value.find((p) => p.name === preferName)
+      const byName = printers.value.find((p) => p.name === savedName.value)
       selected.value = byName?.index ?? (printers.value[0]?.index ?? null)
-    }
-    if (selected.value == null && preferName) {
-      const byName = printers.value.find((p) => p.name === preferName)
-      if (byName) selected.value = byName.index
     }
     if (selected.value == null && printers.value.length === 1) {
       selected.value = printers.value[0].index
@@ -101,24 +80,14 @@ function choose(p: LocalPrinter) {
   ElMessage.success(`已选择：${p.name}`)
 }
 
-async function saveCurrent() {
+function saveCurrent() {
   if (selected.value == null || !selectedPrinter.value) {
     ElMessage.warning('请先选择一台打印机')
     return
   }
-  savingDefault.value = true
-  try {
-    const name = selectedPrinter.value.name
-    savePrinterSelection(selected.value, name)
-    savedName.value = name
-    await shippingApi.updatePrintSettings({ sfPrinterName: name })
-    cloudSfName.value = name
-    ElMessage.success('已保存为租户默认打印机（各端共用）')
-  } catch (e) {
-    ElMessage.error((e as Error).message || '保存云端默认失败')
-  } finally {
-    savingDefault.value = false
-  }
+  savePrinterSelection(selected.value, selectedPrinter.value.name)
+  savedName.value = selectedPrinter.value.name
+  ElMessage.success('已保存为本机默认打印机')
 }
 
 async function runTest() {
@@ -201,10 +170,7 @@ onMounted(refresh)
           <template #header>
             <div class="card-hd">
               <span>默认打印机</span>
-              <span v-if="savedName || cloudSfName" class="muted">
-                当前：{{ savedName || cloudSfName }}
-                <template v-if="cloudSfName">（租户默认）</template>
-              </span>
+              <span v-if="savedName" class="muted">当前：{{ savedName }}</span>
             </div>
           </template>
 
@@ -232,13 +198,8 @@ onMounted(refresh)
           </div>
 
           <div class="ft">
-            <el-button
-              type="primary"
-              :loading="savingDefault"
-              :disabled="selected == null"
-              @click="saveCurrent"
-            >
-              设为租户默认
+            <el-button type="primary" :disabled="selected == null" @click="saveCurrent">
+              设为本机默认
             </el-button>
             <el-button :loading="testing" :disabled="selected == null" @click="runTest">
               测试打印
@@ -258,7 +219,7 @@ onMounted(refresh)
             </li>
             <li>安装后保持托盘图标运行；默认监听 <code>8000</code> / <code>18000</code>（HTTPS <code>8443</code>）。</li>
             <li>本页检测的是浏览器本机服务，与业务服务器 IP 无关。</li>
-            <li>「设为租户默认」后，本租户各端（电脑/手机）共用该打印机名称；本机缓存优先，未配置时用云端默认。</li>
+            <li>此处仅保存本机浏览器默认。手机端默认请到「打印机管理 → 默认打印机」配置。</li>
           </ol>
         </el-card>
 
