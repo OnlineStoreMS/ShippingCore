@@ -729,7 +729,7 @@ async function loadOmsOrders() {
   }
 }
 
-function restoreKdzsRemotePrefs() {
+async function restoreKdzsRemotePrefs() {
   const savedDev = Number(localStorage.getItem(KDZS_REMOTE_DEVICE_KEY) || 0)
   if (savedDev && kdzsDevices.value.some((d) => d.id === savedDev)) {
     kdzsRemoteDeviceId.value = savedDev
@@ -737,7 +737,33 @@ function restoreKdzsRemotePrefs() {
     const online = kdzsDevices.value.find((d) => d.online && d.enabled !== false)
     kdzsRemoteDeviceId.value = online?.id || kdzsDevices.value.find((d) => d.enabled !== false)?.id
   }
-  kdzsRemotePrinterName.value = localStorage.getItem(KDZS_REMOTE_PRINTER_KEY) || ''
+  const local = (localStorage.getItem(KDZS_REMOTE_PRINTER_KEY) || '').trim()
+  if (local) {
+    kdzsRemotePrinterName.value = local
+    return
+  }
+  try {
+    const st = await shippingApi.getPrintSettings()
+    const cloud = (st.kdzsPrinterName || '').trim()
+    if (cloud) {
+      kdzsRemotePrinterName.value = cloud
+      localStorage.setItem(KDZS_REMOTE_PRINTER_KEY, cloud)
+      return
+    }
+  } catch {
+    /* ignore */
+  }
+  kdzsRemotePrinterName.value = ''
+}
+
+async function syncKdzsPrinterToCloud(name: string) {
+  const v = name.trim()
+  if (!v) return
+  try {
+    await shippingApi.updatePrintSettings({ kdzsPrinterName: v })
+  } catch {
+    /* 本机已存，云端失败不阻断 */
+  }
 }
 
 async function loadOptions() {
@@ -752,7 +778,7 @@ async function loadOptions() {
     shipperProfiles.value = (shippers.list || []).filter((s) => s.enabled)
     allTemplates.value = templates.list || []
     kdzsDevices.value = (devices.list || []).filter((d) => d.enabled !== false)
-    restoreKdzsRemotePrefs()
+    await restoreKdzsRemotePrefs()
   } catch {
     /* optional */
   }
@@ -1200,7 +1226,7 @@ function onPrintModeChange() {
 }
 
 function onKdzsChannelChange() {
-  if (kdzsChannel.value === 'remote') restoreKdzsRemotePrefs()
+  if (kdzsChannel.value === 'remote') void restoreKdzsRemotePrefs()
 }
 
 function onKdzsRemoteDeviceChange(id: number | undefined) {
@@ -1211,8 +1237,12 @@ function onKdzsRemoteDeviceChange(id: number | undefined) {
 function onKdzsRemotePrinterBlur() {
   const name = kdzsRemotePrinterName.value.trim()
   kdzsRemotePrinterName.value = name
-  if (name) localStorage.setItem(KDZS_REMOTE_PRINTER_KEY, name)
-  else localStorage.removeItem(KDZS_REMOTE_PRINTER_KEY)
+  if (name) {
+    localStorage.setItem(KDZS_REMOTE_PRINTER_KEY, name)
+    void syncKdzsPrinterToCloud(name)
+  } else {
+    localStorage.removeItem(KDZS_REMOTE_PRINTER_KEY)
+  }
 }
 
 function buildKdzsHandoffOrders(): KdzsHandoffOrder[] {
@@ -1354,6 +1384,7 @@ async function openKdzsRemotePrint() {
     }
     localStorage.setItem(KDZS_REMOTE_DEVICE_KEY, String(kdzsRemoteDeviceId.value))
     localStorage.setItem(KDZS_REMOTE_PRINTER_KEY, printer)
+    await syncKdzsPrinterToCloud(printer)
     const task = await shippingApi.createKdzsPrintTask({
       deviceId: kdzsRemoteDeviceId.value,
       payload,
@@ -1875,6 +1906,7 @@ onMounted(async () => {
                   clearable
                   @blur="onKdzsRemotePrinterBlur"
                 />
+                <div class="muted kdzs-remote-hint">租户默认，各端共用；本机有缓存时优先用本机</div>
               </el-form-item>
               <el-alert
                 type="info"

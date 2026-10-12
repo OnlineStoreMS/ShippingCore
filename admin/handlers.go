@@ -17,14 +17,15 @@ import (
 )
 
 type Handlers struct {
-	Carrier  *service.CarrierService
-	Shipper  *service.ShipperService
-	Shipment *service.ShipmentService
-	Kdzs     *service.KdzsService
+	Carrier       *service.CarrierService
+	Shipper       *service.ShipperService
+	Shipment      *service.ShipmentService
+	Kdzs          *service.KdzsService
+	PrintSettings *service.PrintSettingsService
 }
 
-func NewHandlers(carrier *service.CarrierService, shipper *service.ShipperService, shipment *service.ShipmentService, kdzs *service.KdzsService) *Handlers {
-	return &Handlers{Carrier: carrier, Shipper: shipper, Shipment: shipment, Kdzs: kdzs}
+func NewHandlers(carrier *service.CarrierService, shipper *service.ShipperService, shipment *service.ShipmentService, kdzs *service.KdzsService, printSettings *service.PrintSettingsService) *Handlers {
+	return &Handlers{Carrier: carrier, Shipper: shipper, Shipment: shipment, Kdzs: kdzs, PrintSettings: printSettings}
 }
 
 func (h *Handlers) carrier(c *gin.Context) *service.CarrierService {

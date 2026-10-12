@@ -243,6 +243,18 @@ type KdzsSetting struct {
 
 func (KdzsSetting) TableName() string { return "kdzs_settings" }
 
+// PrintSetting 租户级默认打印机（自建物流 C-Lodop + 快递助手远程）。
+type PrintSetting struct {
+	ID              uint64    `gorm:"primaryKey" json:"id"`
+	TenantID        uint64    `gorm:"uniqueIndex;not null" json:"tenantId"`
+	SfPrinterName   string    `gorm:"size:256" json:"sfPrinterName"`   // 本机 C-Lodop 打印机完整名称
+	KdzsPrinterName string    `gorm:"size:256" json:"kdzsPrinterName"` // 远程打单电脑上的打印机完整名称
+	CreatedAt       time.Time `json:"createdAt"`
+	UpdatedAt       time.Time `json:"updatedAt"`
+}
+
+func (PrintSetting) TableName() string { return "print_settings" }
+
 // ShipmentGroup 拆分发货主单：一次拆分确认归组，组内每运单仍是独立 shipments 行。
 type ShipmentGroup struct {
 	ID               uint64    `gorm:"primaryKey" json:"id"`

@@ -48,6 +48,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&model.WaybillAuth{},
 		&model.KdzsAccount{},
 		&model.KdzsSetting{},
+		&model.PrintSetting{},
 		&model.ShipPlanLine{},
 		&model.KdzsPrintDevice{},
 		&model.KdzsPrintTask{},

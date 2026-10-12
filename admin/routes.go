@@ -59,4 +59,7 @@ func RegisterRoutes(g *gin.RouterGroup, h *Handlers) {
 	g.GET("/orders/:orderId/ship-plan", h.GetShipPlan)
 	g.PUT("/orders/:orderId/ship-plan", h.PutShipPlan)
 	g.GET("/ship-plan/pending-counts", h.CountPendingShipPlans)
+
+	g.GET("/print-settings", h.GetPrintSettings)
+	g.PUT("/print-settings", h.UpdatePrintSettings)
 }

@@ -429,6 +429,17 @@ func (s *KdzsPrintAgentService) DefaultPrintLogin(tenantID uint64) (mobile, pass
 	return s.ForTenant(tenantID).resolvePrintLogin("")
 }
 
+func (s *KdzsPrintAgentService) tenantKdzsPrinterName() string {
+	if s.tenantID == 0 {
+		return ""
+	}
+	var st model.PrintSetting
+	if err := s.db().Where("tenant_id = ?", s.tenantID).First(&st).Error; err != nil {
+		return ""
+	}
+	return strings.TrimSpace(st.KdzsPrinterName)
+}
+
 func (s *KdzsPrintAgentService) resolvePrintLogin(accountCode string) (mobile, password, code, name string, err error) {
 	code = strings.TrimSpace(accountCode)
 	if code == "" {
@@ -784,6 +795,12 @@ func (s *KdzsPrintAgentService) CreateTask(userID uint64, in *CreatePrintTaskInp
 	probe["kdzsAccountName"] = name
 	if probe["autoPrint"] == nil {
 		probe["autoPrint"] = true
+	}
+	// 未指定远程打印机时注入租户默认
+	if payloadString(probe, "printerName") == "" {
+		if def := s.tenantKdzsPrinterName(); def != "" {
+			probe["printerName"] = def
+		}
 	}
 
 	// 同类多次单发：并入同设备 pending 批量（上一批执行中则堆到下一条 pending）。

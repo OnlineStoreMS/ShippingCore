@@ -368,6 +368,12 @@ export interface KdzsPrintTask {
   orderCount?: number
 }
 
+/** 租户级默认打印机（自建物流 + 快递助手远程） */
+export interface PrintSettings {
+  sfPrinterName: string
+  kdzsPrinterName: string
+}
+
 export interface WaybillAuth {
   id: number
   source: string
@@ -675,6 +681,11 @@ export const shippingApi = {
     client.get('/kdzs-print/tasks').then((r) =>
       unwrap<{ list: KdzsPrintTask[]; total: number }>(r),
     ),
+
+  getPrintSettings: () =>
+    client.get('/print-settings').then((r) => unwrap<PrintSettings>(r)),
+  updatePrintSettings: (body: Partial<PrintSettings>) =>
+    client.put('/print-settings', body).then((r) => unwrap<PrintSettings>(r)),
   queryPrintWaybills: (body: {
     platform: string
     items: { sysTid?: string; tid?: string }[]
