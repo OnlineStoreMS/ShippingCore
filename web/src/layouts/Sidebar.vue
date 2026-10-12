@@ -12,7 +12,7 @@ const logoText = computed(() => (collapsed.value ? '发' : '发货中心'))
 const defaultOpeneds = computed(() => {
   const open: string[] = []
   if (route.path === '/sf-order') open.push('quick-ship')
-  if (route.path === '/clodop') open.push('printer-mgmt')
+  if (route.path === '/clodop' || route.path === '/default-printers') open.push('printer-mgmt')
   if (['/kdzs-accounts', '/waybill-auths', '/express-templates'].includes(route.path)) {
     open.push('kdzs')
   }
@@ -56,6 +56,9 @@ function navigate(path: string) {
         </template>
         <el-menu-item index="/clodop" @click="navigate('/clodop')">
           <span>C-Lodop 云打印</span>
+        </el-menu-item>
+        <el-menu-item index="/default-printers" @click="navigate('/default-printers')">
+          <span>默认打印机</span>
         </el-menu-item>
       </el-sub-menu>
 

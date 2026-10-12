@@ -58,6 +58,12 @@ const router = createRouter({
           meta: { title: 'C-Lodop 云打印' },
         },
         {
+          path: 'default-printers',
+          name: 'DefaultPrinterSettings',
+          component: () => import('../views/DefaultPrinterSettings.vue'),
+          meta: { title: '默认打印机' },
+        },
+        {
           path: 'carrier-accounts',
           name: 'CarrierAccounts',
           component: () => import('../views/CarrierAccountList.vue'),
