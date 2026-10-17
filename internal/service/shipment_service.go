@@ -1442,6 +1442,36 @@ func (s *ShipmentService) DecryptPendingOrders(ctx context.Context, token string
 	})
 }
 
+func (s *ShipmentService) DecryptOMSOrders(ctx context.Context, token string, orderIDs []uint64) (json.RawMessage, error) {
+	if s.orderCore == nil {
+		return nil, fmt.Errorf("ordercore 未配置")
+	}
+	if len(orderIDs) == 0 {
+		return nil, ErrBadRequest
+	}
+	return s.orderCore.DecryptOrders(ctx, token, orderIDs)
+}
+
+func (s *ShipmentService) StartDecryptOMSPhone(ctx context.Context, token string, orderID uint64) (json.RawMessage, error) {
+	if s.orderCore == nil {
+		return nil, fmt.Errorf("ordercore 未配置")
+	}
+	if orderID == 0 {
+		return nil, ErrBadRequest
+	}
+	return s.orderCore.StartDecryptPhone(ctx, token, orderID)
+}
+
+func (s *ShipmentService) PollDecryptOMSPhone(ctx context.Context, token string, orderID, jobID uint64) (json.RawMessage, error) {
+	if s.orderCore == nil {
+		return nil, fmt.Errorf("ordercore 未配置")
+	}
+	if orderID == 0 || jobID == 0 {
+		return nil, ErrBadRequest
+	}
+	return s.orderCore.PollDecryptPhone(ctx, token, orderID, jobID)
+}
+
 func (s *ShipmentService) ListPendingOMSOrders(ctx context.Context, token string, query ordercore.OrderQuery) (json.RawMessage, error) {
 	if s.orderCore == nil {
 		return nil, fmt.Errorf("ordercore 未配置")

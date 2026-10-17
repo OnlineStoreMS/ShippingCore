@@ -636,6 +636,24 @@ export const shippingApi = {
 
   listPendingOMSOrders: (params: OMSOrderQuery) =>
     client.get('/pending-oms-orders', { params }).then((r) => unwrap<OMSOrderListResponse>(r)),
+  decryptOMSOrders: (orderIds: number[]) =>
+    client.post('/oms-orders/decrypt', { orderIds }).then((r) =>
+      unwrap<{ items: OMSOrder[]; success: number }>(r),
+    ),
+  startDecryptOMSPhone: (orderId: number) =>
+    client.post(`/oms-orders/${orderId}/decrypt-phone`).then((r) =>
+      unwrap<{ jobId: number; orderId: number; orderNo?: string }>(r),
+    ),
+  pollDecryptOMSPhone: (orderId: number, jobId: number) =>
+    client.get(`/oms-orders/${orderId}/decrypt-phone`, { params: { jobId } }).then((r) =>
+      unwrap<{
+        jobId: number
+        status: string
+        errorMessage?: string
+        applied?: boolean
+        order?: OMSOrder | null
+      }>(r),
+    ),
 
   listKdzsAccountDetails: () =>
     client.get('/kdzs/account-details').then((r) => unwrap<{ items: KdzsAccountDetail[]; total: number }>(r)),

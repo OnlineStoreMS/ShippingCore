@@ -26,6 +26,14 @@ import {
   type LocalPrinter,
 } from '../utils/sfPrintPlugin'
 import {
+  buildOMSCopyText,
+  canDecryptOMS,
+  canDecryptRealPhone,
+  copyToClipboard,
+  formatOMSAddress,
+  isMaskedReceiver,
+} from '../utils/orderCopy'
+import {
   openKdzsWithCloudToken,
   type KdzsHandoffOrder,
   type KdzsHandoffPayload,
@@ -55,6 +63,8 @@ const router = useRouter()
 
 const loading = reactive({ orders: false, ship: false, syncWaybill: false, splitSave: false })
 const omsOrders = ref<OMSOrder[]>([])
+const decryptRow = reactive<Record<number, boolean>>({})
+const decryptPhoneRow = reactive<Record<number, boolean>>({})
 const omsTotal = ref(0)
 const carrierAccounts = ref<CarrierAccount[]>([])
 const shipperProfiles = ref<ShipperProfile[]>([])
@@ -468,6 +478,74 @@ function buildKdzsOrderTimeRange(orders: OMSOrder[]): { from: string; to: string
 }
 
 /** 列表商品展示：有拆分计划时用规格行替换被拆原商品（原 xN 不再作为发货口径） */
+function applyDecryptedOrder(updated: OMSOrder) {
+  const i = omsOrders.value.findIndex((o) => o.id === updated.id)
+  if (i < 0) return
+  const prev = omsOrders.value[i]
+  omsOrders.value[i] = {
+    ...updated,
+    pendingPlanCount: prev.pendingPlanCount,
+    shipPlanLines: prev.shipPlanLines,
+  }
+}
+
+async function decryptOne(order: OMSOrder) {
+  if (!canDecryptOMS(order)) {
+    ElMessage.warning('仅电商订单可解密')
+    return
+  }
+  decryptRow[order.id] = true
+  try {
+    const data = await shippingApi.decryptOMSOrders([order.id])
+    for (const item of data.items || []) applyDecryptedOrder(item)
+    ElMessage.success('解密成功')
+  } catch (e) {
+    ElMessage.error((e as Error).message || '解密失败')
+  } finally {
+    decryptRow[order.id] = false
+  }
+}
+
+async function decryptPhoneOne(order: OMSOrder) {
+  if (!canDecryptRealPhone(order)) {
+    ElMessage.warning('仅抖店订单可解密真实手机号')
+    return
+  }
+  decryptPhoneRow[order.id] = true
+  try {
+    const started = await shippingApi.startDecryptOMSPhone(order.id)
+    const deadline = Date.now() + 180_000
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 2000))
+      const st = await shippingApi.pollDecryptOMSPhone(order.id, started.jobId)
+      if (st.status === 'succeeded') {
+        if (st.order) applyDecryptedOrder(st.order)
+        ElMessage.success('真实手机号解密成功')
+        return
+      }
+      if (st.status === 'failed' || st.status === 'cancelled') {
+        throw new Error(st.errorMessage || '解密任务失败')
+      }
+    }
+    throw new Error('解密超时，请稍后在 Agents 中心查看任务')
+  } catch (e) {
+    ElMessage.error((e as Error).message || '解密真实手机号失败')
+  } finally {
+    decryptPhoneRow[order.id] = false
+  }
+}
+
+async function copyOrderAddress(order: OMSOrder) {
+  const addr = formatOMSAddress(order.address)
+  if (!addr || addr === '-') {
+    ElMessage.warning('暂无收件信息，请先解密')
+    return
+  }
+  const ok = await copyToClipboard(buildOMSCopyText(order))
+  if (ok) ElMessage.success('已复制地址规格')
+  else ElMessage.error('复制失败')
+}
+
 function goodsRowsWithShipMark(order: OMSOrder) {
   const shippedMap = shippedQtyByItem(order)
   const plans = order.shipPlanLines || []
@@ -1726,7 +1804,15 @@ onMounted(async () => {
                 class="goods-cell"
                 :class="{ 'is-shipped': entry.fullyShipped }"
               >
-                <img v-if="entry.picUrl" :src="entry.picUrl" class="goods-thumb" alt="" />
+                <el-image
+                  v-if="entry.picUrl"
+                  :src="entry.picUrl"
+                  :preview-src-list="[entry.picUrl]"
+                  fit="cover"
+                  preview-teleported
+                  hide-on-click-modal
+                  class="goods-thumb"
+                />
                 <div class="goods-text">
                   <span>{{ entry.title || '-' }}</span>
                   <el-tag v-if="entry.isSplit && !entry.fullyShipped" size="small" type="success" class="ship-tag">
@@ -1750,11 +1836,46 @@ onMounted(async () => {
             <span v-else>-</span>
           </template>
           </el-table-column>
-        <el-table-column label="收件信息" min-width="220">
+        <el-table-column label="收件信息" min-width="260">
             <template #default="{ row }">
-              <div>{{ row.address?.name || row.buyerName || '-' }}</div>
-              <div class="muted">{{ row.address?.phone || row.buyerPhone }}</div>
-              <div class="muted">{{ row.address?.fullText || row.address?.address }}</div>
+              <div class="addr-cell" @click.stop>
+                <div>{{ row.address?.name || row.buyerName || '-' }}</div>
+                <div class="muted">{{ row.address?.phone || row.buyerPhone }}</div>
+                <div class="muted">{{ row.address?.fullText || row.address?.address }}</div>
+                <div class="addr-actions">
+                  <el-button
+                    v-if="canDecryptOMS(row) && isMaskedReceiver(row)"
+                    link
+                    type="warning"
+                    size="small"
+                    :loading="decryptRow[row.id]"
+                    @click="decryptOne(row)"
+                  >解密</el-button>
+                  <el-button
+                    v-else-if="canDecryptOMS(row)"
+                    link
+                    type="warning"
+                    size="small"
+                    :loading="decryptRow[row.id]"
+                    @click="decryptOne(row)"
+                  >重新解密</el-button>
+                  <el-button
+                    v-if="canDecryptRealPhone(row)"
+                    link
+                    type="warning"
+                    size="small"
+                    :loading="decryptPhoneRow[row.id]"
+                    @click="decryptPhoneOne(row)"
+                  >解密真实手机号</el-button>
+                  <el-button
+                    v-if="formatOMSAddress(row.address) !== '-'"
+                    link
+                    type="primary"
+                    size="small"
+                    @click="copyOrderAddress(row)"
+                  >复制</el-button>
+                </div>
+              </div>
             </template>
           </el-table-column>
         <el-table-column label="付款时间" width="170">
@@ -1811,7 +1932,15 @@ onMounted(async () => {
           <el-checkbox-group v-model="selectedShipKeys" class="ship-items-list">
             <label v-for="row in shipPickRows" :key="row.key" class="ship-item-row">
               <el-checkbox :value="row.key" />
-              <img v-if="row.picUrl" :src="row.picUrl" class="goods-thumb" alt="" />
+              <el-image
+                v-if="row.picUrl"
+                :src="row.picUrl"
+                :preview-src-list="[row.picUrl]"
+                fit="cover"
+                preview-teleported
+                hide-on-click-modal
+                class="goods-thumb"
+              />
               <div class="ship-item-text">
                 <div>
                   {{ row.label || row.skuName || '-' }}
@@ -2172,7 +2301,15 @@ onMounted(async () => {
             class="split-edit-item"
           >
             <div class="split-edit-item-hd">
-              <img v-if="item.picUrl" :src="item.picUrl" class="goods-thumb" alt="" />
+              <el-image
+                v-if="item.picUrl"
+                :src="item.picUrl"
+                :preview-src-list="[item.picUrl]"
+                fit="cover"
+                preview-teleported
+                hide-on-click-modal
+                class="goods-thumb"
+              />
               <div class="ship-item-text">
                 <div>{{ formatGoodsLine(item) || item.productName || '-' }}</div>
               </div>
@@ -2365,7 +2502,9 @@ onMounted(async () => {
 .goods-cell { display: flex; gap: 8px; align-items: flex-start; }
 .goods-cell.is-shipped { opacity: 0.55; }
 .goods-cell.is-shipped .goods-text > span { text-decoration: line-through; }
-.goods-thumb { width: 40px; height: 40px; object-fit: cover; border-radius: 4px; flex-shrink: 0; }
+.goods-thumb { width: 40px; height: 40px; border-radius: 4px; flex-shrink: 0; cursor: zoom-in; }
+.goods-thumb :deep(img) { width: 40px; height: 40px; object-fit: cover; }
+.addr-actions { display: flex; flex-wrap: wrap; gap: 2px 8px; margin-top: 4px; }
 .goods-text {
   display: flex;
   flex-wrap: wrap;

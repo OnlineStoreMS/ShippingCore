@@ -109,6 +109,31 @@ func (c *Client) ListOrders(ctx context.Context, token string, query OrderQuery)
 	return c.doJSON(ctx, http.MethodGet, reqURL, token, nil)
 }
 
+func (c *Client) DecryptOrders(ctx context.Context, token string, orderIDs []uint64) (json.RawMessage, error) {
+	if c == nil || c.BaseURL == "" {
+		return nil, fmt.Errorf("ordercore 未配置")
+	}
+	return c.doJSON(ctx, http.MethodPost, c.BaseURL+"/api/v1/admin/orders/decrypt", token, map[string]any{
+		"orderIds": orderIDs,
+	})
+}
+
+func (c *Client) StartDecryptPhone(ctx context.Context, token string, orderID uint64) (json.RawMessage, error) {
+	if c == nil || c.BaseURL == "" {
+		return nil, fmt.Errorf("ordercore 未配置")
+	}
+	reqURL := fmt.Sprintf("%s/api/v1/admin/orders/%d/decrypt-phone", c.BaseURL, orderID)
+	return c.doJSON(ctx, http.MethodPost, reqURL, token, map[string]any{})
+}
+
+func (c *Client) PollDecryptPhone(ctx context.Context, token string, orderID, jobID uint64) (json.RawMessage, error) {
+	if c == nil || c.BaseURL == "" {
+		return nil, fmt.Errorf("ordercore 未配置")
+	}
+	reqURL := fmt.Sprintf("%s/api/v1/admin/orders/%d/decrypt-phone?jobId=%d", c.BaseURL, orderID, jobID)
+	return c.doJSON(ctx, http.MethodGet, reqURL, token, nil)
+}
+
 func (c *Client) GetOrder(ctx context.Context, token string, id uint64) (json.RawMessage, error) {
 	if c == nil || c.BaseURL == "" {
 		return nil, fmt.Errorf("ordercore 未配置")

@@ -168,6 +168,55 @@ func (h *Handlers) ListWaybillAuths(c *gin.Context) {
 	response.OK(c, response.PageResult(list, total, page, pageSize))
 }
 
+func (h *Handlers) DecryptOMSOrders(c *gin.Context) {
+	var req struct {
+		OrderIDs []uint64 `json:"orderIds"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || len(req.OrderIDs) == 0 {
+		response.Fail(c, http.StatusBadRequest, "orderIds 必填")
+		return
+	}
+	data, err := h.shipment(c).DecryptOMSOrders(c.Request.Context(), authcontext.BearerToken(c), req.OrderIDs)
+	if err != nil {
+		response.Fail(c, http.StatusBadGateway, err.Error())
+		return
+	}
+	c.Data(http.StatusOK, "application/json; charset=utf-8", wrapRawJSON(data))
+}
+
+func (h *Handlers) StartDecryptOMSPhone(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		response.Fail(c, http.StatusBadRequest, "无效订单")
+		return
+	}
+	data, err := h.shipment(c).StartDecryptOMSPhone(c.Request.Context(), authcontext.BearerToken(c), id)
+	if err != nil {
+		response.Fail(c, http.StatusBadGateway, err.Error())
+		return
+	}
+	c.Data(http.StatusOK, "application/json; charset=utf-8", wrapRawJSON(data))
+}
+
+func (h *Handlers) PollDecryptOMSPhone(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		response.Fail(c, http.StatusBadRequest, "无效订单")
+		return
+	}
+	jobID, _ := strconv.ParseUint(c.Query("jobId"), 10, 64)
+	if jobID == 0 {
+		response.Fail(c, http.StatusBadRequest, "jobId 必填")
+		return
+	}
+	data, err := h.shipment(c).PollDecryptOMSPhone(c.Request.Context(), authcontext.BearerToken(c), id, jobID)
+	if err != nil {
+		response.Fail(c, http.StatusBadGateway, err.Error())
+		return
+	}
+	c.Data(http.StatusOK, "application/json; charset=utf-8", wrapRawJSON(data))
+}
+
 func (h *Handlers) ListPendingOMSOrders(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "20"))
