@@ -431,6 +431,7 @@ export interface OMSOrder {
   manualSourceName?: string
   buyerName?: string
   buyerPhone?: string
+  sellerRemark?: string
   shipStatus?: string
   status?: string
   payTime?: string
@@ -644,6 +645,8 @@ export const shippingApi = {
     client.post(`/oms-orders/${orderId}/decrypt-phone`).then((r) =>
       unwrap<{ jobId: number; orderId: number; orderNo?: string }>(r),
     ),
+  updateOMSSellerRemark: (orderId: number, sellerRemark: string) =>
+    client.put(`/oms-orders/${orderId}/remarks`, { sellerRemark }).then((r) => unwrap<OMSOrder>(r)),
   pollDecryptOMSPhone: (orderId: number, jobId: number) =>
     client.get(`/oms-orders/${orderId}/decrypt-phone`, { params: { jobId } }).then((r) =>
       unwrap<{

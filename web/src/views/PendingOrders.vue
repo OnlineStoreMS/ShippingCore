@@ -65,6 +65,7 @@ const loading = reactive({ orders: false, ship: false, syncWaybill: false, split
 const omsOrders = ref<OMSOrder[]>([])
 const decryptRow = reactive<Record<number, boolean>>({})
 const decryptPhoneRow = reactive<Record<number, boolean>>({})
+const remarkSaving = reactive<Record<number, boolean>>({})
 const omsTotal = ref(0)
 const carrierAccounts = ref<CarrierAccount[]>([])
 const shipperProfiles = ref<ShipperProfile[]>([])
@@ -532,6 +533,19 @@ async function decryptPhoneOne(order: OMSOrder) {
     ElMessage.error((e as Error).message || '解密真实手机号失败')
   } finally {
     decryptPhoneRow[order.id] = false
+  }
+}
+
+async function saveSellerRemark(order: OMSOrder) {
+  remarkSaving[order.id] = true
+  try {
+    const updated = await shippingApi.updateOMSSellerRemark(order.id, order.sellerRemark || '')
+    applyDecryptedOrder(updated)
+    ElMessage.success(order.sourceChannel === 'kdzs' ? '卖家备注已保存并写回快递助手' : '卖家备注已保存')
+  } catch (e) {
+    ElMessage.error((e as Error).message || '保存卖家备注失败')
+  } finally {
+    remarkSaving[order.id] = false
   }
 }
 
@@ -1878,6 +1892,21 @@ onMounted(async () => {
               </div>
             </template>
           </el-table-column>
+        <el-table-column label="卖家备注" min-width="180">
+          <template #default="{ row }">
+            <el-input
+              v-model="row.sellerRemark"
+              class="seller-remark-input"
+              size="small"
+              type="textarea"
+              :autosize="{ minRows: 1, maxRows: 3 }"
+              :placeholder="row.sourceChannel === 'kdzs' ? '保存后写回快递助手' : '点击填写'"
+              :disabled="remarkSaving[row.id]"
+              @click.stop
+              @change="saveSellerRemark(row)"
+            />
+          </template>
+        </el-table-column>
         <el-table-column label="付款时间" width="170">
           <template #default="{ row }">{{ formatPayTime(row.payTime || row.orderedAt) }}</template>
         </el-table-column>
@@ -2505,6 +2534,7 @@ onMounted(async () => {
 .goods-thumb { width: 40px; height: 40px; border-radius: 4px; flex-shrink: 0; cursor: zoom-in; }
 .goods-thumb :deep(img) { width: 40px; height: 40px; object-fit: cover; }
 .addr-actions { display: flex; flex-wrap: wrap; gap: 2px 8px; margin-top: 4px; }
+.seller-remark-input :deep(textarea) { font-size: 12px; }
 .goods-text {
   display: flex;
   flex-wrap: wrap;

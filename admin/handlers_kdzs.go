@@ -217,6 +217,27 @@ func (h *Handlers) PollDecryptOMSPhone(c *gin.Context) {
 	c.Data(http.StatusOK, "application/json; charset=utf-8", wrapRawJSON(data))
 }
 
+func (h *Handlers) UpdateOMSSellerRemark(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || id == 0 {
+		response.Fail(c, http.StatusBadRequest, "无效订单")
+		return
+	}
+	var req struct {
+		SellerRemark string `json:"sellerRemark"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.Fail(c, http.StatusBadRequest, "请求无效")
+		return
+	}
+	data, err := h.shipment(c).UpdateOMSSellerRemark(c.Request.Context(), authcontext.BearerToken(c), id, req.SellerRemark)
+	if err != nil {
+		response.Fail(c, http.StatusBadGateway, err.Error())
+		return
+	}
+	c.Data(http.StatusOK, "application/json; charset=utf-8", wrapRawJSON(data))
+}
+
 func (h *Handlers) ListPendingOMSOrders(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("pageSize", "20"))

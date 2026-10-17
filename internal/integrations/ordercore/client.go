@@ -134,6 +134,22 @@ func (c *Client) PollDecryptPhone(ctx context.Context, token string, orderID, jo
 	return c.doJSON(ctx, http.MethodGet, reqURL, token, nil)
 }
 
+type UpdateRemarksRequest struct {
+	SellerRemark  string `json:"sellerRemark"`
+	SellerFlag    *int   `json:"sellerFlag,omitempty"`
+	FenFaRemark   string `json:"fenFaRemark"`
+	PrinterRemark string `json:"printerRemark"`
+	AllocRemark   string `json:"allocRemark"`
+}
+
+func (c *Client) UpdateRemarks(ctx context.Context, token string, orderID uint64, body UpdateRemarksRequest) (json.RawMessage, error) {
+	if c == nil || c.BaseURL == "" {
+		return nil, fmt.Errorf("ordercore 未配置")
+	}
+	reqURL := fmt.Sprintf("%s/api/v1/admin/orders/%d/remarks", c.BaseURL, orderID)
+	return c.doJSON(ctx, http.MethodPut, reqURL, token, body)
+}
+
 func (c *Client) GetOrder(ctx context.Context, token string, id uint64) (json.RawMessage, error) {
 	if c == nil || c.BaseURL == "" {
 		return nil, fmt.Errorf("ordercore 未配置")

@@ -36,6 +36,7 @@ func RegisterRoutes(g *gin.RouterGroup, h *Handlers) {
 	g.POST("/pending-orders/decrypt", h.DecryptPendingOrders)
 	g.GET("/pending-oms-orders", h.ListPendingOMSOrders)
 	g.POST("/oms-orders/decrypt", h.DecryptOMSOrders)
+	g.PUT("/oms-orders/:id/remarks", h.UpdateOMSSellerRemark)
 	g.POST("/oms-orders/:id/decrypt-phone", h.StartDecryptOMSPhone)
 	g.GET("/oms-orders/:id/decrypt-phone", h.PollDecryptOMSPhone)
 

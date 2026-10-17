@@ -1472,6 +1472,35 @@ func (s *ShipmentService) PollDecryptOMSPhone(ctx context.Context, token string,
 	return s.orderCore.PollDecryptPhone(ctx, token, orderID, jobID)
 }
 
+func (s *ShipmentService) UpdateOMSSellerRemark(ctx context.Context, token string, orderID uint64, sellerRemark string) (json.RawMessage, error) {
+	if s.orderCore == nil {
+		return nil, fmt.Errorf("ordercore 未配置")
+	}
+	if orderID == 0 {
+		return nil, ErrBadRequest
+	}
+	raw, err := s.orderCore.GetOrder(ctx, token, orderID)
+	if err != nil {
+		return nil, err
+	}
+	var cur struct {
+		SellerFlag    *int   `json:"sellerFlag"`
+		FenFaRemark   string `json:"fenFaRemark"`
+		PrinterRemark string `json:"printerRemark"`
+		AllocRemark   string `json:"allocRemark"`
+	}
+	if err := json.Unmarshal(raw, &cur); err != nil {
+		return nil, fmt.Errorf("解析订单备注失败: %w", err)
+	}
+	return s.orderCore.UpdateRemarks(ctx, token, orderID, ordercore.UpdateRemarksRequest{
+		SellerRemark:  strings.TrimSpace(sellerRemark),
+		SellerFlag:    cur.SellerFlag,
+		FenFaRemark:   cur.FenFaRemark,
+		PrinterRemark: cur.PrinterRemark,
+		AllocRemark:   cur.AllocRemark,
+	})
+}
+
 func (s *ShipmentService) ListPendingOMSOrders(ctx context.Context, token string, query ordercore.OrderQuery) (json.RawMessage, error) {
 	if s.orderCore == nil {
 		return nil, fmt.Errorf("ordercore 未配置")
